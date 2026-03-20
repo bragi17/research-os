@@ -83,7 +83,14 @@
       "Bash(xargs cat:*)",
       "Bash(PYTHONPATH=/root/research-os python3 -m pytest /root/research-os/tests/test_figure_extraction.py -v)",
       "Bash(git init:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git branch:*)",
+      "Bash(git commit:*)",
+      "Bash(git config:*)",
+      "Bash(gh repo:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(git rm:*)"
     ]
   }
 }
