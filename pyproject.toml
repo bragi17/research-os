@@ -1,0 +1,97 @@
+[project]
+name = "research-os"
+version = "0.1.0"
+description = "Autonomous Research Operating System"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Research OS Team"}
+]
+keywords = ["research", "llm", "agents", "langgraph", "academic"]
+
+dependencies = [
+    # Core Web Framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+
+    # Async & HTTP
+    "httpx>=0.28.0",
+    "aiofiles>=24.1.0",
+
+    # Database
+    "asyncpg>=0.30.0",
+    "sqlalchemy>=2.0.36",
+    "pgvector>=0.3.6",
+
+    # Redis & Caching
+    "redis>=5.2.0",
+
+    # LangGraph & LangChain
+    "langgraph>=0.2.60",
+    "langchain-core>=0.3.29",
+    "langchain-openai>=0.2.14",
+
+    # LLM Gateway
+    "openai>=1.59.0",
+
+    # PDF Processing
+    "pymupdf>=1.25.0",
+    "pypdf>=5.1.0",
+
+    # Embeddings
+    "tiktoken>=0.8.0",
+    "sentence-transformers>=3.3.1",
+
+    # Authentication
+    "bcrypt>=4.2.0",
+    "PyJWT>=2.9.0",
+
+    # Utilities
+    "python-dotenv>=1.0.1",
+    "tenacity>=9.0.0",
+    "structlog>=24.4.0",
+    "orjson>=3.10.12",
+    "python-ulid>=2.7.0",
+    "httpx-sse>=0.4.0",
+
+    # Observability
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.50b0",
+    "opentelemetry-instrumentation-httpx>=0.50b0",
+    "opentelemetry-instrumentation-asyncpg>=0.50b0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM", "TCH"]
+ignore = ["E501", "B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
