@@ -256,7 +256,7 @@ async def analogical_retrieval(state: ModeGraphState) -> dict[str, Any]:
 
     existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
 
-    new_candidates, executed, search_errors = await search_academic_sources(
+    new_candidates, executed, search_errors, _titles = await search_academic_sources(
         topic=state.topic,
         queries=queries[:8],
         existing_titles=existing_titles,
@@ -472,7 +472,7 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
     prior_art_papers: list[str] = []
     if search_queries:
-        found, _executed, search_errors = await search_academic_sources(
+        found, _executed, search_errors, _t = await search_academic_sources(
             topic=state.topic,
             queries=search_queries[:10],
             existing_titles=existing_titles,

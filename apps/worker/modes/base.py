@@ -241,12 +241,12 @@ async def search_academic_sources(
     queries: list[dict[str, Any]],
     keywords: list[str] | None = None,
     existing_titles: set[str] | None = None,
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], dict[str, str]]:
     """
     Unified search across Semantic Scholar and OpenAlex.
 
     Returns:
-        (new_candidate_ids, executed_query_texts, error_messages)
+        (new_candidate_ids, executed_query_texts, error_messages, id_to_title_map)
     """
     s2 = SemanticScholarAdapter(api_key=os.getenv("S2_API_KEY"))
     oa = OpenAlexAdapter(email=os.getenv("OPENALEX_EMAIL"))
@@ -254,6 +254,7 @@ async def search_academic_sources(
     executed: list[str] = []
     new_candidates: list[str] = []
     errors: list[str] = []
+    id_to_title: dict[str, str] = {}
     seen_titles: set[str] = set(existing_titles or set())
 
     try:
@@ -287,6 +288,7 @@ async def search_academic_sources(
                             pid = paper.get("paperId", "")
                             if pid:
                                 new_candidates.append(pid)
+                                id_to_title[pid] = title
 
                     logger.info(
                         "search_academic.s2_done",
@@ -319,6 +321,7 @@ async def search_academic_sources(
                             )
                             if oa_id:
                                 new_candidates.append(f"OA:{oa_id}")
+                                id_to_title[f"OA:{oa_id}"] = title
 
                     logger.info(
                         "search_academic.oa_done",
@@ -338,7 +341,7 @@ async def search_academic_sources(
         await s2.close()
         await oa.close()
 
-    return new_candidates, executed, errors
+    return new_candidates, executed, errors, id_to_title
 
 
 async def resolve_and_read_paper(
@@ -470,6 +473,23 @@ async def resolve_and_read_paper(
         for c in claims:
             c["source_paper_id"] = pid
         errors.extend(claim_errors)
+
+        # ── Paper Tagging (Level 1) ──
+        try:
+            from apps.worker.agents.paper_tag_agent import PaperTagAgent
+            tag_agent = PaperTagAgent(gateway=gateway)
+            tag_result = await tag_agent.run(
+                paper_text=full_paper_content,
+                metadata={
+                    "title": paper_title,
+                    "year": getattr(fused, "year", None),
+                    "venue": getattr(fused, "venue", None),
+                },
+            )
+            if summary and isinstance(summary, dict):
+                summary["paper_tags"] = tag_result.model_dump()
+        except Exception as exc:
+            logger.debug("paper_tag_skipped", pid=pid, error=str(exc))
 
         logger.info(
             "resolve_and_read.done", pid=pid, title=paper_title[:60]

@@ -276,7 +276,7 @@ async def retrieve_classics(state: ModeGraphState) -> dict[str, Any]:
 
         existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
 
-        new_candidates, executed, search_errors = await search_academic_sources(
+        new_candidates, executed, search_errors, _titles = await search_academic_sources(
             topic=state.topic,
             queries=queries_to_run,
             keywords=state.keywords,

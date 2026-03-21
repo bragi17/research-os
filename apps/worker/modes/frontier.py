@@ -26,6 +26,7 @@ from apps.worker.modes.base import (
     emit_progress,
     extract_claims,
     generate_llm_json,
+    rerank_search_results,
     resolve_and_read_paper,
     search_academic_sources,
 )
@@ -272,7 +273,7 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
         await emit_progress(state.run_id, "candidate_retrieval", "searching",
                             f"Querying: '{queries_to_run[0].get('query', '')[:60]}...'")
 
-    new_candidates, executed, search_errors = await search_academic_sources(
+    new_candidates, executed, search_errors, title_map = await search_academic_sources(
         topic=state.topic,
         queries=queries_to_run,
         keywords=state.keywords,
@@ -282,6 +283,22 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
 
     await emit_progress(state.run_id, "candidate_retrieval", "search_done",
                         f"Found {len(new_candidates)} papers from database search")
+
+    # Rerank search results using Tongyi gte-rerank-v2
+    if new_candidates and title_map:
+        await emit_progress(state.run_id, "candidate_retrieval", "reranking",
+                            f"Reranking {len(new_candidates)} papers with gte-rerank-v2")
+        titles_for_rerank = [title_map.get(pid, pid) for pid in new_candidates]
+        reranked = await rerank_search_results(
+            query=state.topic,
+            paper_titles=titles_for_rerank,
+            paper_ids=new_candidates,
+            top_n=min(len(new_candidates), 50),
+        )
+        if reranked:
+            new_candidates = reranked
+            await emit_progress(state.run_id, "candidate_retrieval", "reranked",
+                                f"Reranked top {len(reranked)} papers by relevance")
 
     # --- Citation chain expansion for seed papers ---
     # Only run on the first iteration to avoid repeated expansion
