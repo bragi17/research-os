@@ -19,6 +19,7 @@ from apps.worker.modes.base import (
     ModeGraphState,
     _normalize_title,
     check_should_continue,
+    emit_progress,
     generate_llm_json,
     search_academic_sources,
 )
@@ -147,6 +148,7 @@ _MAX_FAILED_ASSUMPTIONS = 3
 
 async def normalize_pain_package(state: ModeGraphState) -> dict[str, Any]:
     """Stage 1: Read pain-point package from context bundle, generate problem signatures."""
+    await emit_progress(state.run_id, "normalize_pain_package", "start", "Normalizing pain points into problem signatures")
     updates: dict[str, Any] = {"current_stage": "plan", "current_step": "normalize_pain_package"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -198,6 +200,7 @@ async def normalize_pain_package(state: ModeGraphState) -> dict[str, Any]:
     ]
 
     logger.info("normalize_pain_package.done", signatures=len(signatures))
+    await emit_progress(state.run_id, "normalize_pain_package", "done", f"Normalized {len(signatures)} problem signatures")
     return updates
 
 
@@ -207,6 +210,7 @@ async def analogical_retrieval(state: ModeGraphState) -> dict[str, Any]:
     Intentionally omits original sub-field keywords to enable cross-domain discovery.
     Focuses on similar data conditions, supervision settings, and evaluation targets.
     """
+    await emit_progress(state.run_id, "analogical_retrieval", "start", "Searching cross-domain analogies")
     updates: dict[str, Any] = {"current_stage": "search", "current_step": "analogical_retrieval"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -273,6 +277,7 @@ async def analogical_retrieval(state: ModeGraphState) -> dict[str, Any]:
     ]
 
     logger.info("analogical_retrieval.done", new=len(new_candidates))
+    await emit_progress(state.run_id, "analogical_retrieval", "done", f"Found {len(new_candidates)} cross-domain papers")
     return updates
 
 
@@ -283,6 +288,7 @@ async def method_transfer_screening(state: ModeGraphState) -> dict[str, Any]:
     and required modifications. Filters out methods with too many failed
     assumptions (> _MAX_FAILED_ASSUMPTIONS).
     """
+    await emit_progress(state.run_id, "method_transfer_screening", "start", "Evaluating transfer potential of methods")
     updates: dict[str, Any] = {"current_stage": "analyze", "current_step": "method_transfer_screening"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -355,6 +361,7 @@ async def method_transfer_screening(state: ModeGraphState) -> dict[str, Any]:
         kept=len(transfers),
         filtered=filtered_count,
     )
+    await emit_progress(state.run_id, "method_transfer_screening", "done", f"Kept {len(transfers)} viable transfer candidates (filtered {filtered_count})")
     return updates
 
 
@@ -365,6 +372,7 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
     Combines pain points with their signatures and transfer candidates
     into structured idea cards.
     """
+    await emit_progress(state.run_id, "idea_composition", "start", "Composing innovation idea cards")
     updates: dict[str, Any] = {"current_stage": "synthesize", "current_step": "idea_composition"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -438,6 +446,7 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
     ]
 
     logger.info("idea_composition.done", ideas=len(idea_cards))
+    await emit_progress(state.run_id, "idea_composition", "done", f"Composed {len(idea_cards)} idea cards")
     return updates
 
 
@@ -448,6 +457,7 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     combinations. Uses the VERIFIER prompt from templates.py to assess
     novelty. Flags high-risk ideas where prior art is found.
     """
+    await emit_progress(state.run_id, "prior_art_check", "start", "Checking prior art for idea cards")
     updates: dict[str, Any] = {"current_stage": "analyze", "current_step": "prior_art_check"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -538,6 +548,7 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     ]
 
     logger.info("prior_art_check.done", checked=len(checks))
+    await emit_progress(state.run_id, "prior_art_check", "done", f"Prior art checked for {len(checks)} ideas")
     return updates
 
 
@@ -547,6 +558,7 @@ async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
     Evaluates data availability, compute requirements, experiment design
     feasibility, and timeline estimate. Updates feasibility scores.
     """
+    await emit_progress(state.run_id, "feasibility_review", "start", "Reviewing feasibility of ideas")
     updates: dict[str, Any] = {"current_stage": "analyze", "current_step": "feasibility_review"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -615,6 +627,7 @@ async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
     ]
 
     logger.info("feasibility_review.done", assessed=len(assessments))
+    await emit_progress(state.run_id, "feasibility_review", "done", f"Feasibility reviewed for {len(assessments)} ideas")
     return updates
 
 
@@ -662,6 +675,7 @@ async def idea_portfolio(state: ModeGraphState) -> dict[str, Any]:
     Generates summary report_markdown. Builds context_bundle with final
     idea cards for Mode X or Mode B re-check. Sets should_stop = True.
     """
+    await emit_progress(state.run_id, "idea_portfolio", "start", "Ranking and finalizing idea portfolio")
     updates: dict[str, Any] = {
         "current_stage": "output",
         "current_step": "idea_portfolio",
@@ -766,6 +780,7 @@ async def idea_portfolio(state: ModeGraphState) -> dict[str, Any]:
         report_len=len(report),
         ideas=len(scored_cards),
     )
+    await emit_progress(state.run_id, "idea_portfolio", "done", f"Portfolio compiled with {len(scored_cards)} ranked ideas")
     return updates
 
 

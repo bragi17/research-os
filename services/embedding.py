@@ -17,9 +17,7 @@ from structlog import get_logger
 
 logger = get_logger(__name__)
 
-DASHSCOPE_API_KEY = os.getenv(
-    "DASHSCOPE_API_KEY", "DASHSCOPE_KEY_REDACTED"
-)
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 DASHSCOPE_EMBEDDING_URL = (
     "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
 )

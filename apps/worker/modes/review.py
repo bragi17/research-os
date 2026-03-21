@@ -19,6 +19,7 @@ from apps.worker.llm_gateway import ModelTier, get_gateway
 from apps.worker.modes.base import (
     ModeGraphState,
     check_should_continue,
+    emit_progress,
     generate_llm_json,
 )
 from libs.prompts.templates import PromptName, get_system_prompt
@@ -71,6 +72,7 @@ Output MUST be valid JSON with keys:
 
 async def load_context(state: ModeGraphState) -> dict[str, Any]:
     """Stage 1: Load context bundle from parent run."""
+    await emit_progress(state.run_id, "load_context", "start", "Loading context from parent run")
     updates: dict[str, Any] = {"current_stage": "plan", "current_step": "load_context"}
     errors: list[str] = list(state.errors)
 
@@ -104,11 +106,13 @@ async def load_context(state: ModeGraphState) -> dict[str, Any]:
     ]
 
     logger.info("load_context.done", source_mode=source_mode)
+    await emit_progress(state.run_id, "load_context", "done", f"Loaded context from {source_mode} mode")
     return updates
 
 
 async def refine_output(state: ModeGraphState) -> dict[str, Any]:
     """Stage 2: Apply user refinement instructions."""
+    await emit_progress(state.run_id, "refine_output", "start", "Applying refinement instructions")
     updates: dict[str, Any] = {"current_stage": "synthesize", "current_step": "refine_output"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -157,11 +161,13 @@ async def refine_output(state: ModeGraphState) -> dict[str, Any]:
     ]
 
     logger.info("refine_output.done", report_len=len(updates.get("report_markdown", "")))
+    await emit_progress(state.run_id, "refine_output", "done", f"Report refined ({len(updates.get('report_markdown', ''))} chars)")
     return updates
 
 
 async def export_results(state: ModeGraphState) -> dict[str, Any]:
     """Stage 3: Generate final exports (Markdown, JSON, BibTeX)."""
+    await emit_progress(state.run_id, "export_results", "start", "Generating final exports")
     updates: dict[str, Any] = {
         "current_stage": "output",
         "current_step": "export_results",
@@ -209,6 +215,7 @@ async def export_results(state: ModeGraphState) -> dict[str, Any]:
     ]
 
     logger.info("export_results.done", exports=len(export_urls))
+    await emit_progress(state.run_id, "export_results", "done", f"Exported {len(export_urls)} files")
     return updates
 
 

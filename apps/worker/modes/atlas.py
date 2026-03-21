@@ -20,6 +20,7 @@ from apps.worker.modes.base import (
     _estimate_cost,
     _normalize_title,
     check_should_continue,
+    emit_progress,
     extract_claims,
     generate_llm_json,
     resolve_and_read_paper,
@@ -137,6 +138,7 @@ async def plan_atlas(state: ModeGraphState) -> dict[str, Any]:
     sub-directions, aliases, and generates search queries for classical,
     recent, and pedagogical papers.
     """
+    await emit_progress(state.run_id, "plan_atlas", "start", "Planning field exploration")
     updates: dict[str, Any] = {"current_stage": "plan", "current_step": "plan_atlas"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -234,6 +236,7 @@ async def plan_atlas(state: ModeGraphState) -> dict[str, Any]:
             {"role": "assistant", "content": "Atlas plan created with fallback queries (LLM error)."}
         ]
 
+    await emit_progress(state.run_id, "plan_atlas", "done", f"Identified {len(updates.get('pending_queries', []))} search queries")
     return updates
 
 
@@ -243,6 +246,7 @@ async def retrieve_classics(state: ModeGraphState) -> dict[str, Any]:
     Searches for classical highly-cited papers and recent (3-5 year)
     representative papers. Deduplicates results by normalized title.
     """
+    await emit_progress(state.run_id, "retrieve_classics", "start", "Searching for foundational papers")
     updates: dict[str, Any] = {"current_stage": "search", "current_step": "retrieve_classics"}
     errors: list[str] = list(state.errors)
 
@@ -323,6 +327,7 @@ async def retrieve_classics(state: ModeGraphState) -> dict[str, Any]:
             {"role": "assistant", "content": f"Retrieval encountered an error: {exc}"}
         ]
 
+    await emit_progress(state.run_id, "retrieve_classics", "done", f"Found {updates.get('papers_discovered', state.papers_discovered)} papers total")
     return updates
 
 
@@ -332,6 +337,7 @@ async def build_timeline(state: ModeGraphState) -> dict[str, Any]:
     Calls LLM to generate a timeline with foundational, growth, and
     current_frontier phases based on discovered paper IDs.
     """
+    await emit_progress(state.run_id, "build_timeline", "start", "Constructing research timeline")
     updates: dict[str, Any] = {"current_stage": "analyze", "current_step": "build_timeline"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -407,6 +413,7 @@ async def build_timeline(state: ModeGraphState) -> dict[str, Any]:
             {"role": "assistant", "content": f"Timeline build failed: {exc}"}
         ]
 
+    await emit_progress(state.run_id, "build_timeline", "done", f"Built timeline with {len(updates.get('timeline_data', []))} entries")
     return updates
 
 
@@ -416,6 +423,7 @@ async def build_taxonomy(state: ModeGraphState) -> dict[str, Any]:
     Calls LLM to produce a multi-view taxonomy and a mindmap JSON for
     frontend rendering.
     """
+    await emit_progress(state.run_id, "build_taxonomy", "start", "Generating taxonomy classification views")
     updates: dict[str, Any] = {"current_stage": "analyze", "current_step": "build_taxonomy"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -504,6 +512,7 @@ async def build_taxonomy(state: ModeGraphState) -> dict[str, Any]:
             {"role": "assistant", "content": f"Taxonomy build failed: {exc}"}
         ]
 
+    await emit_progress(state.run_id, "build_taxonomy", "done", f"Taxonomy built: {updates.get('taxonomy_tree', {}).get('root_label', 'unknown')}")
     return updates
 
 
@@ -514,6 +523,7 @@ async def read_representatives(state: ModeGraphState) -> dict[str, Any]:
     Extracts: problem, method, innovation, datasets, limitations.
     Tracks cost throughout.
     """
+    await emit_progress(state.run_id, "read_representatives", "start", "Deep reading representative papers")
     updates: dict[str, Any] = {"current_stage": "read", "current_step": "read_representatives"}
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
@@ -622,6 +632,7 @@ async def read_representatives(state: ModeGraphState) -> dict[str, Any]:
             {"role": "assistant", "content": f"Reading representatives failed: {exc}"}
         ]
 
+    await emit_progress(state.run_id, "read_representatives", "done", f"Read {updates.get('papers_read', state.papers_read)} papers")
     return updates
 
 
@@ -648,6 +659,7 @@ async def extract_figures(state: ModeGraphState) -> dict[str, Any]:
     status and tracks which papers need figure extraction for future
     processing.
     """
+    await emit_progress(state.run_id, "extract_figures", "start", "Extracting figures from papers")
     updates: dict[str, Any] = {"current_stage": "analyze", "current_step": "extract_figures"}
     errors: list[str] = list(state.errors)
 
@@ -693,6 +705,7 @@ async def extract_figures(state: ModeGraphState) -> dict[str, Any]:
             {"role": "assistant", "content": f"Figure extraction tracking failed: {exc}"}
         ]
 
+    await emit_progress(state.run_id, "extract_figures", "done", f"Tracked {len(state.read_paper_ids)} papers for figure extraction")
     return updates
 
 
@@ -702,6 +715,7 @@ async def generate_reading_path(state: ModeGraphState) -> dict[str, Any]:
     Uses timeline, taxonomy, and representative paper summaries to generate
     an ordered reading path with prerequisites and learning goals per phase.
     """
+    await emit_progress(state.run_id, "generate_reading_path", "start", "Creating ordered reading path")
     updates: dict[str, Any] = {
         "current_stage": "synthesize",
         "current_step": "generate_reading_path",
@@ -797,6 +811,7 @@ async def generate_reading_path(state: ModeGraphState) -> dict[str, Any]:
             {"role": "assistant", "content": f"Reading path generation failed: {exc}"}
         ]
 
+    await emit_progress(state.run_id, "generate_reading_path", "done", f"Generated reading path with {len(updates.get('reading_path', []))} entries")
     return updates
 
 
@@ -810,6 +825,7 @@ async def synthesize_atlas(state: ModeGraphState) -> dict[str, Any]:
     - context_bundle: for potential Mode B continuation
     Sets should_stop = True.
     """
+    await emit_progress(state.run_id, "synthesize_atlas", "start", "Synthesizing final atlas report")
     updates: dict[str, Any] = {
         "current_stage": "output",
         "current_step": "synthesize_atlas",
@@ -936,6 +952,7 @@ async def synthesize_atlas(state: ModeGraphState) -> dict[str, Any]:
             {"role": "assistant", "content": f"Atlas synthesis failed: {exc}"}
         ]
 
+    await emit_progress(state.run_id, "synthesize_atlas", "done", f"Atlas report generated ({len(updates.get('report_markdown', ''))} chars)")
     return updates
 
 

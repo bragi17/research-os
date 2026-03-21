@@ -266,10 +266,17 @@ class LLMGateway:
 
             result = await structured_llm.ainvoke(lc_messages)
 
+            # Estimate tokens (LangChain doesn't expose usage from with_structured_output)
+            input_chars = sum(len(m.content) for m in lc_messages)
+            estimated_tokens = input_chars // 3 + 200  # rough: 3 chars/token + output
+            self._total_tokens += estimated_tokens
+
             logger.debug(
                 "structured_output_complete",
                 model=model_config.name,
                 schema=output_schema.__name__,
+                estimated_tokens=estimated_tokens,
+                total_tokens=self._total_tokens,
             )
 
             return result
