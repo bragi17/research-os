@@ -23,6 +23,7 @@ from apps.worker.modes.base import (
     _estimate_cost,
     _normalize_title,
     check_should_continue,
+    emit_progress,
     extract_claims,
     generate_llm_json,
     resolve_and_read_paper,
@@ -143,6 +144,18 @@ async def scope_definition(state: ModeGraphState) -> dict[str, Any]:
 
     gateway = get_gateway()
 
+    await emit_progress(state.run_id, "scope_definition", "start",
+                        f"Analyzing topic: {state.topic[:80]}")
+    if state.seed_paper_ids:
+        await emit_progress(state.run_id, "scope_definition", "seeds",
+                            f"Using {len(state.seed_paper_ids)} seed paper(s) as anchors")
+    if state.keywords:
+        await emit_progress(state.run_id, "scope_definition", "keywords",
+                            f"Keywords: {', '.join(state.keywords[:5])}")
+
+    await emit_progress(state.run_id, "scope_definition", "llm_call",
+                        "Asking LLM to define sub-field boundaries and search queries")
+
     # Build rich context from prior runs, seed papers, and constraints
     context_text = ""
     if state.context_bundle:
@@ -226,6 +239,12 @@ async def scope_definition(state: ModeGraphState) -> dict[str, Any]:
         )}
     ]
 
+    await emit_progress(state.run_id, "scope_definition", "done",
+                        f"Scope defined: {len(queries)} search queries, "
+                        f"{len(scope_info.get('venue_whitelist', []))} venues, "
+                        f"{len(scope_info.get('benchmark_list', []))} benchmarks",
+                        meta={"tokens": gateway.total_tokens})
+
     logger.info(
         "scope_definition.done",
         queries=len(queries),
@@ -242,10 +261,17 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
     queries_to_run = state.pending_queries[:5]
     remaining = state.pending_queries[5:]
 
+    await emit_progress(state.run_id, "candidate_retrieval", "start",
+                        f"Searching {len(queries_to_run)} queries across Semantic Scholar & OpenAlex")
+
     existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
     existing_ids = set(state.candidate_paper_ids)
 
     # --- Standard search via base.py ---
+    if queries_to_run:
+        await emit_progress(state.run_id, "candidate_retrieval", "searching",
+                            f"Querying: '{queries_to_run[0].get('query', '')[:60]}...'")
+
     new_candidates, executed, search_errors = await search_academic_sources(
         topic=state.topic,
         queries=queries_to_run,
@@ -254,16 +280,36 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
     )
     errors.extend(search_errors)
 
+    await emit_progress(state.run_id, "candidate_retrieval", "search_done",
+                        f"Found {len(new_candidates)} papers from database search")
+
     # --- Citation chain expansion for seed papers ---
     # Only run on the first iteration to avoid repeated expansion
     chain_candidates: list[str] = []
     if state.seed_paper_ids and state.iteration_count == 0:
+        await emit_progress(state.run_id, "candidate_retrieval", "citation_chain",
+                            f"Expanding citation chain for {len(state.seed_paper_ids)} seed papers")
         s2 = SemanticScholarAdapter(api_key=os.getenv("S2_API_KEY"))
         try:
-            for seed_id in state.seed_paper_ids[:5]:
-                # Skip OA/DOI identifiers for S2 citation lookup
-                if seed_id.startswith("OA:") or seed_id.startswith("10."):
+            for raw_seed_id in state.seed_paper_ids[:5]:
+                # Skip OA identifiers for S2 citation lookup
+                if raw_seed_id.startswith("OA:"):
                     continue
+
+                # Normalize ID for S2 API:
+                # - arXiv IDs (e.g. "2505.24431") need "ARXIV:" prefix
+                # - DOIs (e.g. "10.xxxx") need "DOI:" prefix
+                # - S2 paper IDs (40-char hex) work as-is
+                seed_id = raw_seed_id
+                if raw_seed_id.startswith("10."):
+                    seed_id = f"DOI:{raw_seed_id}"
+                elif not raw_seed_id.startswith("ARXIV:") and "." in raw_seed_id and len(raw_seed_id) < 20:
+                    # Looks like an arXiv ID (e.g. "2505.24431")
+                    seed_id = f"ARXIV:{raw_seed_id}"
+
+                await emit_progress(state.run_id, "candidate_retrieval", "citation_lookup",
+                                    f"Looking up citations for {seed_id}")
+
                 try:
                     # Fetch papers that cite this seed
                     cit_result = await s2.get_citations(
@@ -343,6 +389,10 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
         )}
     ]
 
+    await emit_progress(state.run_id, "candidate_retrieval", "done",
+                        f"Total: {len(state.candidate_paper_ids) + len(all_new)} candidates "
+                        f"({len(new_candidates)} search + {len(chain_candidates)} citations)")
+
     logger.info(
         "candidate_retrieval.done",
         search=len(new_candidates),
@@ -360,6 +410,9 @@ async def scope_pruning(state: ModeGraphState) -> dict[str, Any]:
     cost = state.current_cost_usd
 
     gateway = get_gateway()
+
+    await emit_progress(state.run_id, "scope_pruning", "start",
+                        f"Filtering {len(state.candidate_paper_ids)} candidates for relevance")
 
     all_candidates = list(state.candidate_paper_ids)
 
@@ -470,7 +523,7 @@ async def scope_pruning(state: ModeGraphState) -> dict[str, Any]:
     already_read = set(state.read_paper_ids)
     budget = max(0, state.max_fulltext_reads - state.papers_read)
     to_read = [pid for pid in diverse_pruned if pid not in already_read][
-        : min(budget, 10)
+        :budget
     ]
 
     updates["candidate_paper_ids"] = diverse_pruned
@@ -506,6 +559,8 @@ async def deep_reading(state: ModeGraphState) -> dict[str, Any]:
     papers_to_read = [
         pid for pid in state.selected_paper_ids if pid not in state.read_paper_ids
     ]
+    await emit_progress(state.run_id, "deep_reading", "start",
+                        f"Deep-reading {len(papers_to_read)} papers (of {len(state.selected_paper_ids)} selected)")
     if not papers_to_read:
         updates["messages"] = [
             {"role": "assistant", "content": "No papers selected for deep reading."}
@@ -516,19 +571,36 @@ async def deep_reading(state: ModeGraphState) -> dict[str, Any]:
     summaries: list[dict[str, Any]] = []
     all_claims: list[dict[str, Any]] = []
 
-    for pid in papers_to_read:
-        summary, claims, delta, read_errors = await resolve_and_read_paper(
-            pid, gateway
-        )
-        cost += delta
-        errors.extend(read_errors)
+    # Parallel reading in batches of CONCURRENCY
+    import asyncio
+    CONCURRENCY = 5
 
-        if summary:
-            newly_read.append(pid)
-            summaries.append(summary)
+    async def _read_one(pid: str, idx: int):
+        await emit_progress(state.run_id, "deep_reading", "reading",
+                            f"[{idx+1}/{len(papers_to_read)}] Reading {pid[:40]}...")
+        return pid, await resolve_and_read_paper(pid, gateway)
 
-        if claims:
-            all_claims.extend(claims)
+    for batch_start in range(0, len(papers_to_read), CONCURRENCY):
+        batch = papers_to_read[batch_start:batch_start + CONCURRENCY]
+        await emit_progress(state.run_id, "deep_reading", "batch",
+                            f"Reading batch {batch_start//CONCURRENCY + 1}: "
+                            f"{len(batch)} papers in parallel")
+
+        tasks = [_read_one(pid, batch_start + i) for i, pid in enumerate(batch)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            if isinstance(result, Exception):
+                errors.append(f"Read failed: {result}")
+                continue
+            pid, (summary, claims, delta, read_errors) = result
+            cost += delta
+            errors.extend(read_errors)
+            if summary:
+                newly_read.append(pid)
+                summaries.append(summary)
+            if claims:
+                all_claims.extend(claims)
 
     # Store summaries in context_bundle for comparison_build and pain_mining
     context_bundle = dict(state.context_bundle) if state.context_bundle else {}
@@ -569,6 +641,9 @@ async def comparison_build(state: ModeGraphState) -> dict[str, Any]:
     cost = state.current_cost_usd
 
     gateway = get_gateway()
+
+    await emit_progress(state.run_id, "comparison_build", "start",
+                        "Building method comparison matrix from paper summaries")
 
     # Gather paper summaries from context_bundle
     summaries = (
@@ -640,6 +715,9 @@ async def pain_mining(state: ModeGraphState) -> dict[str, Any]:
     cost = state.current_cost_usd
 
     gateway = get_gateway()
+
+    await emit_progress(state.run_id, "pain_mining", "start",
+                        "Analyzing limitations and future work from all read papers")
 
     # --- Gap analysis (reusing v1 prompt) ---
     gap_system = get_system_prompt(PromptName.GAP_ANALYSIS)
@@ -780,6 +858,9 @@ async def frontier_summary(state: ModeGraphState) -> dict[str, Any]:
     cost = state.current_cost_usd
 
     gateway = get_gateway()
+
+    await emit_progress(state.run_id, "frontier_summary", "start",
+                        "Generating frontier overview and research entry points")
 
     # Gather all context for the summary
     summaries = (
@@ -950,13 +1031,16 @@ def create_frontier_graph() -> StateGraph:
 
     workflow.add_edge("comparison_build", "pain_mining")
 
-    # Check after pain mining -- can loop back for more reading
+    # Check after pain mining -- can loop back for more reading,
+    # but ONLY if there are pending queries AND we haven't saturated
     workflow.add_conditional_edges(
         "pain_mining",
         lambda s: (
             "continue"
             if check_should_continue(s) == "continue"
             and s.iteration_count < s.max_iterations
+            and len(s.pending_queries) > 0  # no queries = nothing new to search
+            and s.saturation_score < 0.8    # not yet saturated
             else "stop"
         ),
         {

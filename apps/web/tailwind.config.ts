@@ -6,12 +6,7 @@ const config: Config = {
     "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
-    extend: {
-      fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
-        mono: ["JetBrains Mono", "Fira Code", "SF Mono", "Menlo", "monospace"],
-      },
-    },
+    extend: {},
   },
   plugins: [],
 };

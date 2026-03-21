@@ -108,5 +108,6 @@ class SpawnRunRequest(BaseModel):
     """Request to spawn a new run in a target mode."""
 
     target_mode: ResearchMode
-    context_bundle_id: UUID
+    context_bundle_id: UUID | None = None
+    selection: dict[str, Any] = Field(default_factory=dict)
     priority: int = Field(default=1, ge=1, le=10)

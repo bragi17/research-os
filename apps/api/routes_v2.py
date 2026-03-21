@@ -56,6 +56,7 @@ class CreateRunV2Request(BaseModel):
     mode: ResearchMode = Field(default=ResearchMode.INTAKE)
     keywords: list[str] = Field(default_factory=list)
     seed_papers: list[str] = Field(default_factory=list)
+    budget: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
     parent_run_id: UUID | None = None
     context_bundle_id: UUID | None = None
@@ -138,8 +139,12 @@ async def create_run_v2(
         "status": "queued",
         "goal_type": "survey_plus_innovations",
         "autonomy_mode": "default_autonomous",
-        "budget_json": {},
-        "policy_json": {"keywords": request.keywords, "seed_papers": request.seed_papers},
+        "budget_json": request.budget or {},
+        "policy_json": {
+            "keywords": request.keywords,
+            "seed_papers": request.seed_papers,
+            "constraints": request.constraints,
+        },
         "progress_pct": 0,
         "current_step": None,
         "started_at": None,
@@ -415,7 +420,7 @@ async def get_run_comparison(run_id: UUID) -> dict[str, Any]:
     if bundle is not None:
         benchmark = bundle.get("benchmark_data")
         if isinstance(benchmark, dict):
-            comparison_data = benchmark.get("comparison", {})
+            comparison_data = benchmark  # return full benchmark_data
     return {"run_id": str(run_id), "comparison": comparison_data}
 
 

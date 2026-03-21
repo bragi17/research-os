@@ -336,6 +336,10 @@ class RunResponse(BaseModel):
     updated_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # v2 multi-mode fields
+    mode: str | None = None
+    parent_run_id: UUID | None = None
+    current_stage: str | None = None
 
     class Config:
         from_attributes = True

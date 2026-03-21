@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
@@ -21,8 +21,12 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
 export const createRun = (data: Record<string, unknown>) =>
   apiFetch("/api/v1/runs", { method: "POST", body: JSON.stringify(data) });
 
-export const listRuns = (params?: string) =>
-  apiFetch<{ items: Run[]; total: number }>(`/api/v1/runs${params ? "?" + params : ""}`);
+export const listRuns = async (params?: string): Promise<{ items: Run[]; total: number }> => {
+  const sep = params ? "&" : "";
+  const raw = await apiFetch<Run[] | { items: Run[]; total: number }>(`/api/v1/runs?limit=100${sep}${params || ""}`);
+  if (Array.isArray(raw)) return { items: raw, total: raw.length };
+  return raw;
+};
 
 export const getRun = (id: string) => apiFetch<Run>(`/api/v1/runs/${id}`);
 
@@ -176,37 +180,37 @@ export interface TaxonomyNode {
 
 // V2 API functions
 export const createRunV2 = (data: Record<string, unknown>) =>
-  apiFetch("/api/v2/runs", { method: "POST", body: JSON.stringify(data) });
+  apiFetch("/api/v1/runs/multimode", { method: "POST", body: JSON.stringify(data) });
 
 export const spawnRun = (runId: string, data: Record<string, unknown>) =>
-  apiFetch(`/api/v2/runs/${runId}/spawn`, { method: "POST", body: JSON.stringify(data) });
+  apiFetch(`/api/v1/runs/${runId}/spawn`, { method: "POST", body: JSON.stringify(data) });
 
 export const getPainPoints = (runId: string) =>
-  apiFetch<{ items: PainPoint[]; total: number }>(`/api/v2/runs/${runId}/pain-points`);
+  apiFetch<{ items: PainPoint[]; total: number }>(`/api/v1/runs/${runId}/pain-points`);
 
 export const getIdeaCards = (runId: string) =>
-  apiFetch<{ items: IdeaCard[]; total: number }>(`/api/v2/runs/${runId}/idea-cards`);
+  apiFetch<{ items: IdeaCard[]; total: number }>(`/api/v1/runs/${runId}/idea-cards`);
 
 export const getTimeline = (runId: string) =>
-  apiFetch<{ timeline: TimelineEntry[] }>(`/api/v2/runs/${runId}/timeline`);
+  apiFetch<{ timeline: TimelineEntry[] }>(`/api/v1/runs/${runId}/timeline`);
 
 export const getTaxonomy = (runId: string) =>
-  apiFetch<{ taxonomy: TaxonomyNode }>(`/api/v2/runs/${runId}/taxonomy`);
+  apiFetch<{ taxonomy: TaxonomyNode }>(`/api/v1/runs/${runId}/taxonomy`);
 
 export const getMindmap = (runId: string) =>
-  apiFetch<{ mindmap: Record<string, unknown> }>(`/api/v2/runs/${runId}/mindmap`);
+  apiFetch<{ mindmap: Record<string, unknown> }>(`/api/v1/runs/${runId}/mindmap`);
 
 export const getComparison = (runId: string) =>
-  apiFetch<{ comparison: Record<string, unknown> }>(`/api/v2/runs/${runId}/comparison`);
+  apiFetch<{ comparison: Record<string, unknown> }>(`/api/v1/runs/${runId}/comparison`);
 
 export const getReadingPath = (runId: string) =>
-  apiFetch<Record<string, unknown>>(`/api/v2/runs/${runId}/reading-path`);
+  apiFetch<Record<string, unknown>>(`/api/v1/runs/${runId}/reading-path`);
 
 export const getFigures = (runId: string) =>
-  apiFetch<{ items: Record<string, unknown>[]; total: number }>(`/api/v2/runs/${runId}/figures`);
+  apiFetch<{ items: Record<string, unknown>[]; total: number }>(`/api/v1/runs/${runId}/figures`);
 
 export const runAction = (runId: string, action: string, payload: Record<string, unknown>) =>
-  apiFetch(`/api/v2/runs/${runId}/actions/${action}`, {
+  apiFetch(`/api/v1/runs/${runId}/actions/${action}`, {
     method: "POST",
     body: JSON.stringify({ payload }),
   });

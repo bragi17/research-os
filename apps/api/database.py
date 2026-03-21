@@ -113,12 +113,14 @@ async def create_run(run_data: dict[str, Any]) -> dict[str, Any]:
             id, workspace_id, created_by, title, topic, status,
             goal_type, autonomy_mode, budget_json, policy_json,
             current_step, progress_pct, started_at, completed_at,
-            created_at, updated_at
+            created_at, updated_at,
+            mode, parent_run_id, context_bundle_id, current_stage
         ) VALUES (
             $1, $2, $3, $4, $5, $6,
             $7, $8, $9, $10,
             $11, $12, $13, $14,
-            $15, $16
+            $15, $16,
+            $17, $18, $19, $20
         )
         RETURNING *
         """,
@@ -138,6 +140,10 @@ async def create_run(run_data: dict[str, Any]) -> dict[str, Any]:
         run_data.get("completed_at"),
         run_data["created_at"],
         run_data["updated_at"],
+        run_data.get("mode", "atlas"),
+        run_data.get("parent_run_id"),
+        run_data.get("context_bundle_id"),
+        run_data.get("current_stage"),
     )
     return _record_to_dict(row)
 
@@ -187,7 +193,7 @@ async def list_runs(
 
 
 _RUN_UPDATABLE_COLUMNS = frozenset({
-    "status", "current_step", "progress_pct", "started_at", "completed_at",
+    "title", "status", "current_step", "progress_pct", "started_at", "completed_at",
     "updated_at", "pause_reason", "mode", "current_stage", "budget_json",
     "policy_json", "context_bundle_id", "output_bundle_id",
 })

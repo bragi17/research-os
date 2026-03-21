@@ -94,7 +94,18 @@ export default function DivergentPage() {
   }
 
   return (
-    <div className="max-w-[1100px] mx-auto px-6 py-6 space-y-6">
+    <div className="max-w-[800px] mx-auto px-8 py-8 space-y-6">
+      {/* Back button */}
+      <Link
+        href={`/runs/${runId}`}
+        className="inline-flex items-center gap-1.5 text-[13px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path d="M9 11L5 7L9 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        Back to run
+      </Link>
+
       {/* Header */}
       <div className="glass-card-static p-6 animate-fade-up">
         <div className="flex items-center gap-2 mb-3">

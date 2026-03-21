@@ -33,3 +33,4 @@ htmlcov/
 # Storage
 /tmp/
 research_os_docs/
+.venv/

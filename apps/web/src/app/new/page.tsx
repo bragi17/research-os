@@ -1,526 +1,308 @@
 "use client";
 
-import { Suspense, useState, useCallback, useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import { useState, useCallback, useRef, useEffect } from "react";
+import Link from "next/link";
 import { createRunV2, startRun, type RunMode } from "@/lib/api";
-import ModeSelector from "@/components/ModeSelector";
+
+const MODES: { value: RunMode; label: string; desc: string; icon: string }[] = [
+  { value: "atlas", label: "Atlas", desc: "Explore & map a research field", icon: "🗺" },
+  { value: "frontier", label: "Frontier", desc: "Analyze a sub-field in depth", icon: "🔬" },
+  { value: "divergent", label: "Divergent", desc: "Find cross-domain innovations", icon: "💡" },
+];
+
+const PLACEHOLDERS: Record<RunMode, string> = {
+  atlas: "e.g. Multi-agent reinforcement learning and cooperative AI systems",
+  frontier: "e.g. 3D anomaly detection for industrial point cloud inspection",
+  divergent: "e.g. Finding novel approaches to zero-shot 3D anomaly detection",
+  review: "Describe your research topic...",
+};
 
 export default function NewResearchPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="flex items-center justify-center min-h-[60vh]">
-          <div className="flex flex-col items-center gap-4 animate-fade-in">
-            <div className="w-8 h-8 rounded-full border-2 border-[var(--accent-cyan)] border-t-transparent animate-spin" />
-            <p className="text-sm text-[var(--text-muted)]">Loading...</p>
-          </div>
-        </div>
-      }
-    >
-      <NewResearch />
+    <Suspense fallback={<div className="flex h-screen items-center justify-center bg-[var(--bg-primary)]"><div className="h-5 w-5 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" /></div>}>
+      <NewResearchContent />
     </Suspense>
   );
 }
 
-function NewResearch() {
-  const router = useRouter();
+function timeAgo(dateStr: string): string {
+  try {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h`;
+    return `${Math.floor(hrs / 24)}d`;
+  } catch { return ""; }
+}
+
+function NewResearchContent() {
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const modeParam = searchParams.get("mode");
+  const initialMode: RunMode = modeParam && ["atlas", "frontier", "divergent"].includes(modeParam) ? (modeParam as RunMode) : "frontier";
+
+  const [mode, setMode] = useState<RunMode>(initialMode);
+  const [topic, setTopic] = useState("");
   const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState<"mode" | "details">("mode");
-  const [form, setForm] = useState({
-    mode: null as RunMode | null,
-    title: "",
-    topic: "",
-    keywords: [] as string[],
-    keywordInput: "",
-    seed_papers: "",
-    pain_point_input: "",
-    parent_run_id: "",
-    venue_filter: "",
-    benchmark: "",
-    max_papers: 150,
-    max_reads: 40,
-    max_cost: 30,
-  });
+
+  // Research parameters - always visible
+  const [seedPapers, setSeedPapers] = useState("");
+  const [keywordInput, setKeywordInput] = useState("");
+  const [keywords, setKeywords] = useState<string[]>([]);
+
+  // Budget - collapsed
+  const [budgetOpen, setBudgetOpen] = useState(false);
+  const [maxPapers, setMaxPapers] = useState(150);
+  const [maxReads, setMaxReads] = useState(40);
+  const [maxCost, setMaxCost] = useState(30);
+
+  // Mode-specific
+  const [venueFilter, setVenueFilter] = useState("");
+  const [benchmark, setBenchmark] = useState("");
+  const [painPointInput, setPainPointInput] = useState("");
 
   useEffect(() => {
-    const modeParam = searchParams.get("mode");
-    if (modeParam && ["atlas", "frontier", "divergent", "review"].includes(modeParam)) {
-      setForm((prev) => ({ ...prev, mode: modeParam as RunMode }));
-      setStep("details");
-    }
-  }, [searchParams]);
-
-  const updateForm = useCallback(
-    (updates: Partial<typeof form>) => setForm((prev) => ({ ...prev, ...updates })),
-    [],
-  );
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.max(72, Math.min(160, el.scrollHeight))}px`;
+  }, [topic]);
 
   const addKeyword = useCallback(() => {
-    const trimmed = form.keywordInput.trim();
-    if (trimmed && !form.keywords.includes(trimmed)) {
-      updateForm({
-        keywords: [...form.keywords, trimmed],
-        keywordInput: "",
-      });
+    const trimmed = keywordInput.trim();
+    if (trimmed && !keywords.includes(trimmed)) {
+      setKeywords((prev) => [...prev, trimmed]);
+      setKeywordInput("");
     }
-  }, [form.keywordInput, form.keywords, updateForm]);
-
-  const removeKeyword = useCallback(
-    (keyword: string) => {
-      updateForm({
-        keywords: form.keywords.filter((k) => k !== keyword),
-      });
-    },
-    [form.keywords, updateForm],
-  );
-
-  const handleKeywordKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === ",") {
-        e.preventDefault();
-        addKeyword();
-      }
-    },
-    [addKeyword],
-  );
-
-  const handleModeSelect = (mode: RunMode) => {
-    updateForm({ mode });
-    setStep("details");
-  };
+  }, [keywordInput, keywords]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.mode) return;
+    if (!topic.trim() || topic.trim().length < 10) return;
     setLoading(true);
     try {
-      const keywords =
-        form.keywords.length > 0
-          ? form.keywords
-          : form.keywordInput
-              .split(",")
-              .map((k) => k.trim())
-              .filter(Boolean);
-
-      const seed_papers = form.seed_papers
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((value) => ({ type: "id", value }));
-
+      const seeds = seedPapers.split("\n").map((s) => s.trim()).filter(Boolean);
+      const kws = keywords.length > 0 ? keywords : keywordInput.split(",").map((k) => k.trim()).filter(Boolean);
       const payload: Record<string, unknown> = {
-        title: form.title,
-        topic: form.topic,
-        mode: form.mode,
-        keywords,
-        seed_papers,
-        budget: {
-          max_new_papers: form.max_papers,
-          max_fulltext_reads: form.max_reads,
-          max_estimated_cost_usd: form.max_cost,
-        },
+        title: topic.trim().slice(0, 60),
+        topic: topic.trim(),
+        mode,
+        keywords: kws,
+        seed_papers: seeds,
+        budget: { max_new_papers: maxPapers, max_fulltext_reads: maxReads },
       };
-
-      // Mode-specific fields
-      if (form.mode === "divergent") {
-        if (form.pain_point_input.trim()) {
-          payload.pain_point_input = form.pain_point_input.trim();
-        }
-        if (form.parent_run_id.trim()) {
-          payload.parent_run_id = form.parent_run_id.trim();
-        }
+      if (mode === "frontier") {
+        if (venueFilter.trim()) payload.venue_filter = venueFilter.split(",").map((v) => v.trim()).filter(Boolean);
+        if (benchmark.trim()) payload.benchmark = benchmark.trim();
       }
-      if (form.mode === "frontier") {
-        if (form.venue_filter.trim()) {
-          payload.venue_filter = form.venue_filter.split(",").map((v) => v.trim()).filter(Boolean);
-        }
-        if (form.benchmark.trim()) {
-          payload.benchmark = form.benchmark.trim();
-        }
+      if (mode === "divergent" && painPointInput.trim()) {
+        payload.pain_point_input = painPointInput.trim();
       }
-
       const run = (await createRunV2(payload)) as { id: string };
       await startRun(run.id);
       router.push(`/runs/${run.id}`);
     } catch (err) {
-      alert("Failed to create research run. Check console for details.");
       console.error(err);
-    } finally {
-      setLoading(false);
-    }
+      alert("Failed to create research. Check console.");
+    } finally { setLoading(false); }
   };
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
-      <div className="animate-fade-up">
-        <h1 className="text-3xl font-extrabold tracking-tight mb-1">
-          <span className="gradient-text">New Research</span>
-        </h1>
-        <p className="text-[var(--text-secondary)] text-sm mb-8">
-          {step === "mode"
-            ? "Choose a research mode to get started."
-            : "Configure your research task."}
-        </p>
-      </div>
-
-      {/* Step 1: Mode Selection */}
-      {step === "mode" && (
-        <div className="animate-fade-up delay-100">
-          <SectionHeader number={1} title="Choose Research Mode" />
-          <div className="mt-5">
-            <ModeSelector selected={form.mode} onSelect={handleModeSelect} />
-          </div>
-        </div>
-      )}
-
-      {/* Step 2: Details form */}
-      {step === "details" && form.mode && (
-        <form onSubmit={handleSubmit} className="space-y-8">
-          {/* Mode indicator + back button */}
-          <div className="flex items-center gap-3 animate-fade-up">
-            <button
-              type="button"
-              onClick={() => setStep("mode")}
-              className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors flex items-center gap-1"
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M8 2L4 6L8 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              Change mode
-            </button>
-            <ModeBadgeInline mode={form.mode} />
+        <div className="max-w-[640px] mx-auto px-8 py-10">
+          {/* Header */}
+          <div className="mb-8 animate-fade-up">
+            <h1 className="text-2xl font-medium text-[var(--text-primary)] mb-1" style={{ fontFamily: "var(--font-display)" }}>
+              New Research
+            </h1>
+            <p className="text-sm text-[var(--text-muted)]">
+              Configure your research and start an autonomous analysis session.
+            </p>
           </div>
 
-          {/* Research Identity */}
-          <section className="glass-card-static p-6 animate-fade-up delay-100">
-            <SectionHeader number={1} title="Research Identity" />
-            <div className="space-y-5 mt-5">
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-2">
-                  Title
-                </label>
-                <input
-                  type="text"
-                  required
-                  minLength={3}
-                  className="input-dark"
-                  placeholder={
-                    form.mode === "atlas"
-                      ? "e.g., Graph Neural Networks Overview"
-                      : form.mode === "frontier"
-                        ? "e.g., Efficient Attention Mechanisms"
-                        : form.mode === "divergent"
-                          ? "e.g., Cross-domain Solutions for GNN Scalability"
-                          : "e.g., Literature Review: Transformers"
-                  }
-                  value={form.title}
-                  onChange={(e) => updateForm({ title: e.target.value })}
-                />
+          <form onSubmit={handleSubmit} className="space-y-5 animate-fade-up delay-100">
+            {/* Mode selector */}
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-2">
+                Research Mode
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {MODES.map((m) => (
+                  <button
+                    key={m.value}
+                    type="button"
+                    onClick={() => setMode(m.value)}
+                    className={`p-3 rounded-xl text-left transition-all border ${
+                      mode === m.value
+                        ? "bg-white border-[var(--accent)] shadow-sm"
+                        : "bg-transparent border-[var(--border-subtle)] hover:border-[var(--accent)] hover:bg-white/50"
+                    }`}
+                  >
+                    <div className="text-base mb-1">{m.icon}</div>
+                    <div className={`text-[13px] font-semibold ${mode === m.value ? "text-[var(--accent)]" : "text-[var(--text-primary)]"}`}>
+                      {m.label}
+                    </div>
+                    <div className="text-[11px] text-[var(--text-muted)] mt-0.5 leading-snug">{m.desc}</div>
+                  </button>
+                ))}
               </div>
+            </div>
 
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-2">
-                  {form.mode === "atlas" ? "Research Field" : "Research Topic"}
-                </label>
-                <textarea
-                  required
-                  minLength={10}
-                  rows={3}
-                  className="input-dark resize-none"
-                  placeholder={
-                    form.mode === "atlas"
-                      ? "Describe the broad research field you want to explore..."
-                      : form.mode === "frontier"
-                        ? "Describe the specific sub-field to analyze in depth..."
-                        : form.mode === "divergent"
-                          ? "Describe the problem area where you want novel innovations..."
-                          : "Describe your research topic..."
-                  }
-                  value={form.topic}
-                  onChange={(e) => updateForm({ topic: e.target.value })}
-                />
-              </div>
+            {/* Topic */}
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-2">
+                Research Topic
+              </label>
+              <textarea
+                ref={textareaRef}
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                placeholder={PLACEHOLDERS[mode]}
+                required
+                minLength={10}
+                rows={3}
+                className="input-field resize-none text-[15px] leading-relaxed"
+              />
+            </div>
 
-              {/* Keywords */}
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-2">
-                  Keywords
-                </label>
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {form.keywords.map((kw) => (
-                    <span
-                      key={kw}
-                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium"
-                      style={{
-                        background: "rgba(6, 182, 212, 0.1)",
-                        color: "var(--accent-cyan)",
-                        border: "1px solid rgba(6, 182, 212, 0.2)",
-                      }}
-                    >
+            {/* Seed Papers - always visible */}
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-1">
+                Seed Papers
+              </label>
+              <p className="text-[11px] text-[var(--text-muted)] mb-2">
+                Paste arXiv IDs or DOIs to anchor the search (one per line, optional)
+              </p>
+              <textarea
+                rows={2}
+                className="input-field resize-none text-[13px]"
+                style={{ fontFamily: "var(--font-mono)" }}
+                placeholder={"2505.24431\n2301.07041"}
+                value={seedPapers}
+                onChange={(e) => setSeedPapers(e.target.value)}
+              />
+            </div>
+
+            {/* Keywords - always visible */}
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-1">
+                Keywords
+              </label>
+              <p className="text-[11px] text-[var(--text-muted)] mb-2">
+                Help narrow the search scope (optional, press Enter to add)
+              </p>
+              {keywords.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {keywords.map((kw) => (
+                    <span key={kw} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]/20">
                       {kw}
-                      <button
-                        type="button"
-                        onClick={() => removeKeyword(kw)}
-                        className="hover:text-white transition-colors ml-0.5"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                          <path d="M3 3L7 7M7 3L3 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                        </svg>
-                      </button>
+                      <button type="button" onClick={() => setKeywords((p) => p.filter((k) => k !== kw))} className="hover:opacity-70 text-xs ml-0.5">&times;</button>
                     </span>
                   ))}
                 </div>
-                <input
-                  type="text"
-                  className="input-dark"
-                  placeholder="Type a keyword and press Enter..."
-                  value={form.keywordInput}
-                  onChange={(e) => updateForm({ keywordInput: e.target.value })}
-                  onKeyDown={handleKeywordKeyDown}
-                  onBlur={addKeyword}
+              )}
+              <input
+                type="text"
+                className="input-field text-[13px]"
+                placeholder="e.g. point cloud, anomaly detection, zero-shot..."
+                value={keywordInput}
+                onChange={(e) => setKeywordInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addKeyword(); } }}
+                onBlur={addKeyword}
+              />
+            </div>
+
+            {/* Mode-specific fields */}
+            {mode === "frontier" && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-1">
+                    Venue Filter
+                  </label>
+                  <input type="text" className="input-field text-[13px]" placeholder="CVPR, ICCV, NeurIPS..." value={venueFilter} onChange={(e) => setVenueFilter(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-1">
+                    Benchmark
+                  </label>
+                  <input type="text" className="input-field text-[13px]" placeholder="MVTec 3D-AD..." value={benchmark} onChange={(e) => setBenchmark(e.target.value)} />
+                </div>
+              </div>
+            )}
+
+            {mode === "divergent" && (
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-1">
+                  Pain Point Description
+                </label>
+                <textarea
+                  rows={2}
+                  className="input-field resize-none text-[13px]"
+                  placeholder="Describe the pain point you want to solve with cross-domain ideas..."
+                  value={painPointInput}
+                  onChange={(e) => setPainPointInput(e.target.value)}
                 />
               </div>
+            )}
+
+            {/* Budget - collapsible */}
+            <div className="border-t border-[var(--border-subtle)] pt-4">
+              <button
+                type="button"
+                onClick={() => setBudgetOpen((p) => !p)}
+                className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"
+                  className="transition-transform duration-200"
+                  style={{ transform: budgetOpen ? "rotate(90deg)" : "rotate(0deg)" }}>
+                  <path d="M3 1.5L7 5L3 8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Budget &amp; limits
+              </button>
+
+              {budgetOpen && (
+                <div className="mt-3 grid grid-cols-2 gap-4 animate-fade-up">
+                  <SliderField label="Max Papers" value={maxPapers} min={10} max={1000} step={10} onChange={setMaxPapers} />
+                  <SliderField label="Deep Reads" value={maxReads} min={5} max={200} step={5} onChange={setMaxReads} />
+                </div>
+              )}
             </div>
-          </section>
 
-          {/* Seed Papers */}
-          <section className="glass-card-static p-6 animate-fade-up delay-200">
-            <SectionHeader number={2} title="Seed Papers" />
-            <div className="mt-5">
-              <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-2">
-                DOIs or arXiv IDs (one per line)
-              </label>
-              <textarea
-                rows={4}
-                className="input-dark resize-none"
-                style={{ fontFamily: "var(--font-mono)", fontSize: "13px" }}
-                placeholder={"2301.07041\n10.1234/example.2024\nS2:abc123def"}
-                value={form.seed_papers}
-                onChange={(e) => updateForm({ seed_papers: e.target.value })}
-              />
-            </div>
-          </section>
-
-          {/* Mode-specific fields */}
-          {form.mode === "frontier" && (
-            <section className="glass-card-static p-6 animate-fade-up delay-300">
-              <SectionHeader number={3} title="Frontier Settings" />
-              <div className="space-y-5 mt-5">
-                <div>
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-2">
-                    Venue Filter (comma-separated)
-                  </label>
-                  <input
-                    type="text"
-                    className="input-dark"
-                    placeholder="NeurIPS, ICML, ICLR, ACL..."
-                    value={form.venue_filter}
-                    onChange={(e) => updateForm({ venue_filter: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-2">
-                    Benchmark Focus
-                  </label>
-                  <input
-                    type="text"
-                    className="input-dark"
-                    placeholder="e.g., ImageNet, GLUE, MMLU..."
-                    value={form.benchmark}
-                    onChange={(e) => updateForm({ benchmark: e.target.value })}
-                  />
-                </div>
-              </div>
-            </section>
-          )}
-
-          {form.mode === "divergent" && (
-            <section className="glass-card-static p-6 animate-fade-up delay-300">
-              <SectionHeader number={3} title="Divergent Settings" />
-              <div className="space-y-5 mt-5">
-                <div>
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-2">
-                    Pain Point Description
-                  </label>
-                  <textarea
-                    rows={3}
-                    className="input-dark resize-none"
-                    placeholder="Describe the pain point or problem you want to solve with cross-domain ideas..."
-                    value={form.pain_point_input}
-                    onChange={(e) => updateForm({ pain_point_input: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-2">
-                    Parent Run ID (optional)
-                  </label>
-                  <input
-                    type="text"
-                    className="input-dark"
-                    placeholder="Reference a Mode B run to pull pain points from..."
-                    style={{ fontFamily: "var(--font-mono)", fontSize: "13px" }}
-                    value={form.parent_run_id}
-                    onChange={(e) => updateForm({ parent_run_id: e.target.value })}
-                  />
-                </div>
-              </div>
-            </section>
-          )}
-
-          {/* Budget */}
-          <section className="glass-card-static p-6 animate-fade-up delay-400">
-            <SectionHeader
-              number={form.mode === "frontier" || form.mode === "divergent" ? 4 : 3}
-              title="Budget Limits"
-            />
-            <div className="space-y-6 mt-5">
-              <SliderInput
-                label="Max Papers"
-                value={form.max_papers}
-                min={10}
-                max={1000}
-                step={10}
-                unit=""
-                onChange={(v) => updateForm({ max_papers: v })}
-              />
-              <SliderInput
-                label="Max Deep Reads"
-                value={form.max_reads}
-                min={5}
-                max={200}
-                step={5}
-                unit=""
-                onChange={(v) => updateForm({ max_reads: v })}
-              />
-              <SliderInput
-                label="Max Cost"
-                value={form.max_cost}
-                min={1}
-                max={500}
-                step={1}
-                unit="USD"
-                onChange={(v) => updateForm({ max_cost: v })}
-              />
-            </div>
-          </section>
-
-          {/* Submit */}
-          <div className="animate-fade-up delay-500">
+            {/* Submit */}
             <button
               type="submit"
-              disabled={loading}
-              className="btn-primary w-full py-4 text-base"
+              disabled={loading || topic.trim().length < 10}
+              className="btn-primary w-full py-3 text-sm"
             >
               {loading ? (
-                <span className="flex items-center gap-3">
-                  <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                  Initializing Research...
+                <span className="flex items-center justify-center gap-2">
+                  <span className="h-4 w-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                  Starting research...
                 </span>
               ) : (
-                <span className="flex items-center gap-2">
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <circle cx="9" cy="9" r="7" stroke="currentColor" strokeWidth="1.5" />
-                    <path d="M7 6L12 9L7 12V6Z" fill="currentColor" />
-                  </svg>
-                  Launch Research
-                </span>
+                "Start Research"
               )}
             </button>
-          </div>
-        </form>
-      )}
-    </div>
+          </form>
+        </div>
   );
 }
 
-/* -- Section Header -- */
-function SectionHeader({ number, title }: { number: number; title: string }) {
-  return (
-    <div className="flex items-center gap-3">
-      <span
-        className="flex h-6 w-6 items-center justify-center rounded-md text-[11px] font-bold"
-        style={{
-          background: "rgba(6, 182, 212, 0.1)",
-          color: "var(--accent-cyan)",
-          border: "1px solid rgba(6, 182, 212, 0.2)",
-        }}
-      >
-        {number}
-      </span>
-      <h2 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h2>
-    </div>
-  );
-}
-
-/* -- Mode Badge Inline -- */
-function ModeBadgeInline({ mode }: { mode: RunMode }) {
-  const config: Record<RunMode, { color: string; label: string; letter: string }> = {
-    atlas: { color: "var(--accent-cyan)", label: "Atlas", letter: "A" },
-    frontier: { color: "var(--accent-purple)", label: "Frontier", letter: "B" },
-    divergent: { color: "var(--accent-amber)", label: "Divergent", letter: "C" },
-    review: { color: "var(--text-secondary)", label: "Review", letter: "X" },
-  };
-  const c = config[mode];
-
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
-      style={{
-        background: `${c.color}15`,
-        color: c.color,
-        border: `1px solid ${c.color}30`,
-      }}
-    >
-      {c.letter}: {c.label}
-    </span>
-  );
-}
-
-/* -- Slider Input -- */
-function SliderInput({
-  label,
-  value,
-  min,
-  max,
-  step,
-  unit,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  unit: string;
-  onChange: (val: number) => void;
-}) {
+function SliderField({ label, value, min, max, step, unit, onChange }: { label: string; value: number; min: number; max: number; step: number; unit?: string; onChange: (v: number) => void }) {
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
-        <label className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">
-          {label}
-        </label>
-        <span
-          className="text-sm font-semibold tabular-nums text-[var(--accent-cyan)]"
-          style={{ fontFamily: "var(--font-mono)" }}
-        >
-          {unit === "USD" ? `$${value}` : value}
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">{label}</span>
+        <span className="text-[11px] font-semibold text-[var(--accent)]" style={{ fontFamily: "var(--font-mono)" }}>
+          {unit === "$" ? `$${value}` : value}
         </span>
       </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full"
-      />
-      <div className="flex justify-between mt-1">
-        <span className="text-[10px] text-[var(--text-muted)]">{unit === "USD" ? `$${min}` : min}</span>
-        <span className="text-[10px] text-[var(--text-muted)]">{unit === "USD" ? `$${max}` : max}</span>
-      </div>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-full" />
     </div>
   );
 }

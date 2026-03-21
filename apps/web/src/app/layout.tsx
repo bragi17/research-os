@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import AnimatedBackground from "@/components/AnimatedBackground";
-import WorkspaceHeader from "@/components/WorkspaceHeader";
-import LeftResearchTree from "@/components/LeftResearchTree";
+import Sidebar from "@/components/Sidebar";
 
 export const metadata: Metadata = {
   title: "Research OS",
@@ -15,26 +13,19 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <head>
         <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
           rel="stylesheet"
         />
       </head>
-      <body className="min-h-screen">
-        <AnimatedBackground />
-
-        {/* Workspace Header */}
-        <WorkspaceHeader />
-
-        {/* Three-panel layout */}
-        <div className="relative z-10 flex" style={{ height: "calc(100vh - 56px)" }}>
-          {/* Left sidebar: Research tree */}
-          <LeftResearchTree />
-
-          {/* Main content area */}
-          <main className="flex-1 overflow-y-auto">{children}</main>
+      <body className="min-h-screen bg-[var(--bg-primary)]">
+        <div className="flex h-screen">
+          <Sidebar />
+          <main className="flex-1 overflow-y-auto">
+            {children}
+          </main>
         </div>
       </body>
     </html>

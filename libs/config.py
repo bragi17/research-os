@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     openai_model_default: str = "gpt-4o"
     openai_model_cheap: str = "gpt-4o-mini"
 
+    # Tongyi/DashScope Embedding & Rerank
+    dashscope_api_key: str = ""
+    dashscope_embedding_model: str = "text-embedding-v4"
+    dashscope_embedding_dimension: int = 1024
+    dashscope_multimodal_model: str = "qwen3-vl-embedding"
+    dashscope_rerank_model: str = "gte-rerank-v2"
+
     # Academic APIs
     s2_api_key: str = ""
     openalex_email: str = ""

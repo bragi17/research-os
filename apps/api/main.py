@@ -69,7 +69,7 @@ logger = get_logger(__name__)
 
 # Redis configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-REDIS_QUEUE_KEY = "research_os:task_queue"
+REDIS_QUEUE_KEY = "research_os:run_queue"
 REDIS_EVENTS_CHANNEL = "research_os:events"
 
 # Redis connection (initialized in lifespan)
@@ -105,10 +105,17 @@ async def _enqueue_run(run_id: UUID, run_data: dict[str, Any]) -> bool:
     if _redis is None:
         return False
     try:
+        policy = run_data.get("policy_json", {})
+        if isinstance(policy, str):
+            policy = json.loads(policy)
         task = json.dumps({
             "run_id": str(run_id),
             "topic": run_data.get("topic", ""),
             "goal_type": run_data.get("goal_type", ""),
+            "mode": run_data.get("mode", "frontier"),
+            "keywords": policy.get("keywords", []),
+            "seed_paper_ids": policy.get("seed_papers", []),
+            "budget": run_data.get("budget_json", {}),
             "enqueued_at": datetime.utcnow().isoformat(),
         })
         await _redis.lpush(REDIS_QUEUE_KEY, task)
@@ -372,6 +379,51 @@ async def get_run(run_id: UUID) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Run not found")
 
     return row
+
+
+@app.patch("/api/v1/runs/{run_id}")
+async def patch_run(run_id: UUID, body: dict[str, Any]) -> dict[str, Any]:
+    """Update run fields (e.g., rename title)."""
+    allowed = {"title"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    try:
+        from datetime import datetime
+        updates["updated_at"] = datetime.utcnow()
+        result = await db_update_run(run_id, updates)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("patch_run_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to update run")
+
+
+@app.delete("/api/v1/runs/{run_id}")
+async def delete_run(run_id: UUID) -> dict[str, str]:
+    """Delete a research run and its events."""
+    try:
+        from apps.api.database import get_pool
+        pool = await get_pool()
+        # Check exists
+        row = await pool.fetchrow("SELECT id FROM research_run WHERE id = $1", run_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        # Delete cascade (events, pain_points, etc.)
+        await pool.execute("DELETE FROM run_event WHERE run_id = $1", run_id)
+        await pool.execute("DELETE FROM pain_point WHERE run_id = $1", run_id)
+        await pool.execute("DELETE FROM reading_path WHERE run_id = $1", run_id)
+        await pool.execute("DELETE FROM idea_card WHERE run_id = $1", run_id)
+        await pool.execute("DELETE FROM research_run WHERE id = $1", run_id)
+        return {"status": "deleted", "run_id": str(run_id)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("delete_run_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to delete run")
 
 
 @app.post("/api/v1/runs/{run_id}/start")

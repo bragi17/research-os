@@ -80,7 +80,7 @@ class S2Paper(BaseModel):
     fields_of_study: list[str] = Field(default_factory=list, alias="fieldsOfStudy")
     s2_fields_of_study: list[dict[str, Any]] = Field(default_factory=list, alias="s2FieldsOfStudy")
     tldr: dict[str, Any] | None = None
-    external_ids: dict[str, str] | None = Field(None, alias="externalIds")
+    external_ids: dict[str, Any] | None = Field(None, alias="externalIds")
     embedding: dict[str, Any] | None = None
 
     class Config:

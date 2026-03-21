@@ -75,6 +75,49 @@ def _normalize_title(title: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Progress event emitter — writes fine-grained actions to run_event table
+# ---------------------------------------------------------------------------
+
+
+async def emit_progress(
+    run_id: UUID | str,
+    stage: str,
+    action: str,
+    detail: str = "",
+    severity: str = "info",
+    meta: dict[str, Any] | None = None,
+) -> None:
+    """
+    Emit a fine-grained progress event to the database.
+
+    Examples:
+        emit_progress(run_id, "candidate_retrieval", "searching",
+                      "Querying Semantic Scholar for '3D anomaly detection'")
+        emit_progress(run_id, "candidate_retrieval", "result",
+                      "Found 50 papers from Semantic Scholar")
+        emit_progress(run_id, "deep_reading", "reading",
+                      "Reading paper: 'PointAD: A Framework for...'")
+    """
+    try:
+        from apps.api.database import create_event
+        payload: dict[str, Any] = {
+            "stage": stage,
+            "action": action,
+            "message": detail,
+        }
+        if meta:
+            payload.update(meta)
+        await create_event(
+            run_id=run_id if isinstance(run_id, UUID) else UUID(str(run_id)),
+            event_type=f"progress.{stage}.{action}",
+            severity=severity,
+            payload=payload,
+        )
+    except Exception as exc:
+        logger.debug("emit_progress_failed", error=str(exc))
+
+
+# ---------------------------------------------------------------------------
 # Shared ModeGraphState
 # ---------------------------------------------------------------------------
 
@@ -136,8 +179,8 @@ class ModeGraphState(BaseModel):
     should_stop: bool = False
     stop_reason: str | None = None
 
-    # Messages (for LLM interactions)
-    messages: Annotated[list[dict[str, Any]], add_messages] = Field(
+    # Messages (for LLM interactions — accepts AIMessage, HumanMessage, or dicts)
+    messages: Annotated[list[Any], add_messages] = Field(
         default_factory=list
     )
 
@@ -178,8 +221,7 @@ def check_should_continue(
         return "stop"
     if state.should_pause:
         return "pause"
-    if state.current_cost_usd >= state.max_cost_usd:
-        return "pause"
+    # max_cost check removed — we display token usage instead of limiting
     if state.papers_read >= state.max_fulltext_reads:
         return "pause"
     if state.saturation_score > 0.9:
@@ -341,9 +383,19 @@ async def resolve_and_read_paper(
         paper_text = fused.abstract or ""
         parsed_sections_text = ""
 
+        # Try to find arXiv ID from multiple sources (LaTeX parsing priority)
         arxiv_id = detect_arxiv_id(pid)
-        if not arxiv_id and fused.doi:
-            arxiv_id = detect_arxiv_id(fused.doi)
+        if not arxiv_id:
+            arxiv_id = getattr(fused, "arxiv_id", None)
+        if not arxiv_id:
+            fused_doi = getattr(fused, "doi", None)
+            if fused_doi:
+                arxiv_id = detect_arxiv_id(fused_doi)
+        if not arxiv_id:
+            # Try extracting from S2 externalIds
+            ext_ids = getattr(fused, "external_ids", None) or {}
+            if isinstance(ext_ids, dict) and ext_ids.get("ArXiv"):
+                arxiv_id = str(ext_ids["ArXiv"])
 
         if arxiv_id:
             try:
@@ -515,6 +567,48 @@ async def generate_llm_json(
         logger.error("generate_llm_json.failed", error=str(exc))
         errors.append(f"LLM JSON call failed: {exc}")
         return {}, cost, errors
+
+
+async def rerank_search_results(
+    query: str,
+    paper_titles: list[str],
+    paper_ids: list[str],
+    top_n: int = 50,
+) -> list[str]:
+    """
+    Rerank paper candidates by relevance using Tongyi gte-rerank-v2.
+
+    Args:
+        query: The research topic or search query.
+        paper_titles: Parallel list of paper titles to score.
+        paper_ids: Parallel list of paper IDs (same order as titles).
+        top_n: Maximum number of results to return.
+
+    Returns:
+        Reranked list of paper IDs (most relevant first).
+        Falls back to original order on failure.
+    """
+    from services.embedding import get_embedding_service
+
+    if not paper_titles:
+        return paper_ids
+
+    try:
+        svc = get_embedding_service()
+        results = await svc.rerank(
+            query=query,
+            documents=paper_titles,
+            top_n=top_n,
+        )
+        reranked_ids = [
+            paper_ids[r["index"]]
+            for r in results
+            if r["index"] < len(paper_ids)
+        ]
+        return reranked_ids
+    except Exception as exc:
+        logger.warning("rerank_failed_using_original_order", error=str(exc))
+        return paper_ids
 
 
 def _create_fusion_service() -> ScholarFusionService:

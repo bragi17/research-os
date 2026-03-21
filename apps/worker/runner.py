@@ -18,6 +18,9 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from structlog import get_logger
 
 logger = get_logger(__name__)
@@ -147,6 +150,9 @@ class WorkerRunner:
                 logger.info("worker.intake_routed", run_id=str(run_id), routed_mode=mode)
                 # Fall through to the resolved mode below
 
+            from apps.worker.llm_gateway import get_gateway
+            gateway = get_gateway()
+
             result_state = await self._run_mode_graph(
                 mode=mode,
                 run_id=run_id,
@@ -189,6 +195,8 @@ class WorkerRunner:
                         "iterations": result_state.iteration_count,
                         "cost": result_state.current_cost_usd,
                         "report_length": len(result_state.report_markdown),
+                        "total_tokens": gateway.total_tokens if gateway else 0,
+                        "llm_calls": gateway.call_count if gateway else 0,
                     },
                 )
             else:
@@ -210,6 +218,9 @@ class WorkerRunner:
 
             await update_run(run_id, update_fields)
 
+            # ── Persist results to database ──
+            await self._persist_results(run_id, result_state)
+
             await publish_event(run_id, {
                 "event_type": f"run.{final_status}",
                 "mode": mode,
@@ -227,7 +238,9 @@ class WorkerRunner:
             )
 
         except Exception as exc:
-            logger.error("worker.run_failed", run_id=str(run_id), error=str(exc))
+            import traceback
+            logger.error("worker.run_failed", run_id=str(run_id), error=str(exc),
+                         traceback=traceback.format_exc())
             try:
                 now = datetime.utcnow()
                 await update_run(run_id, {
@@ -249,6 +262,52 @@ class WorkerRunner:
                 logger.error("worker.status_update_failed", error=str(inner))
         finally:
             await mark_inactive(run_id)
+
+    async def _persist_results(self, run_id: UUID, state) -> None:
+        """Persist workflow results (pain points, comparison, context bundle) to DB."""
+        from apps.api.database import create_context_bundle, create_pain_point
+
+        try:
+            # Save pain points
+            for pp in (state.pain_points or []):
+                try:
+                    await create_pain_point(run_id, {
+                        "statement": pp.get("statement", ""),
+                        "pain_type": pp.get("pain_type", ""),
+                        "severity_score": pp.get("severity_score", 0),
+                        "novelty_potential": pp.get("novelty_potential", 0),
+                    })
+                except Exception:
+                    pass  # best-effort
+
+            # Save context bundle (comparison matrix, mindmap, etc.)
+            bundle_data = state.context_bundle or {}
+            if bundle_data:
+                try:
+                    bundle = await create_context_bundle({
+                        "source_run_id": str(run_id),
+                        "source_mode": state.mode or "frontier",
+                        "summary_text": state.report_markdown[:5000] if state.report_markdown else "",
+                        "benchmark_data": {
+                            "comparison_matrix": state.comparison_matrix or [],
+                            "gaps": state.gaps or [],
+                            "pain_points_count": len(state.pain_points or []),
+                            "papers_read": state.papers_read,
+                            "papers_discovered": state.papers_discovered,
+                        },
+                        "mindmap_json": bundle_data.get("mindmap_json", {}),
+                    })
+                    # Link bundle to run
+                    from apps.api.database import update_run
+                    await update_run(run_id, {"output_bundle_id": bundle["id"]})
+                except Exception as exc:
+                    logger.debug("persist_bundle_failed", error=str(exc))
+
+            logger.info("worker.results_persisted", run_id=str(run_id),
+                        pain_points=len(state.pain_points or []),
+                        has_comparison=bool(state.comparison_matrix))
+        except Exception as exc:
+            logger.error("worker.persist_results_failed", error=str(exc))
 
     async def _run_mode_graph(
         self,
@@ -312,6 +371,20 @@ class WorkerRunner:
             initial_state.model_dump(),
             config=config,
         )
+
+        # Sanitize messages — LangGraph may inject AIMessage objects
+        # that Pydantic cannot directly parse
+        if "messages" in result:
+            sanitized_msgs = []
+            for msg in result["messages"]:
+                if isinstance(msg, dict):
+                    sanitized_msgs.append(msg)
+                elif hasattr(msg, "content"):
+                    sanitized_msgs.append({
+                        "role": getattr(msg, "type", "assistant"),
+                        "content": str(msg.content),
+                    })
+            result["messages"] = sanitized_msgs
 
         return ModeGraphState(**result)
 
