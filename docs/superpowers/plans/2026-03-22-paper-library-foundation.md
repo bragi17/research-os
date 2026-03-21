@@ -116,7 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_library_chunk_section ON library_chunk (section_t
 - [ ] **Step 2: Run migration**
 
 ```bash
-PGPASSWORD=DB_PASSWORD_REDACTED psql -h localhost -U research_os -d research_os -f scripts/migration/005_library_tables.sql
+PGPASSWORD=$DB_PASSWORD psql -h localhost -U research_os -d research_os -f scripts/migration/005_library_tables.sql
 ```
 
 Expected: All CREATE TABLE/INDEX succeed without errors.
@@ -124,7 +124,7 @@ Expected: All CREATE TABLE/INDEX succeed without errors.
 - [ ] **Step 3: Verify tables exist**
 
 ```bash
-PGPASSWORD=DB_PASSWORD_REDACTED psql -h localhost -U research_os -d research_os -c "\dt library_*"
+PGPASSWORD=$DB_PASSWORD psql -h localhost -U research_os -d research_os -c "\dt library_*"
 ```
 
 Expected: `library_paper` and `library_chunk` listed.

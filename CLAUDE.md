@@ -60,7 +60,7 @@ curl --noproxy '*' -s http://localhost:3001/          # Frontend
 - Connection: `localhost:5432`, database `research_os`, user `research_os`, password in `.env`
 - Redis at `localhost:6379`, password in `.env`
 - Migrations: `scripts/migration/001-004`
-- Run migration: `PGPASSWORD=DB_PASSWORD_REDACTED psql -h localhost -U research_os -d research_os -f scripts/migration/<file>.sql`
+- Run migration: `PGPASSWORD=$DB_PASSWORD psql -h localhost -U research_os -d research_os -f scripts/migration/<file>.sql`
 
 ## Project Structure
 
