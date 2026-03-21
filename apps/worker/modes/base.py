@@ -204,6 +204,9 @@ class ModeGraphState(BaseModel):
     mindmap_json: dict[str, Any] = Field(default_factory=dict)
     figures: list[dict[str, Any]] = Field(default_factory=list)
 
+    # Library integration
+    library_seeds: list[dict[str, Any]] = Field(default_factory=list)
+
     class Config:
         arbitrary_types_allowed = True
 

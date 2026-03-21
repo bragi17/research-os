@@ -1115,6 +1115,10 @@ from apps.api.routes_v2 import router as v2_router
 
 app.include_router(v2_router)
 
+from apps.api.routes_library import router as library_router
+
+app.include_router(library_router)
+
 
 if __name__ == "__main__":
     import uvicorn

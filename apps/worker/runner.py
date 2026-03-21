@@ -153,6 +153,18 @@ class WorkerRunner:
             from apps.worker.llm_gateway import get_gateway
             gateway = get_gateway()
 
+            # ── Library Prefetch ──
+            library_seeds = []
+            try:
+                from services.library.prefetch import library_prefetch
+                library_seeds = await library_prefetch(topic, keywords, limit=10)
+                if library_seeds:
+                    from apps.worker.modes.base import emit_progress
+                    await emit_progress(run_id, "library_prefetch", "matched",
+                                        f"Found {len(library_seeds)} relevant papers in library")
+            except Exception as exc:
+                logger.debug("library_prefetch_skipped", error=str(exc))
+
             result_state = await self._run_mode_graph(
                 mode=mode,
                 run_id=run_id,
@@ -162,6 +174,7 @@ class WorkerRunner:
                 context_bundle=context_bundle,
                 budget=budget,
                 run_record=run,
+                library_seeds=library_seeds,
             )
 
             # Determine final status
@@ -319,6 +332,7 @@ class WorkerRunner:
         context_bundle: dict[str, Any],
         budget: dict[str, Any],
         run_record: dict[str, Any],
+        library_seeds: list[dict[str, Any]] | None = None,
     ):
         """
         Create, compile, and invoke the appropriate mode-specific graph.
@@ -341,6 +355,7 @@ class WorkerRunner:
             max_fulltext_reads=budget.get("max_fulltext_reads", 40),
             max_cost_usd=budget.get("max_estimated_cost_usd", 30.0),
             goal_type=run_record.get("goal_type", "survey_plus_innovations"),
+            library_seeds=library_seeds or [],
         )
 
         config = {"configurable": {"thread_id": str(run_id)}}

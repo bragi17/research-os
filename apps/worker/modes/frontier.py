@@ -268,6 +268,17 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
     existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
     existing_ids = set(state.candidate_paper_ids)
 
+    # ── Library seeds: add as priority candidates ──
+    library_ids = []
+    for seed in (state.library_seeds or []):
+        pid = str(seed.get("paper_id") or seed.get("id") or "")
+        if pid and pid not in existing_ids:
+            library_ids.append(pid)
+            existing_ids.add(pid)
+    if library_ids:
+        await emit_progress(state.run_id, "candidate_retrieval", "library_seeds",
+                            f"Added {len(library_ids)} papers from library")
+
     # --- Standard search via base.py ---
     if queries_to_run:
         await emit_progress(state.run_id, "candidate_retrieval", "searching",
@@ -389,7 +400,7 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
             venues=venue_whitelist[:5],
         )
 
-    all_new = new_candidates + chain_candidates
+    all_new = library_ids + new_candidates + chain_candidates
     total_discovered = state.papers_discovered + len(all_new)
 
     updates["candidate_paper_ids"] = list(state.candidate_paper_ids) + all_new
@@ -576,6 +587,12 @@ async def deep_reading(state: ModeGraphState) -> dict[str, Any]:
     papers_to_read = [
         pid for pid in state.selected_paper_ids if pid not in state.read_paper_ids
     ]
+
+    # Skip library papers — use cached summaries
+    library_pids = {str(s.get("paper_id") or s.get("id") or "") for s in (state.library_seeds or [])}
+    lib_skipped = [pid for pid in papers_to_read if pid in library_pids]
+    papers_to_read = [pid for pid in papers_to_read if pid not in library_pids]
+
     await emit_progress(state.run_id, "deep_reading", "start",
                         f"Deep-reading {len(papers_to_read)} papers (of {len(state.selected_paper_ids)} selected)")
     if not papers_to_read:
@@ -587,6 +604,16 @@ async def deep_reading(state: ModeGraphState) -> dict[str, Any]:
     newly_read: list[str] = []
     summaries: list[dict[str, Any]] = []
     all_claims: list[dict[str, Any]] = []
+
+    # Inject cached summaries from library seeds
+    for seed in (state.library_seeds or []):
+        summary = seed.get("summary_json")
+        if summary and isinstance(summary, dict) and summary:
+            summaries.append(summary)
+
+    if lib_skipped:
+        await emit_progress(state.run_id, "deep_reading", "library_cached",
+                            f"Using {len(lib_skipped)} cached summaries from library")
 
     # Parallel reading in batches of CONCURRENCY
     import asyncio
