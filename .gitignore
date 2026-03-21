@@ -34,3 +34,4 @@ htmlcov/
 /tmp/
 research_os_docs/
 .venv/
+.claude/settings.local.json
