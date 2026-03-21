@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { listRuns, type Run } from "@/lib/api";
+import { listRuns, getLibraryStats, type Run } from "@/lib/api";
 
 const MODE_LABELS: Record<string, string> = {
   atlas: "Atlas", frontier: "Frontier", divergent: "Divergent", review: "Review",
@@ -132,6 +132,13 @@ export default function Sidebar() {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
+  const [libraryCount, setLibraryCount] = useState(0);
+
+  useEffect(() => {
+    getLibraryStats()
+      .then((s) => setLibraryCount(s.papers))
+      .catch(() => { /* silent */ });
+  }, []);
 
   const fetchRuns = useCallback(async () => {
     try { setRuns((await listRuns()).items ?? []); }
@@ -343,6 +350,20 @@ export default function Sidebar() {
           }`}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 3V11M3 7H11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
           New Research
+        </Link>
+        <Link
+          href="/library"
+          className={`flex items-center gap-2 w-full px-3 py-2 rounded-lg text-[13px] font-medium transition-all mt-2 ${
+            pathname === "/library"
+              ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+              : "text-[var(--text-secondary)] hover:bg-white/40"
+          }`}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M2 3h10v8H2zM4 3V2h6v1M5 6h4M5 8h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+          Library
+          {libraryCount > 0 && <span className="text-[10px] text-[var(--text-muted)] ml-auto">{libraryCount}</span>}
         </Link>
       </div>
 

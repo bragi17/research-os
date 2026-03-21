@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useState, useCallback, useRef, useEffect } from "react";
 import Link from "next/link";
-import { createRunV2, startRun, type RunMode } from "@/lib/api";
+import { createRunV2, startRun, searchLibraryTitles, type RunMode, type LibraryPaper } from "@/lib/api";
 
 const MODES: { value: RunMode; label: string; desc: string; icon: string }[] = [
   { value: "atlas", label: "Atlas", desc: "Explore & map a research field", icon: "🗺" },
@@ -62,6 +62,13 @@ function NewResearchContent() {
   const [maxReads, setMaxReads] = useState(40);
   const [maxCost, setMaxCost] = useState(30);
 
+  // Library seed paper picker
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [libraryResults, setLibraryResults] = useState<LibraryPaper[]>([]);
+  const [librarySearching, setLibrarySearching] = useState(false);
+  const [selectedLibraryPapers, setSelectedLibraryPapers] = useState<LibraryPaper[]>([]);
+  const libraryDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Mode-specific
   const [venueFilter, setVenueFilter] = useState("");
   const [benchmark, setBenchmark] = useState("");
@@ -82,12 +89,50 @@ function NewResearchContent() {
     }
   }, [keywordInput, keywords]);
 
+  // Library typeahead search with debounce
+  useEffect(() => {
+    if (!libraryQuery.trim()) {
+      setLibraryResults([]);
+      return;
+    }
+    if (libraryDebounceRef.current) clearTimeout(libraryDebounceRef.current);
+    libraryDebounceRef.current = setTimeout(async () => {
+      setLibrarySearching(true);
+      try {
+        const result = await searchLibraryTitles(libraryQuery.trim());
+        setLibraryResults(result.items);
+      } catch {
+        setLibraryResults([]);
+      } finally {
+        setLibrarySearching(false);
+      }
+    }, 250);
+    return () => {
+      if (libraryDebounceRef.current) clearTimeout(libraryDebounceRef.current);
+    };
+  }, [libraryQuery]);
+
+  const addLibraryPaper = useCallback((paper: LibraryPaper) => {
+    if (selectedLibraryPapers.some((p) => p.id === paper.id)) return;
+    setSelectedLibraryPapers((prev) => [...prev, paper]);
+    setLibraryQuery("");
+    setLibraryResults([]);
+  }, [selectedLibraryPapers]);
+
+  const removeLibraryPaper = useCallback((paperId: string) => {
+    setSelectedLibraryPapers((prev) => prev.filter((p) => p.id !== paperId));
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!topic.trim() || topic.trim().length < 10) return;
     setLoading(true);
     try {
-      const seeds = seedPapers.split("\n").map((s) => s.trim()).filter(Boolean);
+      const manualSeeds = seedPapers.split("\n").map((s) => s.trim()).filter(Boolean);
+      const librarySeeds = selectedLibraryPapers
+        .map((p) => p.arxiv_id || p.doi || "")
+        .filter(Boolean);
+      const seeds = [...librarySeeds, ...manualSeeds];
       const kws = keywords.length > 0 ? keywords : keywordInput.split(",").map((k) => k.trim()).filter(Boolean);
       const payload: Record<string, unknown> = {
         title: topic.trim().slice(0, 60),
@@ -176,8 +221,101 @@ function NewResearchContent() {
                 Seed Papers
               </label>
               <p className="text-[11px] text-[var(--text-muted)] mb-2">
-                Paste arXiv IDs or DOIs to anchor the search (one per line, optional)
+                Search your library or paste arXiv IDs to anchor the search (optional)
               </p>
+
+              {/* Library typeahead */}
+              <div className="relative mb-3">
+                <div className="relative">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    fill="none"
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
+                  >
+                    <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.2" />
+                    <path d="M9.5 9.5l3 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                  </svg>
+                  <input
+                    type="text"
+                    className="input-field pl-9 text-[13px]"
+                    placeholder="Search library..."
+                    value={libraryQuery}
+                    onChange={(e) => setLibraryQuery(e.target.value)}
+                  />
+                  {librarySearching && (
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                      <div className="h-3.5 w-3.5 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
+                    </div>
+                  )}
+                </div>
+
+                {/* Results dropdown */}
+                {libraryResults.length > 0 && (
+                  <div className="absolute z-20 w-full mt-1 bg-white border border-[var(--border-subtle)] rounded-xl shadow-lg overflow-hidden">
+                    {libraryResults.map((paper) => {
+                      const alreadySelected = selectedLibraryPapers.some((p) => p.id === paper.id);
+                      return (
+                        <button
+                          key={paper.id}
+                          type="button"
+                          disabled={alreadySelected}
+                          onClick={() => addLibraryPaper(paper)}
+                          className={`flex items-center gap-2 w-full px-3.5 py-2.5 text-left transition-colors border-b border-[var(--border-subtle)] last:border-b-0 ${
+                            alreadySelected
+                              ? "opacity-40 cursor-not-allowed"
+                              : "hover:bg-[var(--bg-secondary)]"
+                          }`}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[13px] text-[var(--text-primary)] truncate">{paper.title}</div>
+                            <div className="text-[11px] text-[var(--text-muted)]">
+                              {[paper.venue, paper.year, paper.arxiv_id].filter(Boolean).join(" \u00b7 ")}
+                            </div>
+                          </div>
+                          {!alreadySelected && (
+                            <span className="shrink-0 text-[var(--accent)] text-sm font-bold">+</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Selected library papers */}
+              {selectedLibraryPapers.length > 0 && (
+                <div className="mb-3">
+                  <div className="text-[11px] text-[var(--text-muted)] mb-1.5">Selected from library:</div>
+                  <div className="space-y-1">
+                    {selectedLibraryPapers.map((paper) => (
+                      <div
+                        key={paper.id}
+                        className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--accent-soft)] border border-[var(--accent)]/15"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="shrink-0 text-[var(--accent)]">
+                          <path d="M2 3h10v8H2zM4 3V2h6v1M5 6h4M5 8h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                        </svg>
+                        <span className="text-[12px] text-[var(--text-primary)] truncate flex-1">
+                          {paper.title}
+                          {paper.year && <span className="text-[var(--text-muted)]"> ({paper.year})</span>}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeLibraryPaper(paper.id)}
+                          className="shrink-0 text-[var(--text-muted)] hover:text-[var(--accent-red)] transition-colors text-sm"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Manual arXiv IDs */}
+              <div className="text-[11px] text-[var(--text-muted)] mb-1.5">Manual arXiv IDs (one per line):</div>
               <textarea
                 rows={2}
                 className="input-field resize-none text-[13px]"

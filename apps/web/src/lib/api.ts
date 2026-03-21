@@ -214,3 +214,51 @@ export const runAction = (runId: string, action: string, payload: Record<string,
     method: "POST",
     body: JSON.stringify({ payload }),
   });
+
+// Library types
+export interface LibraryPaper {
+  id: string;
+  title: string;
+  arxiv_id?: string;
+  doi?: string;
+  field?: string;
+  sub_field?: string;
+  keywords: string[];
+  methods: string[];
+  datasets: string[];
+  benchmarks: string[];
+  innovation_points: string[];
+  summary_json: Record<string, unknown>;
+  deep_analysis_json?: Record<string, unknown>;
+  year?: number;
+  venue?: string;
+  citation_count: number;
+  status: string;
+  project_tags: string[];
+  created_at: string;
+}
+
+// Library API
+export const listLibraryPapers = (params?: string) =>
+  apiFetch<{ items: LibraryPaper[]; total: number }>(`/api/v1/library/papers${params ? "?" + params : ""}`);
+
+export const getLibraryPaper = (id: string) =>
+  apiFetch<LibraryPaper>(`/api/v1/library/papers/${id}`);
+
+export const addToLibrary = (data: Record<string, unknown>) =>
+  apiFetch<LibraryPaper>("/api/v1/library/papers", { method: "POST", body: JSON.stringify(data) });
+
+export const removeFromLibrary = (id: string) =>
+  apiFetch(`/api/v1/library/papers/${id}`, { method: "DELETE" });
+
+export const searchLibrary = (q: string, limit = 20) =>
+  apiFetch<{ items: LibraryPaper[]; total: number }>(`/api/v1/library/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+
+export const searchLibraryTitles = (q: string, limit = 10) =>
+  apiFetch<{ items: LibraryPaper[]; total: number }>(`/api/v1/library/search/titles?q=${encodeURIComponent(q)}&limit=${limit}`);
+
+export const getLibraryStats = () =>
+  apiFetch<{ papers: number; chunks: number }>("/api/v1/library/stats");
+
+export const uploadToLibrary = (data: Record<string, unknown>) =>
+  apiFetch<LibraryPaper>("/api/v1/library/upload", { method: "POST", body: JSON.stringify(data) });

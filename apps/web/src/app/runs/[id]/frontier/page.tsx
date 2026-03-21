@@ -58,7 +58,7 @@ export default function FrontierPage() {
         if (results[1].status === "fulfilled") {
           const raw = results[1].value.comparison;
           if (raw && typeof raw === "object" && Object.keys(raw).length > 0) {
-            setCompData(raw as ComparisonData);
+            setCompData(raw as unknown as ComparisonData);
           }
         }
         if (results[2].status === "fulfilled") {
