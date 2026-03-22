@@ -13,9 +13,13 @@ import StatusBadge from "@/components/StatusBadge";
 import ThinkingStream from "@/components/ThinkingStream";
 import ResearchPlan from "@/components/ResearchPlan";
 
-function formatElapsed(startStr: string | null): string {
+function formatElapsed(startStr: string | null, endStr?: string | null): string {
   if (!startStr) return "0:00";
-  const diff = Date.now() - new Date(startStr).getTime();
+  const start = new Date(startStr).getTime();
+  const end = endStr ? new Date(endStr).getTime() : Date.now();
+  let diff = Math.max(0, end - start);
+  // Guard against timezone mismatch — cap at 24h
+  if (diff > 86400000) diff = diff % 86400000;
   const secs = Math.floor(diff / 1000);
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
@@ -62,7 +66,7 @@ export default function RunConsole() {
 
   useEffect(() => {
     if (!run?.started_at || ["completed", "failed", "cancelled"].includes(run.status)) {
-      if (run?.started_at) setElapsed(formatElapsed(run.started_at));
+      if (run?.started_at) setElapsed(formatElapsed(run.started_at, run?.completed_at));
       return;
     }
     const tick = setInterval(() => setElapsed(formatElapsed(run.started_at)), 1000);
@@ -103,7 +107,7 @@ export default function RunConsole() {
   const modeLink = run.mode ? `/runs/${runId}/${run.mode}` : null;
 
   return (
-        <div className="max-w-[700px] mx-auto px-8 py-8">
+        <div className="max-w-[1060px] mx-auto px-8 py-8">
           {/* Header */}
           <div className="flex items-start justify-between mb-6 animate-fade-up">
             <div className="flex-1 min-w-0">

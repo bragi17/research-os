@@ -837,11 +837,23 @@ async def pain_mining(state: ModeGraphState) -> dict[str, Any]:
         "theory_gap",
     }
     for pp in pain_points:
+        # Normalize statement field — LLM may use different key names
+        if not pp.get("statement"):
+            pp["statement"] = (
+                pp.get("description", "")
+                or pp.get("problem", "")
+                or pp.get("text", "")
+                or pp.get("content", "")
+                or pp.get("issue", "")
+                or ""
+            )
         if pp.get("pain_type") not in valid_types:
-            pp["pain_type"] = "generalization"
+            pp["pain_type"] = pp.get("type", pp.get("category", "generalization"))
+            if pp["pain_type"] not in valid_types:
+                pp["pain_type"] = "generalization"
         # Ensure scores are floats in [0, 1]
         for key in ("severity_score", "novelty_potential"):
-            val = pp.get(key, 0.5)
+            val = pp.get(key, pp.get("severity", pp.get("novelty", 0.5)))
             try:
                 pp[key] = max(0.0, min(1.0, float(val)))
             except (TypeError, ValueError):
@@ -962,6 +974,11 @@ async def frontier_summary(state: ModeGraphState) -> dict[str, Any]:
         updates["report_markdown"] = frontier_md
 
         # Build comprehensive context_bundle for Mode C consumption
+        # IMPORTANT: preserve paper_summaries from deep_reading
+        existing_summaries = (
+            state.context_bundle.get("paper_summaries", [])
+            if state.context_bundle else []
+        )
         updates["context_bundle"] = {
             "source_mode": "frontier",
             "topic": state.topic,
@@ -977,6 +994,7 @@ async def frontier_summary(state: ModeGraphState) -> dict[str, Any]:
             "future_work": future_work,
             "papers_discovered": state.papers_discovered,
             "papers_read": state.papers_read,
+            "paper_summaries": existing_summaries,
         }
     else:
         # Fallback report
@@ -999,6 +1017,10 @@ async def frontier_summary(state: ModeGraphState) -> dict[str, Any]:
             )
             + "\n"
         )
+        existing_summaries_fb = (
+            state.context_bundle.get("paper_summaries", [])
+            if state.context_bundle else []
+        )
         updates["context_bundle"] = {
             "source_mode": "frontier",
             "topic": state.topic,
@@ -1009,6 +1031,9 @@ async def frontier_summary(state: ModeGraphState) -> dict[str, Any]:
             },
             "comparison_matrix": state.comparison_matrix,
             "gaps": state.gaps,
+            "papers_discovered": state.papers_discovered,
+            "papers_read": state.papers_read,
+            "paper_summaries": existing_summaries_fb,
         }
 
     updates["current_cost_usd"] = cost

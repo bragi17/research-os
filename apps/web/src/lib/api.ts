@@ -232,6 +232,7 @@ export interface LibraryPaper {
   deep_analysis_json?: Record<string, unknown>;
   year?: number;
   venue?: string;
+  authors: string[];
   citation_count: number;
   status: string;
   project_tags: string[];

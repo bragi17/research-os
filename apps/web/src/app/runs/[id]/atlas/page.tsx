@@ -104,7 +104,7 @@ export default function AtlasPage() {
   const readingItems = (readingPath as { items?: { title: string; week?: number; difficulty?: string; reason?: string }[] })?.items ?? [];
 
   return (
-    <div className="max-w-[800px] mx-auto px-8 py-8 space-y-6">
+    <div className="max-w-[1060px] mx-auto px-8 py-8 space-y-6">
       {/* Back button */}
       <Link
         href={`/runs/${runId}`}

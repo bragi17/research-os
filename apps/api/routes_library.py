@@ -1,12 +1,12 @@
 """Paper Library API — CRUD, search, upload endpoints."""
 from __future__ import annotations
 
-import json
+
 from datetime import datetime
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
 from structlog import get_logger
 
 from services.library.tools_db import (
@@ -122,14 +122,89 @@ async def patch_paper(paper_id: UUID, body: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-# POST /papers/{id}/analyze — stub for Level 2 analysis (Plan C)
+# POST /papers/{id}/analyze — Level 2 deep analysis
 @router.post("/papers/{paper_id}/analyze")
-async def trigger_analysis(paper_id: UUID) -> dict[str, str]:
+async def trigger_analysis(paper_id: UUID) -> dict[str, Any]:
+    """Run Level 2 deep analysis on a library paper."""
     paper = await get_library_paper(paper_id)
     if paper is None:
         raise HTTPException(status_code=404, detail="Paper not found")
-    # TODO: trigger PaperAnalysisAgent (Level 2) — implemented in Plan C
-    return {"status": "queued", "paper_id": str(paper_id)}
+
+    try:
+        # Get paper text
+        paper_text = ""
+        arxiv_id = paper.get("arxiv_id")
+
+        if arxiv_id:
+            try:
+                from services.parser import parse_paper
+                parsed = await parse_paper(arxiv_id)
+                if parsed.sections:
+                    paper_text = "\n\n".join(
+                        f"## {s.title}\n" + "\n".join(s.paragraphs or [])
+                        for s in parsed.sections if s.title or s.paragraphs
+                    )
+                if not paper_text and parsed.abstract:
+                    paper_text = parsed.abstract
+            except Exception as exc:
+                logger.debug("analyze.parse_failed", error=str(exc))
+
+            # Fallback: read raw LaTeX source if parser failed
+            if not paper_text:
+                try:
+                    from services.parser.arxiv_source import get_arxiv_latex_source
+                    source_result = await get_arxiv_latex_source(arxiv_id)
+                    if source_result:
+                        main_tex = source_result[0] if isinstance(source_result, tuple) else source_result
+                        from pathlib import Path
+                        raw_latex = Path(str(main_tex)).read_text(errors="ignore")
+                        # Strip LaTeX commands for readability but keep content
+                        paper_text = raw_latex[:30000]
+                except Exception as exc:
+                    logger.debug("analyze.raw_latex_failed", error=str(exc))
+
+        # Fallback to stored summary
+        if not paper_text:
+            summary = paper.get("summary_json", {})
+            paper_text = summary.get("abstract", summary.get("summary", ""))
+
+        if not paper_text:
+            raise HTTPException(status_code=400, detail="No paper content available for analysis")
+
+        # Run deep analysis
+        from apps.worker.agents.paper_analysis_agent import PaperAnalysisAgent
+        from apps.worker.llm_gateway import get_gateway
+
+        agent = PaperAnalysisAgent(gateway=get_gateway())
+        analysis = await agent.run(
+            paper_text=paper_text,
+            metadata={
+                "title": paper.get("title", ""),
+                "year": paper.get("year"),
+                "venue": paper.get("venue", ""),
+                "authors": paper.get("authors", []),
+            },
+        )
+
+        # Save to DB
+        from datetime import datetime
+        await update_library_paper(paper_id, {
+            "deep_analysis_json": analysis.model_dump(),
+            "status": "deep_analyzed",
+            "updated_at": datetime.utcnow(),
+        })
+
+        return {
+            "status": "completed",
+            "paper_id": str(paper_id),
+            "analysis": analysis.model_dump(),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("analyze.failed", paper_id=str(paper_id), error=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # GET /search?q= — hybrid text+vector search with rerank
@@ -216,20 +291,47 @@ async def upload_paper(body: dict[str, Any]) -> dict[str, Any]:
 
         ensure_library_dirs()
 
-        # Get LaTeX source
-        source_path = await get_arxiv_latex_source(arxiv_id)
+        # Get LaTeX source — returns (main_tex, extract_dir, files) tuple or None
+        source_result = await get_arxiv_latex_source(arxiv_id)
         stored_path = None
-        if source_path:
-            stored_path = save_latex_source(arxiv_id, source_path)
+        source_dir = None
+        if source_result:
+            if isinstance(source_result, tuple):
+                main_tex, source_dir, _ = source_result
+            else:
+                main_tex = source_result
+                source_dir = None
+            # Store the source directory (not the archive)
+            if source_dir:
+                stored_path = str(source_dir)
 
         # Parse paper
         parsed = await parse_paper(arxiv_id)
 
-        title = parsed.title or body.get("title", f"arXiv:{arxiv_id}")
+        title = parsed.title or ""
         authors = [
             a.name if hasattr(a, "name") else str(a)
             for a in (parsed.authors or [])
         ]
+
+        # If LaTeX parsing failed to get title, fetch from Semantic Scholar
+        if not title or title.startswith("arXiv"):
+            try:
+                from libs.adapters.semantic_scholar import SemanticScholarAdapter
+                import os
+                s2 = SemanticScholarAdapter(api_key=os.getenv("S2_API_KEY"))
+                s2_paper = await s2.get_paper(f"ARXIV:{arxiv_id}")
+                title = s2_paper.title or title
+                if not authors and s2_paper.authors:
+                    authors = [a.get("name", "") for a in s2_paper.authors if a.get("name")]
+                if not parsed.year and s2_paper.year:
+                    parsed.year = s2_paper.year
+                await s2.close()
+            except Exception as exc:
+                logger.debug("library.s2_title_fetch_failed", error=str(exc))
+
+        if not title:
+            title = body.get("title", f"arXiv:{arxiv_id}")
 
         paper_data: dict[str, Any] = {
             "title": title,
@@ -312,6 +414,115 @@ async def upload_paper(body: dict[str, Any]) -> dict[str, Any]:
         raise
     except Exception as exc:
         logger.error("library.upload_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# POST /upload-file — upload a .tar.gz / .gz / .zip file (LaTeX source)
+@router.post("/upload-file", status_code=201)
+async def upload_file(
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    project_tags: str = Form(""),
+) -> dict[str, Any]:
+    """Upload a LaTeX source archive (.tar.gz, .gz, .zip) to the library."""
+    from services.library.tools_storage import ensure_library_dirs, UPLOADS_DIR
+    import tarfile, gzip, shutil, tempfile
+    from uuid import uuid4 as _uuid4
+
+    ensure_library_dirs()
+
+    try:
+        # Save uploaded file
+        upload_id = str(_uuid4())
+        filename = file.filename or "upload.tar.gz"
+        upload_path = UPLOADS_DIR / f"{upload_id}_{filename}"
+        content = await file.read()
+        upload_path.write_bytes(content)
+
+        # Extract
+        extract_dir = UPLOADS_DIR / upload_id
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        if filename.endswith(".tar.gz") or filename.endswith(".tgz"):
+            with tarfile.open(str(upload_path), "r:gz") as tar:
+                tar.extractall(str(extract_dir))
+        elif filename.endswith(".gz"):
+            with gzip.open(str(upload_path), "rb") as gz_in:
+                out_path = extract_dir / filename.replace(".gz", "")
+                out_path.write_bytes(gz_in.read())
+        elif filename.endswith(".zip"):
+            import zipfile
+            with zipfile.ZipFile(str(upload_path), "r") as zf:
+                zf.extractall(str(extract_dir))
+        else:
+            # Treat as single file
+            shutil.copy2(str(upload_path), str(extract_dir / filename))
+
+        # Find main .tex file
+        tex_files = list(extract_dir.rglob("*.tex"))
+        if not tex_files:
+            raise HTTPException(status_code=400, detail="No .tex files found in archive")
+
+        # Pick main tex (prefer files with \documentclass)
+        main_tex = tex_files[0]
+        for tf in tex_files:
+            try:
+                if "\\documentclass" in tf.read_text(errors="ignore"):
+                    main_tex = tf
+                    break
+            except Exception:
+                continue
+
+        # Parse with LaTeX parser
+        from services.parser.latex_parser import parse_latex
+        latex_content = main_tex.read_text(errors="ignore")
+        parsed_doc = parse_latex(latex_content)
+
+        paper_title = title.strip() or parsed_doc.title or filename
+        authors = [a if isinstance(a, str) else str(a) for a in (parsed_doc.authors or [])]
+
+        paper_data: dict[str, Any] = {
+            "title": paper_title,
+            "authors": authors,
+            "status": "light_analyzed",
+            "latex_source_path": str(extract_dir),
+            "is_manually_uploaded": True,
+            "project_tags": [t.strip() for t in project_tags.split(",") if t.strip()] if project_tags else [],
+        }
+
+        # Tag with LLM if we have content
+        paper_text = parsed_doc.abstract or ""
+        if parsed_doc.sections:
+            paper_text = "\n\n".join(
+                f"## {s.heading}\n{s.content}" for s in parsed_doc.sections
+                if hasattr(s, "heading") and hasattr(s, "content")
+            ) or paper_text
+
+        if not paper_text and parsed_doc.chunks:
+            paper_text = "\n\n".join(c.text for c in parsed_doc.chunks if c.text)
+
+        if paper_text:
+            try:
+                from apps.worker.agents.paper_tag_agent import PaperTagAgent
+                from apps.worker.llm_gateway import get_gateway
+                agent = PaperTagAgent(gateway=get_gateway())
+                tags = await agent.run(paper_text=paper_text, metadata={"title": paper_title})
+                paper_data.update({
+                    "field": tags.field, "sub_field": tags.sub_field,
+                    "keywords": tags.keywords, "methods": tags.methods,
+                    "datasets": tags.datasets, "benchmarks": tags.benchmarks,
+                    "innovation_points": tags.innovation_points,
+                })
+            except Exception as exc:
+                logger.warning("library.file_upload_tagging_failed", error=str(exc))
+
+        paper = await insert_library_paper(paper_data)
+        return paper
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("library.file_upload_failed", error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 

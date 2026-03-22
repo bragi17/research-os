@@ -159,7 +159,7 @@ function NewResearchContent() {
   };
 
   return (
-        <div className="max-w-[640px] mx-auto px-8 py-10">
+        <div className="max-w-[1060px] mx-auto px-8 py-10">
           {/* Header */}
           <div className="mb-8 animate-fade-up">
             <h1 className="text-2xl font-medium text-[var(--text-primary)] mb-1" style={{ fontFamily: "var(--font-display)" }}>
@@ -232,14 +232,15 @@ function NewResearchContent() {
                     height="14"
                     viewBox="0 0 14 14"
                     fill="none"
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
+                    className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none"
                   >
                     <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.2" />
                     <path d="M9.5 9.5l3 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
                   </svg>
                   <input
                     type="text"
-                    className="input-field pl-9 text-[13px]"
+                    className="input-field text-[13px]"
+                    style={{ paddingLeft: "2.75rem" }}
                     placeholder="Search library..."
                     value={libraryQuery}
                     onChange={(e) => setLibraryQuery(e.target.value)}

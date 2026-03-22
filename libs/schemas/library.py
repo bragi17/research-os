@@ -23,12 +23,31 @@ class PaperTagResult(BaseModel):
     paragraph_tags: list[ParagraphTag] = Field(default_factory=list)
 
 
+class ExperimentalDesign(BaseModel):
+    models: list[str] = Field(default_factory=list)
+    datasets: list[str] = Field(default_factory=list)
+    hyperparams: str = ""
+    reproducibility_notes: str = ""
+
+
+class ExperimentalResults(BaseModel):
+    baselines: list[str] = Field(default_factory=list)
+    best_metrics: str = ""
+    key_insights: list[str] = Field(default_factory=list)
+
+
+class CriticalReview(BaseModel):
+    strengths: list[str] = Field(default_factory=list)
+    weaknesses: list[str] = Field(default_factory=list)
+    improvements: list[str] = Field(default_factory=list)
+
+
 class DeepAnalysis(BaseModel):
     motivation: str = ""
     mathematical_formulation: str = ""
-    experimental_design: dict[str, Any] = Field(default_factory=dict)
-    results: dict[str, Any] = Field(default_factory=dict)
-    critical_review: dict[str, Any] = Field(default_factory=dict)
+    experimental_design: ExperimentalDesign = Field(default_factory=ExperimentalDesign)
+    results: ExperimentalResults = Field(default_factory=ExperimentalResults)
+    critical_review: CriticalReview = Field(default_factory=CriticalReview)
     one_more_thing: str = ""
 
 

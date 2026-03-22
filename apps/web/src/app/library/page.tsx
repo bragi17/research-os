@@ -7,6 +7,7 @@ import {
   searchLibrary,
   removeFromLibrary,
   getLibraryStats,
+  uploadToLibrary,
   type LibraryPaper,
 } from "@/lib/api";
 
@@ -25,6 +26,12 @@ export default function LibraryPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeField, setActiveField] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [showUpload, setShowUpload] = useState(false);
+  const [uploadTab, setUploadTab] = useState<"arxiv" | "file">("arxiv");
+  const [uploadId, setUploadId] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const fetchPapers = useCallback(async () => {
     setLoading(true);
@@ -89,6 +96,50 @@ export default function LibraryPage() {
     }
   };
 
+  const handleUpload = async () => {
+    const id = uploadId.trim();
+    if (!id) return;
+    setUploading(true);
+    setUploadError("");
+    try {
+      await uploadToLibrary({ arxiv_id: id });
+      setUploadId("");
+      setShowUpload(false);
+      fetchPapers();
+      fetchStats();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleFileUpload = async () => {
+    if (!selectedFile) return;
+    setUploading(true);
+    setUploadError("");
+    try {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      const res = await fetch("/api/v1/library/upload-file", {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err);
+      }
+      setSelectedFile(null);
+      setShowUpload(false);
+      fetchPapers();
+      fetchStats();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   // Collect unique fields for filter chips
   const fields = Array.from(new Set(papers.map((p) => p.field).filter(Boolean))) as string[];
 
@@ -97,19 +148,105 @@ export default function LibraryPage() {
     : papers;
 
   return (
-    <div className="max-w-[860px] mx-auto px-8 py-10">
+    <div className="max-w-[1060px] mx-auto px-8 py-10">
       {/* Header */}
-      <div className="mb-6 animate-fade-up">
-        <h1
-          className="text-2xl font-medium text-[var(--text-primary)] mb-1"
-          style={{ fontFamily: "var(--font-display)" }}
+      <div className="flex items-start justify-between mb-6 animate-fade-up">
+        <div>
+          <h1
+            className="text-2xl font-medium text-[var(--text-primary)] mb-1"
+            style={{ fontFamily: "var(--font-display)" }}
+          >
+            Paper Library
+          </h1>
+          <p className="text-sm text-[var(--text-muted)]">
+            Your indexed research papers, searchable and ready for new runs.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowUpload(!showUpload)}
+          className="btn-primary text-[13px] shrink-0"
         >
-          Paper Library
-        </h1>
-        <p className="text-sm text-[var(--text-muted)]">
-          Your indexed research papers, searchable and ready for new runs.
-        </p>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+          Upload Paper
+        </button>
       </div>
+
+      {/* Upload panel */}
+      {showUpload && (
+        <div className="card-static p-5 mb-5 animate-fade-up">
+          {/* Tab: arXiv ID / File Upload */}
+          <div className="flex gap-4 mb-4">
+            <button
+              onClick={() => setUploadTab("arxiv")}
+              className={`text-[13px] font-medium pb-1 transition-colors ${uploadTab === "arxiv" ? "text-[var(--accent)] border-b-2 border-[var(--accent)]" : "text-[var(--text-muted)]"}`}
+            >
+              arXiv ID
+            </button>
+            <button
+              onClick={() => setUploadTab("file")}
+              className={`text-[13px] font-medium pb-1 transition-colors ${uploadTab === "file" ? "text-[var(--accent)] border-b-2 border-[var(--accent)]" : "text-[var(--text-muted)]"}`}
+            >
+              Upload File
+            </button>
+          </div>
+
+          {uploadTab === "arxiv" ? (
+            <>
+              <div className="flex gap-3">
+                <input
+                  type="text"
+                  className="input-field text-[13px] flex-1"
+                  style={{ fontFamily: "var(--font-mono)" }}
+                  placeholder="e.g. 2505.24431"
+                  value={uploadId}
+                  onChange={(e) => setUploadId(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleUpload(); }}
+                />
+                <button onClick={handleUpload} disabled={uploading || !uploadId.trim()} className="btn-primary text-[13px] px-5">
+                  {uploading ? <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />Adding</span> : "Add"}
+                </button>
+              </div>
+              <p className="text-[11px] text-[var(--text-muted)] mt-2">
+                The paper will be downloaded from arXiv, parsed, tagged, and indexed.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="flex gap-3 items-center">
+                <label className="flex-1 cursor-pointer">
+                  <div className="input-field text-[13px] text-center py-6 border-dashed hover:border-[var(--accent)] transition-colors">
+                    {selectedFile ? (
+                      <span className="text-[var(--text-primary)]">{selectedFile.name}</span>
+                    ) : (
+                      <span className="text-[var(--text-muted)]">
+                        Click to select .tar.gz, .gz, or .zip file
+                      </span>
+                    )}
+                  </div>
+                  <input type="file" className="hidden" accept=".tar.gz,.tgz,.gz,.zip,.tex"
+                    onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
+                </label>
+                <button
+                  onClick={handleFileUpload}
+                  disabled={uploading || !selectedFile}
+                  className="btn-primary text-[13px] px-5"
+                >
+                  {uploading ? <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />Uploading</span> : "Upload"}
+                </button>
+              </div>
+              <p className="text-[11px] text-[var(--text-muted)] mt-2">
+                Upload a LaTeX source archive (same format as arXiv downloads). The paper will be parsed and indexed.
+              </p>
+            </>
+          )}
+
+          {uploadError && (
+            <p className="text-[12px] text-[var(--accent-red)] mt-2">{uploadError}</p>
+          )}
+        </div>
+      )}
 
       {/* Search */}
       <div className="mb-5 animate-fade-up delay-75">
@@ -119,14 +256,15 @@ export default function LibraryPage() {
             height="16"
             viewBox="0 0 16 16"
             fill="none"
-            className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
+            className="absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none"
           >
             <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.4" />
             <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
           </svg>
           <input
             type="text"
-            className="input-field pl-10 text-[14px]"
+            className="input-field text-[14px]"
+            style={{ paddingLeft: "2.75rem" }}
             placeholder="Search papers by title, keyword, method..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -279,7 +417,7 @@ export default function LibraryPage() {
                 {/* Actions */}
                 <div className="flex items-center gap-2">
                   <Link
-                    href={`/library/${paper.id}`}
+                    href={`/library/papers/${paper.id}`}
                     className="btn-secondary text-[12px] px-3 py-1.5"
                   >
                     View

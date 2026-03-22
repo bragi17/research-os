@@ -358,11 +358,28 @@ async def list_papers_by_run(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    """SELECT papers associated with a run via topic_cluster membership.
+    """SELECT papers associated with a run.
 
-    The path is:  research_run -> topic_cluster -> paper_cluster_membership -> paper.
+    First tries direct metadata_json->source_run_id match,
+    then falls back to topic_cluster membership join.
     """
     pool = await get_pool()
+    # Direct query: papers that store source_run_id in metadata_json
+    rows = await pool.fetch(
+        """
+        SELECT * FROM paper
+        WHERE metadata_json->>'source_run_id' = $1
+        ORDER BY publication_year DESC NULLS LAST
+        LIMIT $2 OFFSET $3
+        """,
+        str(run_id),
+        limit,
+        offset,
+    )
+    if rows:
+        return [_record_to_dict(r) for r in rows]
+
+    # Fallback: topic_cluster membership join
     rows = await pool.fetch(
         """
         SELECT DISTINCT p.*

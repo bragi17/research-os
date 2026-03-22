@@ -94,7 +94,7 @@ export default function DivergentPage() {
   }
 
   return (
-    <div className="max-w-[800px] mx-auto px-8 py-8 space-y-6">
+    <div className="max-w-[1060px] mx-auto px-8 py-8 space-y-6">
       {/* Back button */}
       <Link
         href={`/runs/${runId}`}

@@ -38,15 +38,17 @@ class TestPaperTagResult:
 
 class TestDeepAnalysis:
     def test_create(self):
+        from libs.schemas.library import ExperimentalDesign, ExperimentalResults, CriticalReview
         d = DeepAnalysis(
             motivation="Found a problem...",
             mathematical_formulation="$$L = ...$$",
-            experimental_design={"models": ["PointMAE"], "datasets": ["MVTec"]},
-            results={"baselines": ["PatchCore"], "best_metrics": {"AUROC": 95.2}},
-            critical_review={"strengths": ["novel"], "weaknesses": ["limited data"]},
+            experimental_design=ExperimentalDesign(models=["PointMAE"], datasets=["MVTec"]),
+            results=ExperimentalResults(baselines=["PatchCore"], best_metrics="AUROC: 95.2"),
+            critical_review=CriticalReview(strengths=["novel"], weaknesses=["limited data"]),
             one_more_thing="Interesting appendix",
         )
         assert d.motivation.startswith("Found")
+        assert len(d.critical_review.strengths) == 1
 
 class TestLibrarySearchQuery:
     def test_defaults(self):
