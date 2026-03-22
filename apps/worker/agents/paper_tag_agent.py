@@ -26,6 +26,8 @@ Paragraph-level: for each major section (abstract, introduction, method,
 experiment, related_work, conclusion), identify technique tags and claim types.
 
 Claim types: contribution, limitation, future_work, finding, definition, comparison.
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 

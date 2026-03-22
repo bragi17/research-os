@@ -66,6 +66,8 @@ Output MUST be valid JSON with keys:
 - venue_whitelist: [str]  (top conferences/journals, e.g. "NeurIPS", "ACL")
 - benchmark_list: [str]  (key benchmarks/datasets for this sub-field)
 - query_templates: [{query: str, intent: str, source: str, min_citation_count: int|null}]
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _SCOPE_PRUNING_SYSTEM = """\
@@ -79,6 +81,8 @@ Output MUST be valid JSON with keys:
 - scores: [{paper_id: str, title: str, relevance: float, keep: bool, reason: str}]
 - method_groups: [{method: str, paper_ids: [str]}]
 - warnings: [str]
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _COMPARISON_SYSTEM = """\
@@ -89,6 +93,8 @@ Output MUST be valid JSON with keys:
 - methods: [{name: str, problem_solved: str, key_innovation: str, \
 datasets: [str], metrics: [str], results: str, limitations: str}]
 - benchmark_panel: [{dataset: str, entries: [{method: str, scores: str}]}]
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _PAIN_MINING_SYSTEM = """\
@@ -107,6 +113,8 @@ Output MUST be valid JSON with keys:
 novelty_potential: float, supporting_papers: [str], counter_evidence: str|null}]
 - future_work: [{direction: str, motivation: str, difficulty: str, \
 related_pain_ids: [int]}]
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _FRONTIER_SUMMARY_SYSTEM = """\
@@ -129,6 +137,8 @@ Output MUST be valid JSON with keys:
 - entry_points: [{suggestion: str, rationale: str, difficulty: str}]
 - pain_point_package: {pain_points: [...], context: str, topic: str}
 - mode_c_suggestions: [{topic: str, pain_ids: [int], rationale: str}]
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 
@@ -403,6 +413,13 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
     all_new = library_ids + new_candidates + chain_candidates
     total_discovered = state.papers_discovered + len(all_new)
 
+    # Save title_map to context_bundle for scope_pruning rerank
+    ctx = dict(state.context_bundle) if state.context_bundle else {}
+    existing_title_map = ctx.get("title_map", {})
+    existing_title_map.update(title_map)
+    ctx["title_map"] = existing_title_map
+    updates["context_bundle"] = ctx
+
     updates["candidate_paper_ids"] = list(state.candidate_paper_ids) + all_new
     updates["executed_queries"] = list(state.executed_queries) + executed
     updates["pending_queries"] = remaining
@@ -431,91 +448,51 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
 
 
 async def scope_pruning(state: ModeGraphState) -> dict[str, Any]:
-    """Stage 3: Remove off-topic papers via LLM relevance scoring, enforce method diversity."""
+    """Stage 3: Filter candidates using Tongyi rerank (deterministic) instead of LLM scoring."""
     updates: dict[str, Any] = {"current_stage": "analyze", "current_step": "scope_pruning"}
     errors: list[str] = list(state.errors)
     warnings: list[str] = list(state.warnings)
     cost = state.current_cost_usd
 
-    gateway = get_gateway()
-
     await emit_progress(state.run_id, "scope_pruning", "start",
-                        f"Filtering {len(state.candidate_paper_ids)} candidates for relevance")
+                        f"Filtering {len(state.candidate_paper_ids)} candidates with rerank")
 
     all_candidates = list(state.candidate_paper_ids)
 
-    # Extract scope info for LLM context
+    # Extract scope info
     scope = state.context_bundle.get("scope", {}) if state.context_bundle else {}
     definition = scope.get("definition", state.topic)
-    venue_whitelist = scope.get("venue_whitelist", [])
-    exclusions = scope.get("exclusions", [])
 
-    # --- LLM-based relevance scoring (batch candidates) ---
-    # Process in batches to stay within context limits
-    batch_size = 30
-    scored_candidates: list[tuple[str, float]] = []
+    # Get title map from context_bundle (saved during candidate_retrieval)
+    title_map: dict[str, str] = state.context_bundle.get("title_map", {}) if state.context_bundle else {}
 
-    candidates_to_score = all_candidates[:120]  # Cap at 120 for cost control
+    # Build query from topic + scope definition
+    rerank_query = f"{state.topic}. {definition}"
 
-    for batch_start in range(0, len(candidates_to_score), batch_size):
-        batch = candidates_to_score[batch_start : batch_start + batch_size]
+    # Build document list: use titles when available, paper IDs as fallback
+    doc_texts = [title_map.get(pid, pid) for pid in all_candidates]
 
-        paper_list_text = "\n".join(
-            f"- {pid}" for pid in batch
-        )
+    # --- Deterministic rerank using Tongyi gte-rerank-v2 ---
+    await emit_progress(state.run_id, "scope_pruning", "reranking",
+                        f"Reranking {len(all_candidates)} papers by relevance to topic")
 
-        pruning_user = (
-            f"Sub-field definition: {definition}\n"
-            f"Venue whitelist: {', '.join(venue_whitelist) if venue_whitelist else 'not specified'}\n"
-            f"Exclusion criteria: {', '.join(exclusions) if exclusions else 'none'}\n\n"
-            f"Paper IDs to evaluate:\n{paper_list_text}\n\n"
-            f"Score each paper for relevance to the sub-field. "
-            f"Use paper IDs as identifiers. For papers you cannot identify "
-            f"by ID alone, assign a neutral score of 0.5.\n"
-        )
+    reranked_ids = await rerank_search_results(
+        query=rerank_query,
+        paper_titles=doc_texts,
+        paper_ids=all_candidates,
+        top_n=min(len(all_candidates), state.max_papers),
+    )
 
-        result, delta, errs = await generate_llm_json(
-            _SCOPE_PRUNING_SYSTEM, pruning_user, gateway, ModelTier.MEDIUM
-        )
-        cost += delta
-        errors.extend(errs)
+    if reranked_ids:
+        pruned = reranked_ids
+        await emit_progress(state.run_id, "scope_pruning", "reranked",
+                            f"Reranked: kept top {len(pruned)} papers")
+    else:
+        # Fallback: keep all (rerank failed)
+        pruned = all_candidates[:state.max_papers]
+        warnings.append("Rerank failed, using original order")
 
-        if isinstance(result, dict):
-            scores_list = result.get("scores", [])
-            method_groups = result.get("method_groups", [])
-            batch_warnings = result.get("warnings", [])
-            warnings.extend(batch_warnings)
-
-            # Build a map of paper_id -> relevance
-            score_map: dict[str, float] = {}
-            for entry in scores_list:
-                pid = entry.get("paper_id", "")
-                rel = entry.get("relevance", 0.5)
-                keep = entry.get("keep", rel >= 0.4)
-                if pid and keep:
-                    score_map[pid] = rel
-
-            for pid in batch:
-                score = score_map.get(pid, 0.5)
-                if score >= 0.4:
-                    scored_candidates.append((pid, score))
-        else:
-            # Fallback: keep all in this batch with neutral score
-            for pid in batch:
-                scored_candidates.append((pid, 0.5))
-
-    # Also keep any candidates that were not scored (beyond 120 cap)
-    scored_ids = {pid for pid, _ in scored_candidates}
-    for pid in all_candidates[120:]:
-        if pid not in scored_ids:
-            scored_candidates.append((pid, 0.5))
-
-    # Sort by relevance score descending
-    scored_candidates.sort(key=lambda x: x[1], reverse=True)
-
-    # Cap at max_papers
-    max_keep = min(len(scored_candidates), state.max_papers)
-    pruned = [pid for pid, _ in scored_candidates[:max_keep]]
+    max_keep = min(len(pruned), state.max_papers)
 
     # Warn if too few candidates remain
     if len(pruned) < 5:
@@ -786,17 +763,30 @@ async def pain_mining(state: ModeGraphState) -> dict[str, Any]:
         new_gaps = gap_result["gaps"]
 
     # --- Pain point mining with categorized types ---
+    # TOOL: deterministic extraction of limitation/future_work text from summaries
     summaries = (
         state.context_bundle.get("paper_summaries", [])
         if state.context_bundle
         else []
     )
+    limitation_texts: list[str] = []
+    for ps in summaries:
+        if isinstance(ps, dict):
+            for key in ("limitations", "limitation", "future_work", "weaknesses"):
+                val = ps.get(key)
+                if isinstance(val, str) and val:
+                    limitation_texts.append(val)
+                elif isinstance(val, list):
+                    limitation_texts.extend(str(v) for v in val if v)
+    limitation_section = "\n".join(f"- {t}" for t in limitation_texts[:30]) if limitation_texts else "No explicit limitations extracted from summaries."
+
     summaries_text = json.dumps(summaries[:15], default=str)[:4000]
 
     pain_user = (
         f"Research topic: {state.topic}\n"
         f"Papers read: {state.papers_read}\n"
         f"Read paper IDs: {', '.join(state.read_paper_ids[:20])}\n\n"
+        f"## Extracted Limitations (deterministic)\n{limitation_section}\n\n"
         f"## Paper Summaries\n{summaries_text}\n\n"
         f"## Gaps Found\n{json.dumps(new_gaps[:10], default=str)}\n\n"
         f"## Comparison Matrix\n{json.dumps(state.comparison_matrix[:2], default=str)[:2000]}\n\n"

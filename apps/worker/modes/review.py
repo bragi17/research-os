@@ -43,6 +43,8 @@ Output MUST be valid JSON with keys:
 - refined_markdown: str  (the refined report in Markdown)
 - changes_made: [str]  (list of changes applied)
 - suggestions: [str]  (additional improvement suggestions)
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _EXPORT_SYSTEM = """\
@@ -62,6 +64,8 @@ Output MUST be valid JSON with keys:
     recommendations: [str]
   }
 - bibtex: str  (valid BibTeX entries)
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 

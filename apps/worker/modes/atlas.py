@@ -54,6 +54,8 @@ Output MUST be valid JSON with keys:
 - foundational_concepts: [str]
 - queries: [{query: str, intent: "classical"|"recent"|"pedagogical"|"survey", \
 source: "both"|"semantic_scholar"|"openalex", min_citation_count: int|null}]
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _TIMELINE_SYSTEM = """\
@@ -71,6 +73,8 @@ Output MUST be valid JSON with key "timeline": an array of objects with keys:
 Order chronologically. Include at least one entry per phase. The "foundational" \
 phase covers seminal works, "growth" covers the period of rapid adoption and \
 method diversification, and "current_frontier" covers the most recent advances.
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _TAXONOMY_SYSTEM = """\
@@ -90,6 +94,8 @@ representative_papers: [str], children: [...]}]}
   }
 - classification_dimensions: ["by_method", "by_task", "by_modality"]
 - mindmap: {center: str, branches: [{label: str, children: [{label: str}]}]}
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _READING_PATH_SYSTEM = """\
@@ -107,6 +113,8 @@ goals: [str]}]
     suggested_week: int  (1-4),
     prerequisites: [str]  (paper_ids that should be read first)
   }
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _ATLAS_SYNTHESIS_SYSTEM = """\
@@ -123,6 +131,8 @@ Output MUST be valid JSON with keys:
 ## Timeline, ## Taxonomy, ## Key Papers, ## Reading Path)
 - mindmap: {center: str, branches: [{label: str, children: [{label: str}]}]}
 - mode_b_entry_points: [{topic: str, reason: str, keywords: [str]}]
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 

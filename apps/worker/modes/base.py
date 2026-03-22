@@ -347,6 +347,166 @@ async def search_academic_sources(
     return new_candidates, executed, errors, id_to_title
 
 
+async def tool_resolve_metadata(pid: str) -> tuple[Any | None, list[str]]:
+    """TOOL: Resolve paper metadata via ScholarFusionService. No LLM."""
+    errors: list[str] = []
+    fusion = ScholarFusionService(
+        s2_api_key=os.getenv("S2_API_KEY"),
+        openalex_email=os.getenv("OPENALEX_EMAIL"),
+        crossref_email=os.getenv("CROSSREF_EMAIL"),
+        unpaywall_email=os.getenv("UNPAYWALL_EMAIL"),
+    )
+    try:
+        kwargs: dict[str, str] = {}
+        if pid.startswith("OA:"):
+            kwargs["openalex_id"] = pid.removeprefix("OA:")
+        elif pid.startswith("10."):
+            kwargs["doi"] = pid
+        else:
+            kwargs["s2_id"] = pid
+
+        fused = await fusion.resolve_paper(**kwargs)
+        if fused is None:
+            errors.append(f"Could not resolve paper for deep read: {pid}")
+            return None, errors
+        return fused, errors
+    except Exception as exc:
+        logger.error("tool_resolve_metadata.error", pid=pid, error=str(exc))
+        errors.append(f"Metadata resolution failed for {pid}: {exc}")
+        return None, errors
+    finally:
+        await fusion.close()
+
+
+async def tool_parse_paper_content(pid: str, fused: Any) -> tuple[str, str, str, bool]:
+    """TOOL: Parse paper content (LaTeX preferred, GROBID fallback). No LLM.
+
+    Returns (paper_title, paper_text, full_content, has_full_text).
+    """
+    paper_title = fused.canonical_title or pid
+    paper_text = fused.abstract or ""
+    parsed_sections_text = ""
+
+    # Try to find arXiv ID from multiple sources (LaTeX parsing priority)
+    arxiv_id = detect_arxiv_id(pid)
+    if not arxiv_id:
+        arxiv_id = getattr(fused, "arxiv_id", None)
+    if not arxiv_id:
+        fused_doi = getattr(fused, "doi", None)
+        if fused_doi:
+            arxiv_id = detect_arxiv_id(fused_doi)
+    if not arxiv_id:
+        # Try extracting from S2 externalIds
+        ext_ids = getattr(fused, "external_ids", None) or {}
+        if isinstance(ext_ids, dict) and ext_ids.get("ArXiv"):
+            arxiv_id = str(ext_ids["ArXiv"])
+
+    if arxiv_id:
+        try:
+            parsed = await parse_paper(arxiv_id)
+            if parsed.parse_quality != "low" and parsed.sections:
+                section_texts = []
+                for sec in parsed.sections:
+                    sec_header = f"## {sec.title}" if sec.title else ""
+                    sec_body = (
+                        "\n".join(sec.paragraphs) if sec.paragraphs else ""
+                    )
+                    if sec_header or sec_body:
+                        section_texts.append(f"{sec_header}\n{sec_body}")
+                parsed_sections_text = "\n\n".join(section_texts)
+                if parsed.abstract:
+                    paper_text = parsed.abstract
+                if parsed.title:
+                    paper_title = parsed.title
+                logger.info(
+                    "tool_parse_paper_content.latex_parsed",
+                    pid=pid,
+                    sections=len(parsed.sections),
+                )
+        except Exception as exc:
+            logger.debug(
+                "tool_parse_paper_content.latex_fallback", pid=pid, error=str(exc)
+            )
+
+    full_content = parsed_sections_text or paper_text
+    has_full_text = bool(parsed_sections_text)
+    return paper_title, paper_text, full_content, has_full_text
+
+
+async def _summarize_paper(
+    pid: str,
+    paper_title: str,
+    full_content: str,
+    fused: Any,
+    gateway: LLMGateway,
+    has_full_text: bool,
+) -> tuple[dict[str, Any] | None, float, list[str]]:
+    """AGENT: Summarize a paper via LLM. Returns (summary, cost, errors)."""
+    cost = 0.0
+    errors: list[str] = []
+    try:
+        summary_system = get_system_prompt(PromptName.PAPER_SUMMARY)
+        summary_user = (
+            f"Paper title: {paper_title}\n"
+            f"Year: {fused.year or 'unknown'}\n"
+            f"Venue: {fused.venue or 'unknown'}\n"
+            f"{'Full paper content' if has_full_text else 'Abstract'}:\n"
+            f"{full_content[:12000]}\n"
+        )
+
+        summary_result = await gateway.chat_json(
+            messages=[
+                {"role": "system", "content": summary_system},
+                {"role": "user", "content": summary_user},
+            ],
+            tier=ModelTier.HIGH,
+            schema=PAPER_SUMMARY_SCHEMA,
+        )
+        if isinstance(summary_result, dict):
+            summary_result["paper_id"] = pid
+            summary_result["title"] = paper_title
+            summary_result["year"] = fused.year
+            summary_result["venue"] = fused.venue
+            cost += (
+                _estimate_cost(summary_result, ModelTier.HIGH)
+                if "usage" in summary_result
+                else 0.01
+            )
+            return summary_result, cost, errors
+    except Exception as exc:
+        logger.error(
+            "resolve_and_read.summary_failed", pid=pid, error=str(exc)
+        )
+        errors.append(f"Summary LLM failed for {pid}: {exc}")
+    return None, cost, errors
+
+
+async def _tag_paper(
+    summary: dict[str, Any] | None,
+    full_content: str,
+    paper_title: str,
+    fused: Any,
+    gateway: LLMGateway,
+) -> dict[str, Any] | None:
+    """AGENT: Tag paper via PaperTagAgent. Returns updated summary or original."""
+    try:
+        from apps.worker.agents.paper_tag_agent import PaperTagAgent
+        tag_agent = PaperTagAgent(gateway=gateway)
+        tag_result = await tag_agent.run(
+            paper_text=full_content,
+            metadata={
+                "title": paper_title,
+                "year": getattr(fused, "year", None),
+                "venue": getattr(fused, "venue", None),
+            },
+        )
+        if summary and isinstance(summary, dict):
+            return {**summary, "paper_tags": tag_result.model_dump()}
+    except Exception as exc:
+        logger.debug("paper_tag_skipped", title=paper_title[:60], error=str(exc))
+    return summary
+
+
 async def resolve_and_read_paper(
     pid: str,
     gateway: LLMGateway,
@@ -360,139 +520,41 @@ async def resolve_and_read_paper(
     """
     errors: list[str] = []
     cost = 0.0
-
-    fusion = ScholarFusionService(
-        s2_api_key=os.getenv("S2_API_KEY"),
-        openalex_email=os.getenv("OPENALEX_EMAIL"),
-        crossref_email=os.getenv("CROSSREF_EMAIL"),
-        unpaywall_email=os.getenv("UNPAYWALL_EMAIL"),
-    )
-
     summary: dict[str, Any] | None = None
     claims: list[dict[str, Any]] = []
 
     try:
-        kwargs: dict[str, str] = {}
-        if pid.startswith("OA:"):
-            kwargs["openalex_id"] = pid.removeprefix("OA:")
-        elif pid.startswith("10."):
-            kwargs["doi"] = pid
-        else:
-            kwargs["s2_id"] = pid
-
-        fused = await fusion.resolve_paper(**kwargs)
-        if fused is None:
-            errors.append(f"Could not resolve paper for deep read: {pid}")
+        # Step 1: TOOL -- resolve metadata (deterministic, no LLM)
+        fused, meta_errors = await tool_resolve_metadata(pid)
+        errors.extend(meta_errors)
+        if not fused:
             return None, [], cost, errors
 
-        paper_title = fused.canonical_title or pid
-        paper_text = fused.abstract or ""
-        parsed_sections_text = ""
+        # Step 2: TOOL -- parse content (deterministic, no LLM)
+        paper_title, paper_text, full_content, has_full_text = (
+            await tool_parse_paper_content(pid, fused)
+        )
 
-        # Try to find arXiv ID from multiple sources (LaTeX parsing priority)
-        arxiv_id = detect_arxiv_id(pid)
-        if not arxiv_id:
-            arxiv_id = getattr(fused, "arxiv_id", None)
-        if not arxiv_id:
-            fused_doi = getattr(fused, "doi", None)
-            if fused_doi:
-                arxiv_id = detect_arxiv_id(fused_doi)
-        if not arxiv_id:
-            # Try extracting from S2 externalIds
-            ext_ids = getattr(fused, "external_ids", None) or {}
-            if isinstance(ext_ids, dict) and ext_ids.get("ArXiv"):
-                arxiv_id = str(ext_ids["ArXiv"])
+        # Step 3: AGENT -- LLM summarize
+        summary, summary_cost, summary_errors = await _summarize_paper(
+            pid, paper_title, full_content, fused, gateway, has_full_text
+        )
+        cost += summary_cost
+        errors.extend(summary_errors)
 
-        if arxiv_id:
-            try:
-                parsed = await parse_paper(arxiv_id)
-                if parsed.parse_quality != "low" and parsed.sections:
-                    section_texts = []
-                    for sec in parsed.sections:
-                        sec_header = f"## {sec.title}" if sec.title else ""
-                        sec_body = (
-                            "\n".join(sec.paragraphs) if sec.paragraphs else ""
-                        )
-                        if sec_header or sec_body:
-                            section_texts.append(f"{sec_header}\n{sec_body}")
-                    parsed_sections_text = "\n\n".join(section_texts)
-                    if parsed.abstract:
-                        paper_text = parsed.abstract
-                    if parsed.title:
-                        paper_title = parsed.title
-                    logger.info(
-                        "resolve_and_read.latex_parsed",
-                        pid=pid,
-                        sections=len(parsed.sections),
-                    )
-            except Exception as exc:
-                logger.debug(
-                    "resolve_and_read.latex_fallback", pid=pid, error=str(exc)
-                )
-
-        full_paper_content = parsed_sections_text or paper_text
-
-        # ---- Paper Summary ----
-        try:
-            summary_system = get_system_prompt(PromptName.PAPER_SUMMARY)
-            summary_user = (
-                f"Paper title: {paper_title}\n"
-                f"Year: {fused.year or 'unknown'}\n"
-                f"Venue: {fused.venue or 'unknown'}\n"
-                f"{'Full paper content' if parsed_sections_text else 'Abstract'}:\n"
-                f"{full_paper_content[:12000]}\n"
-            )
-
-            summary_result = await gateway.chat_json(
-                messages=[
-                    {"role": "system", "content": summary_system},
-                    {"role": "user", "content": summary_user},
-                ],
-                tier=ModelTier.HIGH,
-                schema=PAPER_SUMMARY_SCHEMA,
-            )
-            if isinstance(summary_result, dict):
-                summary_result["paper_id"] = pid
-                summary_result["title"] = paper_title
-                summary_result["year"] = fused.year
-                summary_result["venue"] = fused.venue
-                summary = summary_result
-                cost += (
-                    _estimate_cost(summary_result, ModelTier.HIGH)
-                    if "usage" in summary_result
-                    else 0.01
-                )
-        except Exception as exc:
-            logger.error(
-                "resolve_and_read.summary_failed", pid=pid, error=str(exc)
-            )
-            errors.append(f"Summary LLM failed for {pid}: {exc}")
-
-        # ---- Claim Extraction ----
+        # Step 4: AGENT -- LLM extract claims
         claims, claim_cost, claim_errors = await extract_claims(
-            paper_title, full_paper_content, gateway
+            paper_title, full_content, gateway
         )
         cost += claim_cost
         for c in claims:
             c["source_paper_id"] = pid
         errors.extend(claim_errors)
 
-        # ── Paper Tagging (Level 1) ──
-        try:
-            from apps.worker.agents.paper_tag_agent import PaperTagAgent
-            tag_agent = PaperTagAgent(gateway=gateway)
-            tag_result = await tag_agent.run(
-                paper_text=full_paper_content,
-                metadata={
-                    "title": paper_title,
-                    "year": getattr(fused, "year", None),
-                    "venue": getattr(fused, "venue", None),
-                },
-            )
-            if summary and isinstance(summary, dict):
-                summary["paper_tags"] = tag_result.model_dump()
-        except Exception as exc:
-            logger.debug("paper_tag_skipped", pid=pid, error=str(exc))
+        # Step 5: AGENT -- PaperTagAgent
+        summary = await _tag_paper(
+            summary, full_content, paper_title, fused, gateway
+        )
 
         logger.info(
             "resolve_and_read.done", pid=pid, title=paper_title[:60]
@@ -500,8 +562,6 @@ async def resolve_and_read_paper(
     except Exception as exc:
         logger.error("resolve_and_read.error", pid=pid, error=str(exc))
         errors.append(f"Resolve/read failed for {pid}: {exc}")
-    finally:
-        await fusion.close()
 
     return summary, claims, cost, errors
 

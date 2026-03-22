@@ -60,6 +60,8 @@ Output MUST be valid JSON with keys:
     abstract_keywords: [str]
   }]
 - domain_context: str
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _ANALOGICAL_RETRIEVAL_SYSTEM = """\
@@ -79,6 +81,8 @@ similar problems.
 Output MUST be valid JSON with keys:
 - queries: [{query: str, target_domain: str, source: str, intent: str}]
 - search_strategy: str
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _METHOD_TRANSFER_SYSTEM = """\
@@ -96,6 +100,8 @@ For EACH method, produce an object with:
 - rationale: str
 
 Output MUST be valid JSON: an array of these objects.
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _FEASIBILITY_SYSTEM = """\
@@ -114,6 +120,8 @@ For EACH idea, produce an object with:
 - rationale: str
 
 Output MUST be valid JSON: an array of these objects.
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 _IDEA_PORTFOLIO_SYSTEM = """\
@@ -135,6 +143,8 @@ Output MUST be valid JSON with keys:
   }]
 - portfolio_summary: str
 - recommended_next_steps: [str]
+
+IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
 # Maximum number of failed assumptions before filtering out a transfer candidate
