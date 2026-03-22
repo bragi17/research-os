@@ -33,6 +33,60 @@ async def add_paper(body: dict[str, Any]) -> dict[str, Any]:
     if not body.get("title"):
         raise HTTPException(status_code=400, detail="title is required")
     try:
+        # Check if paper_tags were already generated during research (zero cost reuse)
+        paper_tags = body.pop("paper_tags", None)
+        if paper_tags and isinstance(paper_tags, dict):
+            body.setdefault("field", paper_tags.get("field"))
+            body.setdefault("sub_field", paper_tags.get("sub_field"))
+            body.setdefault("keywords", paper_tags.get("keywords", []))
+            body.setdefault("methods", paper_tags.get("methods", []))
+            body.setdefault("datasets", paper_tags.get("datasets", []))
+            body.setdefault("benchmarks", paper_tags.get("benchmarks", []))
+            body.setdefault("innovation_points", paper_tags.get("innovation_points", []))
+            body["status"] = "light_analyzed"
+        elif body.get("arxiv_id"):
+            # No cached tags — run PaperTagAgent on arXiv paper
+            try:
+                from services.parser import parse_paper
+                parsed = await parse_paper(body["arxiv_id"])
+                paper_text = ""
+                if parsed.sections:
+                    paper_text = "\n\n".join(
+                        f"## {s.title}\n" + "\n".join(s.paragraphs or [])
+                        for s in parsed.sections if s.title or s.paragraphs
+                    )
+                if not paper_text and parsed.abstract:
+                    paper_text = parsed.abstract
+                if not paper_text:
+                    # Fallback: read raw LaTeX
+                    from services.parser.arxiv_source import get_arxiv_latex_source
+                    source_result = await get_arxiv_latex_source(body["arxiv_id"])
+                    if source_result:
+                        main_tex = source_result[0] if isinstance(source_result, tuple) else source_result
+                        from pathlib import Path
+                        paper_text = Path(str(main_tex)).read_text(errors="ignore")[:15000]
+
+                if paper_text:
+                    from apps.worker.agents.paper_tag_agent import PaperTagAgent
+                    from apps.worker.llm_gateway import get_gateway
+                    agent = PaperTagAgent(gateway=get_gateway())
+                    tags = await agent.run(paper_text=paper_text, metadata={"title": body["title"], "year": body.get("year")})
+                    body["field"] = tags.field
+                    body["sub_field"] = tags.sub_field
+                    body["keywords"] = tags.keywords
+                    body["methods"] = tags.methods
+                    body["datasets"] = tags.datasets
+                    body["benchmarks"] = tags.benchmarks
+                    body["innovation_points"] = tags.innovation_points
+                    body["status"] = "light_analyzed"
+                else:
+                    body["status"] = "light_analyzed"
+            except Exception as exc:
+                logger.warning("library.add_paper_tagging_failed", error=str(exc))
+                body["status"] = "light_analyzed"
+        else:
+            body.setdefault("status", "light_analyzed")
+
         paper = await insert_library_paper(body)
         # If paper has sections data, embed and insert chunks
         sections = body.get("sections", [])
