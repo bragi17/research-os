@@ -255,7 +255,7 @@ async def insert_library_chunks(
                 chunk.get("token_count", 0),
                 chunk.get("tags", []),
                 chunk.get("claim_type"),
-                chunk.get("embedding"),
+                str(chunk["embedding"]) if chunk.get("embedding") else None,
             )
             inserted += 1
 

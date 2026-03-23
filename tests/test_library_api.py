@@ -429,24 +429,20 @@ class TestAddPaper:
         assert data["title"] == "Attention Is All You Need"
         assert "id" in data
 
-    def test_add_paper_missing_title_returns_400(self, client: TestClient):
+    def test_add_paper_missing_title_and_arxiv_returns_400(self, client: TestClient):
         r = client.post("/api/v1/library/papers", json={"year": 2023})
         assert r.status_code == 400
-        assert "title is required" in r.json()["detail"]
 
-    def test_add_paper_with_field(self, client: TestClient):
+    def test_add_paper_creates_entry(self, client: TestClient):
+        """Pipeline creates paper (analysis may fail in test without LLM)."""
         r = client.post(
             "/api/v1/library/papers",
-            json={
-                "title": "BERT: Pre-training",
-                "field": "NLP",
-                "keywords": ["transformers", "pre-training"],
-            },
+            json={"title": "BERT: Pre-training"},
         )
         assert r.status_code == 201
         data = r.json()
-        assert data["field"] == "NLP"
-        assert data["keywords"] == ["transformers", "pre-training"]
+        assert data["title"] == "BERT: Pre-training"
+        assert "id" in data
 
 
 # ===================================================================

@@ -357,11 +357,6 @@ export default function LibraryPaperDetail() {
             View PDF on arXiv
           </a>
         )}
-        {!hasDeep && !analyzing && (
-          <button onClick={handleAnalyze} className="btn-primary text-[13px]">
-            Run Deep Analysis
-          </button>
-        )}
       </div>
     </div>
   );
