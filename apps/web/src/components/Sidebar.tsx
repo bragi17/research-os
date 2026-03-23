@@ -365,6 +365,20 @@ export default function Sidebar() {
           Library
           {libraryCount > 0 && <span className="text-[10px] text-[var(--text-muted)] ml-auto">{libraryCount}</span>}
         </Link>
+        <Link
+          href="/settings"
+          className={`flex items-center gap-2 w-full px-3 py-2 rounded-lg text-[13px] font-medium transition-all mt-1 ${
+            pathname === "/settings"
+              ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+              : "text-[var(--text-secondary)] hover:bg-white/40"
+          }`}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <circle cx="7" cy="7" r="2.5" stroke="currentColor" strokeWidth="1.2" />
+            <path d="M7 1.5v1.5M7 11v1.5M1.5 7H3M11 7h1.5M3.05 3.05l1.06 1.06M9.89 9.89l1.06 1.06M3.05 10.95l1.06-1.06M9.89 4.11l1.06-1.06" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+          Settings
+        </Link>
       </div>
 
       {/* Scrollable list */}
