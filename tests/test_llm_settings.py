@@ -19,6 +19,7 @@ from services.llm_settings import (
     get_active_llm_profile,
     invalidate_llm_config,
     mask_api_key,
+    redact_secret_text,
 )
 
 
@@ -112,6 +113,21 @@ def test_encrypt_api_key_requires_cryptography(
         match="cryptography is required to store DeepSeek API keys",
     ):
         encrypt_api_key("test-secret-key")
+
+
+def test_redact_secret_text_removes_keys_from_provider_errors() -> None:
+    api_key = "test-secret-key-1234567890"
+    provider_key = "sk-" + ("x" * 24)
+    message = (
+        f"request failed Authorization: Bearer {api_key}; "
+        f"api_key={api_key}; provider token {provider_key}"
+    )
+
+    redacted = redact_secret_text(message, secrets=[api_key])
+
+    assert api_key not in redacted
+    assert provider_key not in redacted
+    assert "[redacted]" in redacted
 
 
 @pytest.mark.asyncio

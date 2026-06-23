@@ -6,7 +6,9 @@ import base64
 import hashlib
 import inspect
 import os
+import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -17,6 +19,14 @@ DEFAULT_DEEPSEEK_LABEL = "DeepSeek"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
 LLM_CONFIG_CACHE_TTL_SECONDS = 5
+REDACTED_SECRET = "[redacted]"
+
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)([^\s,;\"']+)"),
+    re.compile(r"(?i)(bearer\s+)(sk-[A-Za-z0-9._-]+|[A-Za-z0-9._-]{16,})"),
+    re.compile(r"(?i)(api[_ -]?key\s*[=:]\s*)([^\s,;\"']+)"),
+    re.compile(r"sk-[A-Za-z0-9]{8,}"),
+)
 
 PoolGetter = Callable[[], Any | Awaitable[Any]]
 
@@ -43,6 +53,27 @@ def mask_api_key(api_key: str) -> str:
     if len(api_key) <= 8:
         return "****"
     return f"{api_key[:4]}****{api_key[-4:]}"
+
+
+def redact_secret_text(
+    text: str | None,
+    secrets: Iterable[str | None] | None = None,
+) -> str:
+    if not text:
+        return ""
+
+    redacted = str(text)
+    for secret in secrets or ():
+        cleaned = _clean(secret)
+        if cleaned:
+            redacted = redacted.replace(cleaned, REDACTED_SECRET)
+
+    for pattern in _SECRET_PATTERNS:
+        if pattern.groups >= 2:
+            redacted = pattern.sub(rf"\1{REDACTED_SECRET}", redacted)
+        else:
+            redacted = pattern.sub(REDACTED_SECRET, redacted)
+    return redacted
 
 
 def encrypt_api_key(api_key: str) -> str:
@@ -153,6 +184,7 @@ class LLMSettingsRepository:
         status: str,
         error: str | None = None,
     ) -> LLMProfile:
+        safe_error = redact_secret_text(error) if error else None
         pool = await self._get_pool()
         row = await pool.fetchrow(
             """
@@ -169,11 +201,11 @@ class LLMSettingsRepository:
             DEFAULT_WORKSPACE_ID,
             DEEPSEEK_PROVIDER,
             status,
-            error,
+            safe_error,
         )
         if row is None:
             await self.bootstrap_from_env(include_secret=False)
-            return await self.record_test_result(status, error)
+            return await self.record_test_result(status, safe_error)
         invalidate_llm_config()
         return _profile_from_row(row, include_secret=False)
 

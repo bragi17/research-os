@@ -25,6 +25,7 @@ from services.llm_settings import (
     DEFAULT_DEEPSEEK_MODEL,
     LLMProfile,
     get_active_llm_profile,
+    redact_secret_text,
 )
 
 logger = get_logger(__name__)
@@ -267,7 +268,11 @@ class LLMGateway:
             return result
 
         except Exception as e:
-            logger.error("llm_call_failed", error=str(e), model=model)
+            logger.error(
+                "llm_call_failed",
+                error=redact_secret_text(str(e), secrets=[profile.api_key]),
+                model=model,
+            )
             raise
 
     # ------------------------------------------------------------------
@@ -335,7 +340,7 @@ class LLMGateway:
 
             logger.warning(
                 "structured_output_failed_trying_fallback",
-                error=str(e)[:100],
+                error=redact_secret_text(str(e), secrets=[profile.api_key])[:100],
                 model=profile.model,
                 schema=output_schema.__name__,
             )
@@ -349,9 +354,11 @@ class LLMGateway:
             except Exception as fallback_err:
                 logger.error(
                     "structured_output_fallback_also_failed",
-                    error=str(fallback_err)[:100],
+                    error=redact_secret_text(
+                        str(fallback_err),
+                        secrets=[profile.api_key],
+                    )[:100],
                 )
-            raise
             raise
 
     # ------------------------------------------------------------------

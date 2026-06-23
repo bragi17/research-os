@@ -84,6 +84,35 @@ async def test_chat_fails_when_deepseek_key_missing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_redacts_api_key_from_error_logs() -> None:
+    api_key = "test-secret-key-1234567890"
+    provider_key = "sk-" + ("x" * 24)
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        side_effect=RuntimeError(
+            f"failed Authorization: Bearer {api_key}; token {provider_key}"
+        )
+    )
+
+    with (
+        patch(
+            "apps.worker.llm_gateway.get_active_llm_profile",
+            AsyncMock(return_value=_profile(api_key=api_key)),
+        ),
+        patch("apps.worker.llm_gateway.AsyncOpenAI", return_value=client),
+        patch("apps.worker.llm_gateway.logger.error") as log_error,
+    ):
+        gw = LLMGateway()
+        with pytest.raises(RuntimeError):
+            await gw.chat([{"role": "user", "content": "hi"}])
+
+    logged_error = log_error.call_args.kwargs["error"]
+    assert api_key not in logged_error
+    assert provider_key not in logged_error
+    assert "[redacted]" in logged_error
+
+
+@pytest.mark.asyncio
 async def test_get_active_llm_profile_requested_with_secret() -> None:
     client = MagicMock()
     client.chat.completions.create = AsyncMock(return_value=_response("OK"))

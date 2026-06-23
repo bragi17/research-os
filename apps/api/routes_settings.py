@@ -15,6 +15,7 @@ from services.llm_settings import (
     LLMProfile,
     LLMSettingsRepository,
     invalidate_llm_config,
+    redact_secret_text,
 )
 
 logger = get_logger(__name__)
@@ -110,7 +111,9 @@ def _profile_response(profile: LLMProfile) -> dict[str, Any]:
         "api_key_preview": profile.api_key_preview,
         "is_key_set": profile.is_key_set,
         "last_test_status": profile.last_test_status,
-        "last_test_error": profile.last_test_error,
+        "last_test_error": redact_secret_text(profile.last_test_error)
+        if profile.last_test_error
+        else None,
         "last_test_at": profile.last_test_at,
     }
 
@@ -246,8 +249,9 @@ async def update_llm_settings(body: LLMSettingsUpdate) -> dict[str, Any]:
         _reset_llm_runtime()
         return _profile_response(profile)
     except Exception as exc:
-        logger.error("settings.llm_update_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail=str(exc))
+        error = redact_secret_text(str(exc), secrets=[body.api_key])[:200]
+        logger.error("settings.llm_update_failed", error=error)
+        raise HTTPException(status_code=500, detail=error)
 
 
 @router.delete("/llm/api-key")
@@ -258,8 +262,9 @@ async def delete_llm_api_key() -> dict[str, Any]:
         _reset_llm_runtime()
         return _profile_response(profile)
     except Exception as exc:
-        logger.error("settings.llm_key_delete_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail=str(exc))
+        error = redact_secret_text(str(exc))[:200]
+        logger.error("settings.llm_key_delete_failed", error=error)
+        raise HTTPException(status_code=500, detail=error)
 
 
 async def _test_saved_llm_connection() -> dict[str, Any]:
@@ -284,7 +289,7 @@ async def _test_saved_llm_connection() -> dict[str, Any]:
         await repo.record_test_result("ok", None)
         return {"status": "ok", "model": result.get("model", "?"), "response": result.get("content", "")}
     except Exception as exc:
-        error = str(exc)[:200]
+        error = redact_secret_text(str(exc))[:200]
         await repo.record_test_result("error", error)
         return {"status": "error", "error": error}
 

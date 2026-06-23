@@ -235,6 +235,42 @@ def test_legacy_test_llm_delegates_to_gateway_and_records_result(
     repo.record_test_result.assert_awaited_once_with("ok", None)
 
 
+def test_llm_test_redacts_provider_error_before_response_and_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api_key = "test-secret-key-1234567890"
+    provider_key = "sk-" + ("x" * 24)
+    gateway = Mock()
+    gateway.chat = AsyncMock(
+        side_effect=RuntimeError(
+            f"provider failed Authorization: Bearer {api_key}; token {provider_key}"
+        )
+    )
+    repo = FakeRepository(_profile())
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda: repo,
+        raising=False,
+    )
+    monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
+
+    response = _client().post("/api/v1/settings/llm/test")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "error"
+    assert "[redacted]" in body["error"]
+    assert api_key not in response.text
+    assert provider_key not in response.text
+    repo.record_test_result.assert_awaited_once()
+    status, error = repo.record_test_result.await_args.args
+    assert status == "error"
+    assert api_key not in error
+    assert provider_key not in error
+    assert "[redacted]" in error
+
+
 @pytest.mark.parametrize(
     "profile",
     [
