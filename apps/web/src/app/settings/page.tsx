@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 
 interface SettingItem {
@@ -44,6 +44,20 @@ const DEFAULT_LLM_EDIT: LLMEdit = {
   label: "DeepSeek",
 };
 
+const llmEditFromProfile = (profile?: LLMProfile): LLMEdit => ({
+  api_key: "",
+  base_url: profile?.base_url || DEFAULT_LLM_EDIT.base_url,
+  model: profile?.model || DEFAULT_LLM_EDIT.model,
+  label: profile?.label || DEFAULT_LLM_EDIT.label,
+});
+
+const isDirtyLlmEdit = (current: LLMEdit, saved: LLMEdit) => (
+  current.api_key.trim().length > 0
+  || current.base_url !== saved.base_url
+  || current.model !== saved.model
+  || current.label !== saved.label
+);
+
 const CATEGORY_ICONS: Record<string, string> = {
   llm: "🧠",
   embedding: "📐",
@@ -69,8 +83,11 @@ export default function SettingsPage() {
   const [testResults, setTestResults] = useState<Record<string, { status: string; detail: string }>>({});
   const [testing, setTesting] = useState<string | null>(null);
   const [llmEdit, setLlmEdit] = useState<LLMEdit>(DEFAULT_LLM_EDIT);
+  const [savedLlmEdit, setSavedLlmEdit] = useState<LLMEdit>(DEFAULT_LLM_EDIT);
+  const savedLlmEditRef = useRef<LLMEdit>(DEFAULT_LLM_EDIT);
+  const llmDirtyRef = useRef(false);
 
-  const fetchSettings = useCallback(async () => {
+  const fetchSettings = useCallback(async (options?: { forceLlmReset?: boolean }) => {
     try {
       const res = await fetch("/api/v1/settings/models");
       if (res.ok) {
@@ -78,11 +95,16 @@ export default function SettingsPage() {
         const loadedCategories = data.categories as Category[];
         setCategories(loadedCategories);
         const llmProfile = loadedCategories.find((cat) => cat.id === "llm")?.profile;
-        setLlmEdit({
-          api_key: "",
-          base_url: llmProfile?.base_url || DEFAULT_LLM_EDIT.base_url,
-          model: llmProfile?.model || DEFAULT_LLM_EDIT.model,
-          label: llmProfile?.label || DEFAULT_LLM_EDIT.label,
+        const nextSavedLlmEdit = llmEditFromProfile(llmProfile);
+        setSavedLlmEdit(nextSavedLlmEdit);
+        savedLlmEditRef.current = nextSavedLlmEdit;
+        setLlmEdit((prev) => {
+          if (options?.forceLlmReset || !llmDirtyRef.current) {
+            llmDirtyRef.current = false;
+            return nextSavedLlmEdit;
+          }
+          llmDirtyRef.current = isDirtyLlmEdit(prev, nextSavedLlmEdit);
+          return prev;
         });
       }
     } catch { /* silent */ }
@@ -126,7 +148,11 @@ export default function SettingsPage() {
   };
 
   const handleLlmEdit = (key: keyof LLMEdit, value: string) => {
-    setLlmEdit((prev) => ({ ...prev, [key]: value }));
+    setLlmEdit((prev) => {
+      const next = { ...prev, [key]: value };
+      llmDirtyRef.current = isDirtyLlmEdit(next, savedLlmEditRef.current);
+      return next;
+    });
     setSaveResult(null);
   };
 
@@ -146,8 +172,7 @@ export default function SettingsPage() {
       });
       if (res.ok) {
         setSaveResult("DeepSeek settings saved successfully.");
-        setLlmEdit((prev) => ({ ...prev, api_key: "" }));
-        fetchSettings();
+        fetchSettings({ forceLlmReset: true });
       } else {
         try {
           const err = await res.json();
@@ -163,15 +188,25 @@ export default function SettingsPage() {
     }
   };
 
-  const handleClearLlmKey = async () => {
+  const handleClearLlmKey = async (cat: Category) => {
+    if (llmEdit.api_key.trim()) {
+      setLlmEdit((prev) => {
+        const next = { ...prev, api_key: "" };
+        llmDirtyRef.current = isDirtyLlmEdit(next, savedLlmEditRef.current);
+        return next;
+      });
+      setSaveResult("Unsaved DeepSeek API key cleared.");
+      return;
+    }
+    if (!cat.profile?.is_key_set) return;
+
     setSaving(true);
     setSaveResult(null);
     try {
       const res = await fetch("/api/v1/settings/llm/api-key", { method: "DELETE" });
       if (res.ok) {
         setSaveResult("DeepSeek API key cleared.");
-        setLlmEdit((prev) => ({ ...prev, api_key: "" }));
-        fetchSettings();
+        fetchSettings({ forceLlmReset: true });
       } else {
         try {
           const err = await res.json();
@@ -187,7 +222,17 @@ export default function SettingsPage() {
     }
   };
 
+  const isLlmDirty = isDirtyLlmEdit(llmEdit, savedLlmEdit);
+
   const handleTest = async (type: "llm" | "embedding") => {
+    if (type === "llm" && isLlmDirty) {
+      setTestResults((prev) => ({
+        ...prev,
+        llm: { status: "error", detail: "Save DeepSeek settings before testing." },
+      }));
+      return;
+    }
+
     setTesting(type);
     try {
       const testUrl = type === "llm"
@@ -362,7 +407,7 @@ export default function SettingsPage() {
                     {testing === "llm" ? "Testing..." : "Test Connection"}
                   </button>
                   <button
-                    onClick={handleClearLlmKey}
+                    onClick={() => handleClearLlmKey(cat)}
                     disabled={saving || (!cat.profile?.is_key_set && !llmEdit.api_key.trim())}
                     className="btn-secondary text-[11px] px-3 py-1"
                   >
