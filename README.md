@@ -232,7 +232,7 @@ Most settings are centralized in `libs/config.py` using pydantic-settings. Runti
 | `DEEPSEEK_API_KEY` | Bootstrap DeepSeek API key, imported only when no stored LLM profile exists | (empty) |
 | `DEEPSEEK_BASE_URL` | Bootstrap DeepSeek endpoint | `https://api.deepseek.com` |
 | `DEEPSEEK_MODEL` | Bootstrap DeepSeek model | `deepseek-v4-pro` |
-| `CREDENTIAL_ENCRYPTION_KEY` | Encrypts stored model credentials | (recommended in production) |
+| `CREDENTIAL_ENCRYPTION_KEY` | Encrypts stored model credentials | (required when configuring a DeepSeek API key) |
 | `S2_API_KEY` | Semantic Scholar API key | (optional) |
 | `JWT_SECRET` | JWT signing secret | (required in production) |
 | `GROBID_URL` | GROBID service URL | `http://localhost:8070` |
