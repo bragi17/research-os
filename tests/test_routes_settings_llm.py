@@ -271,6 +271,38 @@ def test_llm_test_redacts_provider_error_before_response_and_persist(
     assert "[redacted]" in error
 
 
+def test_llm_test_redacts_unstructured_saved_api_key_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api_key = "custom-deepseek-secret-value"
+    gateway = Mock()
+    gateway.chat = AsyncMock(
+        side_effect=RuntimeError(
+            f"provider rejected credential {api_key} for account"
+        )
+    )
+    repo = FakeRepository(_profile(api_key=api_key))
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda: repo,
+        raising=False,
+    )
+    monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
+
+    response = _client().post("/api/v1/settings/llm/test")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "error"
+    assert api_key not in response.text
+    assert "[redacted]" in body["error"]
+    repo.record_test_result.assert_awaited_once()
+    _, error = repo.record_test_result.await_args.args
+    assert api_key not in error
+    assert "[redacted]" in error
+
+
 @pytest.mark.parametrize(
     "profile",
     [
@@ -303,7 +335,7 @@ def test_llm_test_requires_saved_active_profile_with_key_without_persisting(
         "error": "DeepSeek API key is not configured",
     }
     gateway.chat.assert_not_called()
-    repo.peek_active_profile.assert_awaited_once_with(include_secret=False)
+    repo.peek_active_profile.assert_awaited_once_with(include_secret=True)
     repo.get_active_profile.assert_not_called()
     repo.upsert_active_profile.assert_not_called()
     repo.record_test_result.assert_not_called()

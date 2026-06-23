@@ -270,7 +270,7 @@ async def delete_llm_api_key() -> dict[str, Any]:
 async def _test_saved_llm_connection() -> dict[str, Any]:
     """Test LLM API connection with current settings."""
     repo = LLMSettingsRepository()
-    profile = await repo.peek_active_profile(include_secret=False)
+    profile = await repo.peek_active_profile(include_secret=True)
     if profile is None or not profile.is_key_set:
         return {
             "status": "error",
@@ -289,7 +289,7 @@ async def _test_saved_llm_connection() -> dict[str, Any]:
         await repo.record_test_result("ok", None)
         return {"status": "ok", "model": result.get("model", "?"), "response": result.get("content", "")}
     except Exception as exc:
-        error = redact_secret_text(str(exc))[:200]
+        error = redact_secret_text(str(exc), secrets=[profile.api_key])[:200]
         await repo.record_test_result("error", error)
         return {"status": "error", "error": error}
 
