@@ -119,6 +119,7 @@ def _llm_category(profile: LLMProfile) -> dict[str, Any]:
     return {
         "id": "llm",
         "label": MODEL_CATEGORIES["llm"]["label"],
+        "profile": _profile_response(profile),
         "items": [
             {
                 "key": "DEEPSEEK_API_KEY",

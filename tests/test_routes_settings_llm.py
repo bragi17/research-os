@@ -67,7 +67,14 @@ def test_get_models_exposes_deepseek_llm_settings_without_openai_or_secret(
         )
         + "\n"
     )
-    repo = FakeRepository(_profile())
+    repo = FakeRepository(
+        _profile(
+            api_key="plain-secret-value",
+            last_test_status="error",
+            last_test_error="connection failed",
+            last_test_at="2026-06-24T10:00:00Z",
+        )
+    )
     monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
     monkeypatch.setattr(
         routes_settings,
@@ -98,6 +105,19 @@ def test_get_models_exposes_deepseek_llm_settings_without_openai_or_secret(
     assert llm_items["DEEPSEEK_API_KEY"]["is_set"] is True
     assert llm_items["DEEPSEEK_BASE_URL"]["value"] == DEFAULT_DEEPSEEK_BASE_URL
     assert llm_items["DEEPSEEK_MODEL"]["value"] == DEFAULT_DEEPSEEK_MODEL
+    assert llm_category["profile"] == {
+        "provider": "deepseek",
+        "label": "DeepSeek",
+        "base_url": DEFAULT_DEEPSEEK_BASE_URL,
+        "model": DEFAULT_DEEPSEEK_MODEL,
+        "api_key_preview": "test****-key",
+        "is_key_set": True,
+        "last_test_status": "error",
+        "last_test_error": "connection failed",
+        "last_test_at": "2026-06-24T10:00:00Z",
+    }
+    assert "api_key" not in llm_category["profile"]
+    assert "plain-secret-value" not in response_text
     assert "OPENAI_API_KEY" not in response_text
     assert "OPENAI_MODEL_DEFAULT" not in response_text
 
