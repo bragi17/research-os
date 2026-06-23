@@ -11,9 +11,12 @@ from services.llm_settings import (
     DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_DEEPSEEK_MODEL,
     DEFAULT_WORKSPACE_ID,
+    LLMProfile,
     LLMSettingsRepository,
     decrypt_api_key,
     encrypt_api_key,
+    get_active_llm_profile,
+    invalidate_llm_config,
     mask_api_key,
 )
 
@@ -71,6 +74,19 @@ def test_encrypt_decrypt_api_key_round_trip(monkeypatch: pytest.MonkeyPatch) -> 
     assert decrypt_api_key(encrypted) == "test-secret-key"
 
 
+def test_encrypt_api_key_requires_credential_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+
+    with pytest.raises(
+        RuntimeError,
+        match="CREDENTIAL_ENCRYPTION_KEY is required to store DeepSeek API keys",
+    ):
+        encrypt_api_key("test-secret-key")
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_creates_deepseek_profile_from_env(
     monkeypatch: pytest.MonkeyPatch,
@@ -78,15 +94,18 @@ async def test_bootstrap_creates_deepseek_profile_from_env(
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "unit-test-encryption-secret")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-secret-key")
     inserts: list[tuple[Any, ...]] = []
+    stored_row: dict[str, Any] | None = None
 
     def handler(sql: str, args: tuple[Any, ...]) -> dict[str, Any] | None:
+        nonlocal stored_row
         if sql.lstrip().upper().startswith("SELECT"):
-            return None
+            return stored_row
         inserts.append(args)
         encrypted = args[5]
         assert encrypted != "test-secret-key"
         assert "test-secret-key" not in encrypted
-        return _row(api_key_encrypted=encrypted, api_key_preview=args[6])
+        stored_row = _row(api_key_encrypted=encrypted, api_key_preview=args[6])
+        return stored_row
 
     pool = FakePool(handler)
     repo = LLMSettingsRepository(pool_getter=lambda: pool)
@@ -101,7 +120,7 @@ async def test_bootstrap_creates_deepseek_profile_from_env(
     assert hidden.api_key_preview == "test****-key"
     assert hidden.is_key_set is True
     assert secret.api_key == "test-secret-key"
-    assert inserts
+    assert len(inserts) == 1
 
 
 @pytest.mark.asyncio
@@ -165,3 +184,44 @@ async def test_clear_api_key_removes_secret_and_preview(
     assert profile.api_key is None
     assert profile.api_key_preview == ""
     assert profile.is_key_set is False
+
+
+@pytest.mark.asyncio
+async def test_get_active_llm_profile_hides_secret_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bool] = []
+
+    class FakeRepository:
+        async def get_active_profile(
+            self,
+            include_secret: bool = False,
+        ) -> LLMProfile:
+            calls.append(include_secret)
+            return LLMProfile(
+                id="profile-1",
+                workspace_id=DEFAULT_WORKSPACE_ID,
+                provider="deepseek",
+                label="DeepSeek",
+                base_url=DEFAULT_DEEPSEEK_BASE_URL,
+                model=DEFAULT_DEEPSEEK_MODEL,
+                api_key="test-secret-key" if include_secret else None,
+                api_key_preview="test****-key",
+                is_key_set=True,
+                last_test_status=None,
+                last_test_error=None,
+                last_test_at=None,
+            )
+
+    import services.llm_settings as llm_settings
+
+    invalidate_llm_config()
+    monkeypatch.setattr(llm_settings, "LLMSettingsRepository", FakeRepository)
+
+    hidden = await get_active_llm_profile()
+    secret = await get_active_llm_profile(include_secret=True)
+
+    assert hidden.api_key is None
+    assert secret.api_key == "test-secret-key"
+    assert calls == [False, True]
+    invalidate_llm_config()

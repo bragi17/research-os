@@ -20,9 +20,6 @@ DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
 LLM_CONFIG_CACHE_TTL_SECONDS = 5
 
-_DEV_ENCRYPTION_SECRET = "research-os-dev-credential-encryption-key"
-_FALLBACK_TOKEN_PREFIX = "ros-fernet-v1:"
-
 PoolGetter = Callable[[], Any | Awaitable[Any]]
 
 
@@ -63,19 +60,18 @@ def decrypt_api_key(encrypted_api_key: str | None) -> str | None:
     if not encrypted_api_key:
         return None
     fernet = _get_fernet()
-    if fernet is not None and not encrypted_api_key.startswith(_FALLBACK_TOKEN_PREFIX):
+    if fernet is not None:
         return fernet.decrypt(encrypted_api_key.encode("utf-8")).decode("utf-8")
-    if not encrypted_api_key.startswith(_FALLBACK_TOKEN_PREFIX):
-        return _decrypt_fernet_token(encrypted_api_key)
-    return _decrypt_fallback(encrypted_api_key)
+    return _decrypt_fernet_token(encrypted_api_key)
 
 
 def _settings_secret() -> str:
-    return (
-        os.getenv("CREDENTIAL_ENCRYPTION_KEY")
-        or os.getenv("JWT_SECRET")
-        or _DEV_ENCRYPTION_SECRET
-    )
+    secret = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
+    if not secret:
+        raise RuntimeError(
+            "CREDENTIAL_ENCRYPTION_KEY is required to store DeepSeek API keys"
+        )
+    return secret
 
 
 def _raw_encryption_key() -> bytes:
@@ -89,17 +85,6 @@ def _get_fernet() -> Any | None:
         return None
     key = base64.urlsafe_b64encode(_raw_encryption_key())
     return Fernet(key)
-
-
-def _encrypt_fallback(api_key: str) -> str:
-    raw_key = _raw_encryption_key()
-    nonce = os.urandom(16)
-    plaintext = api_key.encode("utf-8")
-    ciphertext = _xor_stream(raw_key[:16], nonce, plaintext)
-    payload = b"\x80" + int(time.time()).to_bytes(8, "big") + nonce + ciphertext
-    mac = hmac.new(raw_key[16:], payload, hashlib.sha256).digest()
-    token = base64.urlsafe_b64encode(payload + mac).decode("ascii")
-    return f"{_FALLBACK_TOKEN_PREFIX}{token}"
 
 
 def _encrypt_fernet_token(api_key: str) -> str:
@@ -175,37 +160,6 @@ def _openssl_aes_cbc(
     if result.returncode != 0:
         raise ValueError("OpenSSL failed to process encrypted API key")
     return result.stdout
-
-
-def _decrypt_fallback(encrypted_api_key: str) -> str:
-    if not encrypted_api_key.startswith(_FALLBACK_TOKEN_PREFIX):
-        raise ValueError("Unsupported encrypted API key format")
-    token = encrypted_api_key.removeprefix(_FALLBACK_TOKEN_PREFIX)
-    data = base64.urlsafe_b64decode(token.encode("ascii"))
-    if len(data) < 58 or data[0] != 0x80:
-        raise ValueError("Invalid encrypted API key")
-    payload, actual_mac = data[:-32], data[-32:]
-    raw_key = _raw_encryption_key()
-    expected_mac = hmac.new(raw_key[16:], payload, hashlib.sha256).digest()
-    if not hmac.compare_digest(actual_mac, expected_mac):
-        raise ValueError("Encrypted API key authentication failed")
-    nonce = payload[9:25]
-    ciphertext = payload[25:]
-    return _xor_stream(raw_key[:16], nonce, ciphertext).decode("utf-8")
-
-
-def _xor_stream(key: bytes, nonce: bytes, data: bytes) -> bytes:
-    output = bytearray()
-    counter = 0
-    while len(output) < len(data):
-        block = hmac.new(
-            key,
-            nonce + counter.to_bytes(8, "big"),
-            hashlib.sha256,
-        ).digest()
-        output.extend(block)
-        counter += 1
-    return bytes(byte ^ stream for byte, stream in zip(data, output))
 
 
 class LLMSettingsRepository:
@@ -411,7 +365,7 @@ async def _default_pool_getter() -> Any:
 _llm_config_cache: dict[bool, tuple[float, LLMProfile]] = {}
 
 
-async def get_active_llm_profile(include_secret: bool = True) -> LLMProfile:
+async def get_active_llm_profile(include_secret: bool = False) -> LLMProfile:
     now = time.monotonic()
     cached = _llm_config_cache.get(include_secret)
     if cached is not None:
