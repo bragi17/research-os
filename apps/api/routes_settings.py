@@ -8,6 +8,15 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from structlog import get_logger
 
+from libs.schemas.settings import LLMSettingsUpdate, LLMTestRequest
+from services.llm_settings import (
+    DEFAULT_DEEPSEEK_BASE_URL,
+    DEFAULT_DEEPSEEK_MODEL,
+    LLMProfile,
+    LLMSettingsRepository,
+    invalidate_llm_config,
+)
+
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
@@ -17,7 +26,7 @@ ENV_PATH = Path(os.getenv("ENV_FILE_PATH", "/root/research-os/.env"))
 # Model config categories
 MODEL_CATEGORIES = {
     "llm": {
-        "keys": ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL_DEFAULT", "OPENAI_MODEL_CHEAP"],
+        "keys": ["DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"],
         "label": "LLM Models",
     },
     "embedding": {
@@ -39,7 +48,7 @@ MODEL_CATEGORIES = {
 }
 
 # Keys that should be masked in GET responses
-SENSITIVE_KEYS = {"OPENAI_API_KEY", "DASHSCOPE_API_KEY", "S2_API_KEY", "SEMANTIC_SCHOLAR_API_KEY", "JWT_SECRET"}
+SENSITIVE_KEYS = {"DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "S2_API_KEY", "SEMANTIC_SCHOLAR_API_KEY", "JWT_SECRET"}
 
 
 def _read_env() -> dict[str, str]:
@@ -91,13 +100,78 @@ def _mask_value(key: str, value: str) -> str:
     return value
 
 
+def _profile_response(profile: LLMProfile) -> dict[str, Any]:
+    """Return a profile response without plaintext secrets."""
+    return {
+        "provider": profile.provider,
+        "label": profile.label,
+        "base_url": profile.base_url,
+        "model": profile.model,
+        "api_key_preview": profile.api_key_preview,
+        "is_key_set": profile.is_key_set,
+        "last_test_status": profile.last_test_status,
+        "last_test_error": profile.last_test_error,
+        "last_test_at": profile.last_test_at,
+    }
+
+
+def _llm_category(profile: LLMProfile) -> dict[str, Any]:
+    return {
+        "id": "llm",
+        "label": MODEL_CATEGORIES["llm"]["label"],
+        "items": [
+            {
+                "key": "DEEPSEEK_API_KEY",
+                "value": "",
+                "display_value": profile.api_key_preview,
+                "is_set": profile.is_key_set,
+                "is_sensitive": True,
+            },
+            {
+                "key": "DEEPSEEK_BASE_URL",
+                "value": profile.base_url,
+                "is_set": bool(profile.base_url),
+                "is_sensitive": False,
+            },
+            {
+                "key": "DEEPSEEK_MODEL",
+                "value": profile.model,
+                "is_set": bool(profile.model),
+                "is_sensitive": False,
+            },
+        ],
+    }
+
+
+def _reset_llm_runtime() -> None:
+    invalidate_llm_config()
+    try:
+        from apps.worker.llm_gateway import reset_gateway
+
+        reset_gateway()
+    except Exception:
+        pass
+
+
+def _reset_embedding_runtime() -> None:
+    try:
+        import services.embedding as emb_mod
+
+        emb_mod._service = None
+    except Exception:
+        pass
+
+
 @router.get("/models")
 async def get_model_settings() -> dict[str, Any]:
     """Get all model configuration grouped by category."""
     env = _read_env()
-    categories: list[dict[str, Any]] = []
+    profile = await LLMSettingsRepository().get_active_profile(include_secret=False)
+    categories: list[dict[str, Any]] = [_llm_category(profile)]
 
     for cat_id, cat_info in MODEL_CATEGORIES.items():
+        if cat_id == "llm":
+            continue
         items: list[dict[str, Any]] = []
         for key in cat_info["keys"]:
             value = env.get(key, "")
@@ -117,7 +191,7 @@ async def get_model_settings() -> dict[str, Any]:
 
 
 @router.put("/models")
-async def update_model_settings(body: dict[str, str]) -> dict[str, str]:
+async def update_model_settings(body: dict[str, str]) -> dict[str, Any]:
     """Update model configuration. Body is {KEY: VALUE} pairs."""
     if not body:
         raise HTTPException(status_code=400, detail="No settings provided")
@@ -131,12 +205,24 @@ async def update_model_settings(body: dict[str, str]) -> dict[str, str]:
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown keys: {unknown}")
 
+    deepseek_keys = set(MODEL_CATEGORIES["llm"]["keys"])
+    requested_deepseek_keys = set(body.keys()) & deepseek_keys
+    if requested_deepseek_keys:
+        raise HTTPException(
+            status_code=400,
+            detail="DeepSeek LLM settings must be updated via /api/v1/settings/llm",
+        )
+
     try:
         _write_env(body)
 
-        # Also update os.environ for the current process
+        # Update os.environ for the current process
         for key, value in body.items():
             os.environ[key] = value
+
+        # Preserve existing runtime refresh behavior after model updates.
+        _reset_llm_runtime()
+        _reset_embedding_runtime()
 
         logger.info("settings.updated", keys=list(body.keys()))
         return {"status": "updated", "keys": list(body.keys())}
@@ -145,20 +231,71 @@ async def update_model_settings(body: dict[str, str]) -> dict[str, str]:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/models/test-llm")
-async def test_llm_connection() -> dict[str, Any]:
+@router.put("/llm")
+async def update_llm_settings(body: LLMSettingsUpdate) -> dict[str, Any]:
+    """Update active DeepSeek LLM profile without returning plaintext secrets."""
+    try:
+        profile = await LLMSettingsRepository().upsert_active_profile(
+            label=body.label,
+            base_url=body.base_url,
+            model=body.model,
+            api_key=body.api_key,
+            clear_api_key=body.clear_api_key,
+        )
+        _reset_llm_runtime()
+        return _profile_response(profile)
+    except Exception as exc:
+        logger.error("settings.llm_update_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.delete("/llm/api-key")
+async def delete_llm_api_key() -> dict[str, Any]:
+    """Clear the active DeepSeek API key."""
+    try:
+        profile = await LLMSettingsRepository().clear_api_key()
+        _reset_llm_runtime()
+        return _profile_response(profile)
+    except Exception as exc:
+        logger.error("settings.llm_key_delete_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+async def _test_saved_llm_connection() -> dict[str, Any]:
     """Test LLM API connection with current settings."""
+    repo = LLMSettingsRepository()
     try:
         from apps.worker.llm_gateway import get_gateway
+
         gw = get_gateway()
         result = await gw.chat(
             messages=[{"role": "user", "content": "Reply with just: OK"}],
             max_tokens=5,
             temperature=0,
         )
+        await repo.record_test_result("ok", None)
         return {"status": "ok", "model": result.get("model", "?"), "response": result.get("content", "")}
     except Exception as exc:
-        return {"status": "error", "error": str(exc)[:200]}
+        error = str(exc)[:200]
+        await repo.record_test_result("error", error)
+        return {"status": "error", "error": error}
+
+
+@router.post("/llm/test")
+async def test_llm_settings(body: LLMTestRequest | None = None) -> dict[str, Any]:
+    """Test the saved active DeepSeek profile."""
+    if body and (body.base_url or body.model or body.api_key):
+        raise HTTPException(
+            status_code=400,
+            detail="Only saved active profile testing is supported",
+        )
+    return await _test_saved_llm_connection()
+
+
+@router.post("/models/test-llm")
+async def test_llm_connection() -> dict[str, Any]:
+    """Legacy compatibility alias for testing the saved LLM profile."""
+    return await _test_saved_llm_connection()
 
 
 @router.post("/models/test-embedding")
