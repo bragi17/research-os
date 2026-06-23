@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -21,6 +20,12 @@ from langchain_openai import ChatOpenAI
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, create_model
 from structlog import get_logger
+
+from services.llm_settings import (
+    DEFAULT_DEEPSEEK_MODEL,
+    LLMProfile,
+    get_active_llm_profile,
+)
 
 logger = get_logger(__name__)
 
@@ -49,17 +54,17 @@ class ModelConfig:
 # Default model configurations
 DEFAULT_MODELS = {
     ModelTier.HIGH: ModelConfig(
-        name=os.getenv("OPENAI_MODEL_DEFAULT", "gpt-4o"),
+        name=DEFAULT_DEEPSEEK_MODEL,
         tier=ModelTier.HIGH,
         max_tokens=8192,
     ),
     ModelTier.MEDIUM: ModelConfig(
-        name=os.getenv("OPENAI_MODEL_CHEAP", "gpt-4o-mini"),
+        name=DEFAULT_DEEPSEEK_MODEL,
         tier=ModelTier.MEDIUM,
         max_tokens=4096,
     ),
     ModelTier.LOW: ModelConfig(
-        name=os.getenv("OPENAI_MODEL_CHEAP", "gpt-4o-mini"),
+        name=DEFAULT_DEEPSEEK_MODEL,
         tier=ModelTier.LOW,
         max_tokens=2048,
     ),
@@ -84,17 +89,16 @@ class LLMGateway:
         base_url: str | None = None,
         models: dict[ModelTier, ModelConfig] | None = None,
     ):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
+        self.api_key = api_key
+        self.base_url = base_url
         self.models = models or DEFAULT_MODELS
 
-        # AsyncOpenAI client for raw chat calls
-        self._client = AsyncOpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-        )
+        # AsyncOpenAI client for raw chat calls, built from the active profile.
+        self._client_profile_key: tuple[str, str, str, str] | None = None
+        self._client: AsyncOpenAI | None = None
 
         # LangChain ChatOpenAI instances (lazy-init per tier)
+        self._langchain_profile_key: tuple[str, str, str, str] | None = None
         self._langchain_models: dict[str, ChatOpenAI] = {}
 
         # Cost / token tracking
@@ -105,20 +109,54 @@ class LLMGateway:
         # Simple response cache
         self._cache: dict[str, tuple[Any, float]] = {}
 
-    def _get_langchain_model(self, tier: ModelTier) -> ChatOpenAI:
+    def _profile_key(self, profile: LLMProfile) -> tuple[str, str, str, str]:
+        return (
+            profile.provider,
+            profile.base_url,
+            profile.model,
+            profile.api_key or "",
+        )
+
+    async def _get_profile(self) -> LLMProfile:
+        profile = await get_active_llm_profile(include_secret=True)
+        if not profile.api_key:
+            raise ValueError("DeepSeek API key is not configured")
+        return profile
+
+    async def _get_client(self) -> tuple[AsyncOpenAI, LLMProfile]:
+        profile = await self._get_profile()
+        profile_key = self._profile_key(profile)
+        if self._client is None or self._client_profile_key != profile_key:
+            self._client = AsyncOpenAI(
+                api_key=profile.api_key,
+                base_url=profile.base_url,
+            )
+            self._client_profile_key = profile_key
+            self._langchain_models.clear()
+            self._cache.clear()
+        return self._client, profile
+
+    def _get_langchain_model(
+        self,
+        tier: ModelTier,
+        profile: LLMProfile,
+    ) -> ChatOpenAI:
         """Get or create a LangChain ChatOpenAI for the given tier."""
         model_config = self.models[tier]
-        key = model_config.name
+        profile_key = self._profile_key(profile)
+        if self._langchain_profile_key != profile_key:
+            self._langchain_models.clear()
+            self._langchain_profile_key = profile_key
+
+        key = str(model_config.max_tokens)
         if key not in self._langchain_models:
-            kwargs: dict[str, Any] = {
-                "model": model_config.name,
-                "api_key": self.api_key,
-                "max_tokens": model_config.max_tokens,
-                "temperature": 0,
-            }
-            if self.base_url:
-                kwargs["base_url"] = self.base_url
-            self._langchain_models[key] = ChatOpenAI(**kwargs)
+            self._langchain_models[key] = ChatOpenAI(
+                model=profile.model,
+                api_key=profile.api_key,
+                base_url=profile.base_url,
+                max_tokens=model_config.max_tokens,
+                temperature=0,
+            )
         return self._langchain_models[key]
 
     def _get_cache_key(
@@ -154,8 +192,9 @@ class LLMGateway:
         use_cache: bool = True,
     ) -> dict[str, Any]:
         """Make a raw chat completion request."""
+        client, profile = await self._get_client()
         model_config = self.models[tier]
-        model = model_config.name
+        model = profile.model
 
         # Check cache
         if use_cache and temperature < 0.1:
@@ -181,7 +220,7 @@ class LLMGateway:
         self._call_count += 1
 
         try:
-            response = await self._client.chat.completions.create(**request_params)
+            response = await client.chat.completions.create(**request_params)
 
             result = {
                 "content": response.choices[0].message.content,
@@ -248,10 +287,10 @@ class LLMGateway:
             Instance of output_schema with parsed data
         """
         self._call_count += 1
-        model_config = self.models[tier]
+        profile = await self._get_profile()
 
         try:
-            llm = self._get_langchain_model(tier)
+            llm = self._get_langchain_model(tier, profile)
             structured_llm = llm.with_structured_output(output_schema)
 
             # Convert messages to LangChain format
@@ -273,7 +312,7 @@ class LLMGateway:
 
             logger.debug(
                 "structured_output_complete",
-                model=model_config.name,
+                model=profile.model,
                 schema=output_schema.__name__,
                 estimated_tokens=estimated_tokens,
                 total_tokens=self._total_tokens,
@@ -282,12 +321,25 @@ class LLMGateway:
             return result
 
         except Exception as e:
-            logger.error(
-                "structured_output_failed",
-                error=str(e),
-                model=model_config.name,
+            logger.warning(
+                "structured_output_failed_trying_fallback",
+                error=str(e)[:100],
+                model=profile.model,
                 schema=output_schema.__name__,
             )
+
+            # Fallback: use chat_json (prompt-based) and parse into Pydantic model
+            try:
+                json_result = await self._chat_json_prompt_fallback(
+                    messages, tier, 0.0, None
+                )
+                return output_schema.model_validate(json_result)
+            except Exception as fallback_err:
+                logger.error(
+                    "structured_output_fallback_also_failed",
+                    error=str(fallback_err)[:100],
+                )
+            raise
             raise
 
     # ------------------------------------------------------------------
@@ -527,6 +579,12 @@ def _build_generic_model_from_prompt(messages: list[dict[str, str]]) -> type[Bas
 # ======================================================================
 
 _gateway: LLMGateway | None = None
+
+
+def reset_gateway() -> None:
+    """Reset the singleton LLMGateway."""
+    global _gateway
+    _gateway = None
 
 
 def get_gateway() -> LLMGateway:
