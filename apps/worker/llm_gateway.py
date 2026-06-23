@@ -35,9 +35,9 @@ T = TypeVar("T", bound=BaseModel)
 class ModelTier(str, Enum):
     """Model tier for cost/quality tradeoffs."""
 
-    HIGH = "high"      # Best reasoning (e.g., GPT-4o)
-    MEDIUM = "medium"  # Balanced (e.g., GPT-4o-mini)
-    LOW = "low"        # Fast/cheap (e.g., Haiku)
+    HIGH = "high"      # Highest quality/reasoning intent
+    MEDIUM = "medium"  # Balanced quality/cost intent
+    LOW = "low"        # Lowest latency/cost intent
 
 
 @dataclass
@@ -85,12 +85,8 @@ class LLMGateway:
 
     def __init__(
         self,
-        api_key: str | None = None,
-        base_url: str | None = None,
         models: dict[ModelTier, ModelConfig] | None = None,
     ):
-        self.api_key = api_key
-        self.base_url = base_url
         self.models = models or DEFAULT_MODELS
 
         # AsyncOpenAI client for raw chat calls, built from the active profile.
@@ -164,14 +160,18 @@ class LLMGateway:
         messages: list[dict],
         model: str,
         temperature: float,
+        max_tokens: int,
         response_format: dict | None,
+        tools: list[dict] | None,
     ) -> str:
         """Generate cache key for a request."""
         key_data = {
             "messages": messages,
             "model": model,
             "temperature": temperature,
+            "max_tokens": max_tokens,
             "response_format": response_format,
+            "tools": tools,
         }
         return hashlib.sha256(
             json.dumps(key_data, sort_keys=True, default=str).encode()
@@ -195,10 +195,18 @@ class LLMGateway:
         client, profile = await self._get_client()
         model_config = self.models[tier]
         model = profile.model
+        request_max_tokens = max_tokens or model_config.max_tokens
 
         # Check cache
         if use_cache and temperature < 0.1:
-            cache_key = self._get_cache_key(messages, model, temperature, response_format)
+            cache_key = self._get_cache_key(
+                messages,
+                model,
+                temperature,
+                request_max_tokens,
+                response_format,
+                tools,
+            )
             cached = self._cache.get(cache_key)
             if cached:
                 logger.debug("llm_cache_hit", key=cache_key[:16])
@@ -209,7 +217,7 @@ class LLMGateway:
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens or model_config.max_tokens,
+            "max_tokens": request_max_tokens,
         }
 
         if response_format:
@@ -271,6 +279,7 @@ class LLMGateway:
         output_schema: type[T],
         messages: list[dict[str, str]],
         tier: ModelTier = ModelTier.MEDIUM,
+        allow_prompt_fallback: bool = True,
     ) -> T:
         """
         Get structured output using LangChain with_structured_output.
@@ -321,6 +330,9 @@ class LLMGateway:
             return result
 
         except Exception as e:
+            if not allow_prompt_fallback:
+                raise
+
             logger.warning(
                 "structured_output_failed_trying_fallback",
                 error=str(e)[:100],
@@ -374,7 +386,12 @@ class LLMGateway:
                 # Use a generic wrapper that accepts any JSON
                 pydantic_model = _build_generic_model_from_prompt(messages)
 
-            result = await self.chat_structured(pydantic_model, messages, tier)
+            result = await self.chat_structured(
+                pydantic_model,
+                messages,
+                tier,
+                allow_prompt_fallback=False,
+            )
             return result.model_dump()
 
         except Exception as e:
