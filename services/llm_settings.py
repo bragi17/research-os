@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
 import inspect
 import os
-import subprocess
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -51,18 +49,14 @@ def encrypt_api_key(api_key: str) -> str:
     if not api_key:
         return ""
     fernet = _get_fernet()
-    if fernet is not None:
-        return fernet.encrypt(api_key.encode("utf-8")).decode("utf-8")
-    return _encrypt_fernet_token(api_key)
+    return fernet.encrypt(api_key.encode("utf-8")).decode("utf-8")
 
 
 def decrypt_api_key(encrypted_api_key: str | None) -> str | None:
     if not encrypted_api_key:
         return None
     fernet = _get_fernet()
-    if fernet is not None:
-        return fernet.decrypt(encrypted_api_key.encode("utf-8")).decode("utf-8")
-    return _decrypt_fernet_token(encrypted_api_key)
+    return fernet.decrypt(encrypted_api_key.encode("utf-8")).decode("utf-8")
 
 
 def _settings_secret() -> str:
@@ -78,88 +72,15 @@ def _raw_encryption_key() -> bytes:
     return hashlib.sha256(_settings_secret().encode("utf-8")).digest()
 
 
-def _get_fernet() -> Any | None:
+def _get_fernet() -> Any:
     try:
         from cryptography.fernet import Fernet
-    except ImportError:
-        return None
+    except ImportError as exc:
+        raise RuntimeError(
+            "cryptography is required to store DeepSeek API keys"
+        ) from exc
     key = base64.urlsafe_b64encode(_raw_encryption_key())
     return Fernet(key)
-
-
-def _encrypt_fernet_token(api_key: str) -> str:
-    signing_key, encryption_key = _fernet_keys()
-    iv = os.urandom(16)
-    padded = _pkcs7_pad(api_key.encode("utf-8"))
-    ciphertext = _openssl_aes_cbc(padded, encryption_key, iv, decrypt=False)
-    payload = b"\x80" + int(time.time()).to_bytes(8, "big") + iv + ciphertext
-    mac = hmac.new(signing_key, payload, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(payload + mac).decode("ascii")
-
-
-def _decrypt_fernet_token(encrypted_api_key: str) -> str:
-    data = base64.urlsafe_b64decode(encrypted_api_key.encode("ascii"))
-    if len(data) < 73 or data[0] != 0x80:
-        raise ValueError("Invalid encrypted API key")
-    payload, actual_mac = data[:-32], data[-32:]
-    signing_key, encryption_key = _fernet_keys()
-    expected_mac = hmac.new(signing_key, payload, hashlib.sha256).digest()
-    if not hmac.compare_digest(actual_mac, expected_mac):
-        raise ValueError("Encrypted API key authentication failed")
-    iv = payload[9:25]
-    plaintext = _openssl_aes_cbc(payload[25:], encryption_key, iv, decrypt=True)
-    return _pkcs7_unpad(plaintext).decode("utf-8")
-
-
-def _fernet_keys() -> tuple[bytes, bytes]:
-    key = _raw_encryption_key()
-    return key[:16], key[16:]
-
-
-def _pkcs7_pad(data: bytes) -> bytes:
-    padding_size = 16 - (len(data) % 16)
-    return data + bytes([padding_size]) * padding_size
-
-
-def _pkcs7_unpad(data: bytes) -> bytes:
-    if not data:
-        raise ValueError("Invalid encrypted API key padding")
-    padding_size = data[-1]
-    if padding_size < 1 or padding_size > 16:
-        raise ValueError("Invalid encrypted API key padding")
-    if data[-padding_size:] != bytes([padding_size]) * padding_size:
-        raise ValueError("Invalid encrypted API key padding")
-    return data[:-padding_size]
-
-
-def _openssl_aes_cbc(
-    data: bytes,
-    key: bytes,
-    iv: bytes,
-    *,
-    decrypt: bool,
-) -> bytes:
-    mode = "-d" if decrypt else "-e"
-    result = subprocess.run(
-        [
-            "openssl",
-            "enc",
-            "-aes-128-cbc",
-            mode,
-            "-K",
-            key.hex(),
-            "-iv",
-            iv.hex(),
-            "-nopad",
-        ],
-        input=data,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise ValueError("OpenSSL failed to process encrypted API key")
-    return result.stdout
 
 
 class LLMSettingsRepository:

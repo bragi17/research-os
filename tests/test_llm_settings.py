@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from collections.abc import Callable
 from typing import Any
 
@@ -83,6 +84,32 @@ def test_encrypt_api_key_requires_credential_key(
     with pytest.raises(
         RuntimeError,
         match="CREDENTIAL_ENCRYPTION_KEY is required to store DeepSeek API keys",
+    ):
+        encrypt_api_key("test-secret-key")
+
+
+def test_encrypt_api_key_requires_cryptography(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "unit-test-encryption-secret")
+    original_import = builtins.__import__
+
+    def fake_import(
+        name: str,
+        globals: dict[str, Any] | None = None,
+        locals: dict[str, Any] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> Any:
+        if name == "cryptography.fernet":
+            raise ImportError("simulated missing cryptography")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(
+        RuntimeError,
+        match="cryptography is required to store DeepSeek API keys",
     ):
         encrypt_api_key("test-secret-key")
 
