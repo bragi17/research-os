@@ -42,9 +42,10 @@ def _profile(**overrides: Any) -> LLMProfile:
 
 
 class FakeRepository:
-    def __init__(self, profile: LLMProfile) -> None:
+    def __init__(self, profile: LLMProfile | None) -> None:
         self.profile = profile
         self.get_active_profile = AsyncMock(return_value=profile)
+        self.peek_active_profile = AsyncMock(return_value=profile)
         self.upsert_active_profile = AsyncMock(return_value=profile)
         self.clear_api_key = AsyncMock(return_value=profile)
         self.record_test_result = AsyncMock(return_value=profile)
@@ -212,3 +213,41 @@ def test_legacy_test_llm_delegates_to_gateway_and_records_result(
         temperature=0,
     )
     repo.record_test_result.assert_awaited_once_with("ok", None)
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        None,
+        _profile(api_key_preview="", is_key_set=False),
+    ],
+)
+def test_llm_test_requires_saved_active_profile_with_key_without_persisting(
+    monkeypatch: pytest.MonkeyPatch,
+    profile: LLMProfile | None,
+) -> None:
+    gateway = Mock()
+    gateway.chat = AsyncMock(
+        return_value={"model": DEFAULT_DEEPSEEK_MODEL, "content": "OK"}
+    )
+    repo = FakeRepository(profile)
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda: repo,
+        raising=False,
+    )
+    monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
+
+    response = _client().post("/api/v1/settings/llm/test")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "error",
+        "error": "DeepSeek API key is not configured",
+    }
+    gateway.chat.assert_not_called()
+    repo.peek_active_profile.assert_awaited_once_with(include_secret=False)
+    repo.get_active_profile.assert_not_called()
+    repo.upsert_active_profile.assert_not_called()
+    repo.record_test_result.assert_not_called()

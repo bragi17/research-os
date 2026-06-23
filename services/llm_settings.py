@@ -93,6 +93,15 @@ class LLMSettingsRepository:
             return await self.bootstrap_from_env(include_secret=include_secret)
         return _profile_from_row(row, include_secret=include_secret)
 
+    async def peek_active_profile(
+        self,
+        include_secret: bool = False,
+    ) -> LLMProfile | None:
+        row = await self._fetch_active_row()
+        if row is None:
+            return None
+        return _profile_from_row(row, include_secret=include_secret)
+
     async def bootstrap_from_env(self, include_secret: bool = False) -> LLMProfile:
         existing = await self._fetch_active_row()
         if existing is not None:

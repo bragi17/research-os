@@ -264,6 +264,13 @@ async def delete_llm_api_key() -> dict[str, Any]:
 async def _test_saved_llm_connection() -> dict[str, Any]:
     """Test LLM API connection with current settings."""
     repo = LLMSettingsRepository()
+    profile = await repo.peek_active_profile(include_secret=False)
+    if profile is None or not profile.is_key_set:
+        return {
+            "status": "error",
+            "error": "DeepSeek API key is not configured",
+        }
+
     try:
         from apps.worker.llm_gateway import get_gateway
 
