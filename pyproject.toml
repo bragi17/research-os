@@ -37,6 +37,9 @@ dependencies = [
     # LLM Gateway
     "openai>=1.59.0",
 
+    # Secret management
+    "cryptography>=43.0.0",
+
     # PDF Processing
     "pymupdf>=1.25.0",
     "pypdf>=5.1.0",
