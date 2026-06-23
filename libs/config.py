@@ -10,10 +10,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # LLM
-    openai_api_key: str = ""
-    openai_base_url: str = "https://api.openai.com/v1"
-    openai_model_default: str = "gpt-4o"
-    openai_model_cheap: str = "gpt-4o-mini"
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-pro"
+    credential_encryption_key: str = ""
 
     # Tongyi/DashScope Embedding & Rerank
     dashscope_api_key: str = ""
