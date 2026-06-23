@@ -103,7 +103,7 @@ tests/              # pytest test suite
 - All API routes under `/api/v1/`
 - Pydantic models in `libs/schemas/`
 - Database CRUD in `apps/api/database.py` (single file)
-- LLM calls through `apps/worker/llm_gateway.py` via `get_gateway()`
+- LLM calls through `apps/worker/llm_gateway.py`; DeepSeek is the only LLM provider and credentials are resolved from `services/llm_settings.py`.
 - **Structured output**: `chat_json()` uses LangChain `with_structured_output` (function calling) first, falls back to prompt+regex
 - **Progress events**: Worker nodes call `emit_progress(run_id, stage, action, detail)` for fine-grained UI updates
 - Config via `libs/config.py` (pydantic-settings) or `os.getenv()` with `.env`

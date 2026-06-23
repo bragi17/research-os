@@ -46,7 +46,7 @@ User --> Next.js Frontend --> FastAPI API --> Redis Queue --> Worker Process
 | **Object Storage** | MinIO / Local filesystem |
 | **PDF Parsing** | GROBID + PyMuPDF |
 | **LaTeX Parsing** | Custom parser (ported from latex-paper-mirror) |
-| **LLM** | OpenAI-compatible API (configurable) |
+| **LLM** | DeepSeek via encrypted credential store and OpenAI-compatible client |
 | **Academic Data** | Semantic Scholar, OpenAlex, Crossref, Unpaywall |
 | **Frontend** | Next.js 15 + Tailwind CSS |
 | **Auth** | JWT (bcrypt + PyJWT) |
@@ -223,14 +223,16 @@ PYTHONPATH=. pytest tests/ -v
 
 ## Configuration
 
-All settings are centralized in `libs/config.py` using pydantic-settings. Key environment variables:
+Most settings are centralized in `libs/config.py` using pydantic-settings. Runtime LLM credentials are stored in the encrypted credential store through `services/llm_settings.py`; the DeepSeek environment variables below are bootstrap values imported only when no stored LLM profile exists.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DATABASE_URL` | PostgreSQL connection | `postgresql://...` |
 | `REDIS_URL` | Redis connection | `redis://localhost:6379/0` |
-| `OPENAI_API_KEY` | LLM API key | (required) |
-| `OPENAI_BASE_URL` | LLM endpoint | `https://api.openai.com/v1` |
+| `DEEPSEEK_API_KEY` | Bootstrap DeepSeek API key, imported only when no stored LLM profile exists | (empty) |
+| `DEEPSEEK_BASE_URL` | Bootstrap DeepSeek endpoint | `https://api.deepseek.com` |
+| `DEEPSEEK_MODEL` | Bootstrap DeepSeek model | `deepseek-v4-pro` |
+| `CREDENTIAL_ENCRYPTION_KEY` | Encrypts stored model credentials | (recommended in production) |
 | `S2_API_KEY` | Semantic Scholar API key | (optional) |
 | `JWT_SECRET` | JWT signing secret | (required in production) |
 | `GROBID_URL` | GROBID service URL | `http://localhost:8070` |
