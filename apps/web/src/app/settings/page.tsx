@@ -6,15 +6,43 @@ import Link from "next/link";
 interface SettingItem {
   key: string;
   value: string;
+  display_value?: string;
   is_set: boolean;
   is_sensitive: boolean;
+}
+
+interface LLMProfile {
+  provider: string;
+  label: string;
+  base_url: string;
+  model: string;
+  api_key_preview: string;
+  is_key_set: boolean;
+  last_test_status: string | null;
+  last_test_error: string | null;
+  last_test_at: string | null;
 }
 
 interface Category {
   id: string;
   label: string;
   items: SettingItem[];
+  profile?: LLMProfile;
 }
+
+interface LLMEdit {
+  api_key: string;
+  base_url: string;
+  model: string;
+  label: string;
+}
+
+const DEFAULT_LLM_EDIT: LLMEdit = {
+  api_key: "",
+  base_url: "https://api.deepseek.com",
+  model: "deepseek-v4-pro",
+  label: "DeepSeek",
+};
 
 const CATEGORY_ICONS: Record<string, string> = {
   llm: "🧠",
@@ -40,13 +68,22 @@ export default function SettingsPage() {
   const [saveResult, setSaveResult] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { status: string; detail: string }>>({});
   const [testing, setTesting] = useState<string | null>(null);
+  const [llmEdit, setLlmEdit] = useState<LLMEdit>(DEFAULT_LLM_EDIT);
 
   const fetchSettings = useCallback(async () => {
     try {
       const res = await fetch("/api/v1/settings/models");
       if (res.ok) {
         const data = await res.json();
-        setCategories(data.categories);
+        const loadedCategories = data.categories as Category[];
+        setCategories(loadedCategories);
+        const llmProfile = loadedCategories.find((cat) => cat.id === "llm")?.profile;
+        setLlmEdit({
+          api_key: "",
+          base_url: llmProfile?.base_url || DEFAULT_LLM_EDIT.base_url,
+          model: llmProfile?.model || DEFAULT_LLM_EDIT.model,
+          label: llmProfile?.label || DEFAULT_LLM_EDIT.label,
+        });
       }
     } catch { /* silent */ }
     finally { setLoading(false); }
@@ -74,8 +111,74 @@ export default function SettingsPage() {
         setEdits({});
         fetchSettings();
       } else {
-        const err = await res.json();
-        setSaveResult(`Error: ${err.detail}`);
+        try {
+          const err = await res.json();
+          setSaveResult(`Error: ${err.detail || res.statusText}`);
+        } catch {
+          setSaveResult(`Error: ${res.status} ${res.statusText}`);
+        }
+      }
+    } catch (e) {
+      setSaveResult(`Error: ${e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleLlmEdit = (key: keyof LLMEdit, value: string) => {
+    setLlmEdit((prev) => ({ ...prev, [key]: value }));
+    setSaveResult(null);
+  };
+
+  const handleSaveLlm = async () => {
+    setSaving(true);
+    setSaveResult(null);
+    try {
+      const res = await fetch("/api/v1/settings/llm", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          label: llmEdit.label,
+          base_url: llmEdit.base_url,
+          model: llmEdit.model,
+          api_key: llmEdit.api_key.trim() ? llmEdit.api_key : null,
+        }),
+      });
+      if (res.ok) {
+        setSaveResult("DeepSeek settings saved successfully.");
+        setLlmEdit((prev) => ({ ...prev, api_key: "" }));
+        fetchSettings();
+      } else {
+        try {
+          const err = await res.json();
+          setSaveResult(`Error: ${err.detail || res.statusText}`);
+        } catch {
+          setSaveResult(`Error: ${res.status} ${res.statusText}`);
+        }
+      }
+    } catch (e) {
+      setSaveResult(`Error: ${e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClearLlmKey = async () => {
+    setSaving(true);
+    setSaveResult(null);
+    try {
+      const res = await fetch("/api/v1/settings/llm/api-key", { method: "DELETE" });
+      if (res.ok) {
+        setSaveResult("DeepSeek API key cleared.");
+        setLlmEdit((prev) => ({ ...prev, api_key: "" }));
+        fetchSettings();
+      } else {
+        try {
+          const err = await res.json();
+          setSaveResult(`Error: ${err.detail || res.statusText}`);
+        } catch {
+          setSaveResult(`Error: ${res.status} ${res.statusText}`);
+        }
       }
     } catch (e) {
       setSaveResult(`Error: ${e}`);
@@ -87,7 +190,14 @@ export default function SettingsPage() {
   const handleTest = async (type: "llm" | "embedding") => {
     setTesting(type);
     try {
-      const res = await fetch(`/api/v1/settings/models/test-${type}`, { method: "POST" });
+      const testUrl = type === "llm"
+        ? "/api/v1/settings/llm/test"
+        : "/api/v1/settings/models/test-embedding";
+      const res = await fetch(testUrl, { method: "POST" });
+      if (!res.ok) {
+        setTestResults((prev) => ({ ...prev, [type]: { status: "error", detail: `HTTP ${res.status}` } }));
+        return;
+      }
       const data = await res.json();
       setTestResults((prev) => ({
         ...prev,
@@ -95,7 +205,7 @@ export default function SettingsPage() {
           status: data.status,
           detail: data.status === "ok"
             ? (type === "llm" ? `${data.model}: ${data.response}` : `Dimension: ${data.dimension}`)
-            : data.error,
+            : data.error || "Unknown error",
         },
       }));
     } catch (e) {
@@ -153,8 +263,8 @@ export default function SettingsPage() {
                   <p className="text-[11px] text-[var(--text-muted)] mt-0.5">{CATEGORY_DESC[cat.id] || ""}</p>
                 </div>
               </div>
-              {/* Test buttons for LLM and Embedding */}
-              {(cat.id === "llm" || cat.id === "embedding") && (
+              {/* Test button for Embedding */}
+              {cat.id === "embedding" && (
                 <button
                   onClick={() => handleTest(cat.id as "llm" | "embedding")}
                   disabled={testing === cat.id}
@@ -178,39 +288,124 @@ export default function SettingsPage() {
           </div>
 
           {/* Setting items */}
-          <div className="divide-y divide-[var(--border-subtle)]">
-            {cat.items.map((item) => {
-              const editValue = edits[item.key];
-              const isEdited = editValue !== undefined;
+          {cat.id === "llm" ? (
+            <div className="px-5 py-4 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-[160px_1fr] gap-3 items-center">
+                <span className="text-[12px] text-[var(--text-secondary)] font-medium">Provider</span>
+                <div className="text-[13px] text-[var(--text-primary)]">DeepSeek</div>
 
-              return (
-                <div key={item.key} className="flex items-center gap-4 px-5 py-3">
-                  <div className="w-[220px] shrink-0">
-                    <span className="text-[12px] text-[var(--text-secondary)] font-medium" style={{ fontFamily: "var(--font-mono)" }}>
-                      {item.key}
+                <label htmlFor="llm-base-url" className="text-[12px] text-[var(--text-secondary)] font-medium">
+                  Base URL
+                </label>
+                <input
+                  id="llm-base-url"
+                  type="text"
+                  className="input-field text-[13px] py-1.5"
+                  value={llmEdit.base_url}
+                  onChange={(e) => handleLlmEdit("base_url", e.target.value)}
+                />
+
+                <label htmlFor="llm-model" className="text-[12px] text-[var(--text-secondary)] font-medium">
+                  Model
+                </label>
+                <input
+                  id="llm-model"
+                  type="text"
+                  className="input-field text-[13px] py-1.5"
+                  value={llmEdit.model}
+                  onChange={(e) => handleLlmEdit("model", e.target.value)}
+                />
+
+                <label htmlFor="llm-api-key" className="text-[12px] text-[var(--text-secondary)] font-medium">
+                  API key
+                </label>
+                <input
+                  id="llm-api-key"
+                  type="password"
+                  className="input-field text-[13px] py-1.5"
+                  value={llmEdit.api_key}
+                  placeholder={cat.profile?.is_key_set ? cat.profile.api_key_preview || "(set)" : "(not set)"}
+                  onChange={(e) => handleLlmEdit("api_key", e.target.value)}
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className={`px-1.5 py-0.5 rounded-full ${
+                    cat.profile?.is_key_set
+                      ? "bg-[var(--accent-green-soft)] text-[var(--accent-green)]"
+                      : "bg-[var(--accent-amber-soft)] text-[var(--accent-amber)]"
+                  }`}>
+                    {cat.profile?.is_key_set ? "key set" : "key empty"}
+                  </span>
+                  {cat.profile?.api_key_preview && (
+                    <span className="text-[var(--text-muted)]" style={{ fontFamily: "var(--font-mono)" }}>
+                      {cat.profile.api_key_preview}
                     </span>
-                  </div>
-                  <div className="flex-1">
-                    <input
-                      type={item.is_sensitive ? "password" : "text"}
-                      className={`input-field text-[13px] py-1.5 ${isEdited ? "border-[var(--accent)]" : ""}`}
-                      style={{ fontFamily: "var(--font-mono)" }}
-                      value={isEdited ? editValue : item.value}
-                      placeholder={item.is_set ? "(set)" : "(not set)"}
-                      onChange={(e) => handleEdit(item.key, e.target.value)}
-                    />
-                  </div>
-                  <div className="w-[60px] shrink-0 text-right">
-                    {item.is_set ? (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--accent-green-soft)] text-[var(--accent-green)]">set</span>
-                    ) : (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--accent-amber-soft)] text-[var(--accent-amber)]">empty</span>
-                    )}
-                  </div>
+                  )}
+                  {cat.profile?.last_test_status && (
+                    <span className={cat.profile.last_test_status === "ok" ? "text-[var(--accent-green)]" : "text-[var(--accent-red)]"}>
+                      Last test: {cat.profile.last_test_status}
+                      {cat.profile.last_test_error ? ` (${cat.profile.last_test_error})` : ""}
+                    </span>
+                  )}
                 </div>
-              );
-            })}
-          </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={handleSaveLlm} disabled={saving} className="btn-primary text-[11px] px-3 py-1">
+                    {saving ? "Saving..." : "Save DeepSeek"}
+                  </button>
+                  <button
+                    onClick={() => handleTest("llm")}
+                    disabled={testing === "llm"}
+                    className="btn-secondary text-[11px] px-3 py-1"
+                  >
+                    {testing === "llm" ? "Testing..." : "Test Connection"}
+                  </button>
+                  <button
+                    onClick={handleClearLlmKey}
+                    disabled={saving || (!cat.profile?.is_key_set && !llmEdit.api_key.trim())}
+                    className="btn-secondary text-[11px] px-3 py-1"
+                  >
+                    Clear API Key
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="divide-y divide-[var(--border-subtle)]">
+              {cat.items.map((item) => {
+                const editValue = edits[item.key];
+                const isEdited = editValue !== undefined;
+
+                return (
+                  <div key={item.key} className="flex items-center gap-4 px-5 py-3">
+                    <div className="w-[220px] shrink-0">
+                      <span className="text-[12px] text-[var(--text-secondary)] font-medium" style={{ fontFamily: "var(--font-mono)" }}>
+                        {item.key}
+                      </span>
+                    </div>
+                    <div className="flex-1">
+                      <input
+                        type={item.is_sensitive ? "password" : "text"}
+                        className={`input-field text-[13px] py-1.5 ${isEdited ? "border-[var(--accent)]" : ""}`}
+                        style={{ fontFamily: "var(--font-mono)" }}
+                        value={isEdited ? editValue : item.value}
+                        placeholder={item.is_set ? "(set)" : "(not set)"}
+                        onChange={(e) => handleEdit(item.key, e.target.value)}
+                      />
+                    </div>
+                    <div className="w-[60px] shrink-0 text-right">
+                      {item.is_set ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--accent-green-soft)] text-[var(--accent-green)]">set</span>
+                      ) : (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--accent-amber-soft)] text-[var(--accent-amber)]">empty</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       ))}
     </div>
