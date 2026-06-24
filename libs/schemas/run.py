@@ -315,6 +315,7 @@ class CreateRunRequest(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     exclude_keywords: list[str] = Field(default_factory=list)
     seed_papers: list[dict[str, str]] = Field(default_factory=list)
+    project_id: UUID | None = None
     goal_type: GoalType = GoalType.SURVEY_PLUS_INNOVATIONS
     budget: Budget = Field(default_factory=Budget)
     policy: Policy = Field(default_factory=Policy)
@@ -336,6 +337,7 @@ class RunResponse(BaseModel):
     updated_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    project_id: UUID | None = None
     # v2 multi-mode fields
     mode: str | None = None
     parent_run_id: UUID | None = None

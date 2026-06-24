@@ -336,6 +336,23 @@ class TestCreateRunV2:
         data = r.json()
         assert data["mode"] == "frontier"
 
+    def test_create_run_with_project_id(self, client: TestClient):
+        project_id = str(uuid4())
+        r = client.post(
+            "/api/v1/runs/multimode",
+            json={
+                "title": "Project Scoped Run",
+                "topic": "Reinforcement learning for robotic manipulation",
+                "mode": "frontier",
+                "project_id": project_id,
+            },
+        )
+
+        assert r.status_code == 201
+        data = r.json()
+        assert data["project_id"] == project_id
+        assert _mock_runs[data["id"]]["project_id"] == UUID(project_id)
+
     def test_create_run_with_atlas_mode(self, client: TestClient):
         r = client.post(
             "/api/v1/runs/multimode",

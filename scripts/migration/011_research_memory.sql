@@ -1,4 +1,10 @@
 -- Project-level memory ledger for research artifacts and decisions.
+ALTER TABLE research_run
+    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES research_project(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_research_run_project
+    ON research_run(project_id);
+
 CREATE TABLE IF NOT EXISTS research_memory_item (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     project_id UUID NOT NULL REFERENCES research_project(id) ON DELETE CASCADE,
@@ -20,6 +26,8 @@ CREATE TABLE IF NOT EXISTS research_memory_item (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_research_memory_item_project_type_key
     ON research_memory_item(project_id, item_type, stable_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_research_memory_item_project_id
+    ON research_memory_item(project_id, id);
 CREATE INDEX IF NOT EXISTS idx_research_memory_item_project_type
     ON research_memory_item(project_id, item_type);
 CREATE INDEX IF NOT EXISTS idx_research_memory_item_source_run
@@ -45,3 +53,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_research_memory_edge_unique
     ON research_memory_edge(source_item_id, target_item_id, edge_type);
 CREATE INDEX IF NOT EXISTS idx_research_memory_edge_project
     ON research_memory_edge(project_id);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'research_memory_edge_source_project_fk'
+    ) THEN
+        ALTER TABLE research_memory_edge
+            ADD CONSTRAINT research_memory_edge_source_project_fk
+            FOREIGN KEY (project_id, source_item_id)
+            REFERENCES research_memory_item(project_id, id)
+            ON DELETE CASCADE;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'research_memory_edge_target_project_fk'
+    ) THEN
+        ALTER TABLE research_memory_edge
+            ADD CONSTRAINT research_memory_edge_target_project_fk
+            FOREIGN KEY (project_id, target_item_id)
+            REFERENCES research_memory_item(project_id, id)
+            ON DELETE CASCADE;
+    END IF;
+END $$;

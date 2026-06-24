@@ -23,11 +23,13 @@ async def test_enqueue_run_includes_library_pool_ids():
     redis = FakeRedis()
     redis_queue.set_redis(redis)
     run_id = uuid4()
+    project_id = uuid4()
 
     try:
         enqueued = await redis_queue.enqueue_run(
             run_id,
             {
+                "project_id": project_id,
                 "topic": "3D anomaly detection",
                 "goal_type": "survey_plus_innovations",
                 "mode": "frontier",
@@ -44,4 +46,5 @@ async def test_enqueue_run_includes_library_pool_ids():
 
     assert enqueued is True
     payload = json.loads(redis.items[0][1])
+    assert payload["project_id"] == str(project_id)
     assert payload["library_pool_ids"] == ["11111111-1111-1111-1111-111111111111"]

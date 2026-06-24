@@ -73,3 +73,42 @@ async def test_worker_logs_memory_error_without_failing_run(monkeypatch):
             {"run_id": str(run_id), "error": "ledger unavailable"},
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_mode_graph_passes_project_id_to_state(monkeypatch):
+    from apps.worker.modes import divergent
+
+    seen_state: dict = {}
+
+    class FakeCompiledGraph:
+        async def ainvoke(self, initial_state, config=None):
+            seen_state.update(initial_state)
+            return initial_state
+
+    class FakeGraph:
+        def compile(self, checkpointer=None):
+            return FakeCompiledGraph()
+
+    monkeypatch.setattr(divergent, "create_divergent_graph", lambda: FakeGraph())
+
+    run_id = uuid4()
+    project_id = uuid4()
+    worker = WorkerRunner()
+
+    result = await worker._run_mode_graph(
+        mode="divergent",
+        run_id=run_id,
+        topic="research agents",
+        keywords=[],
+        seed_paper_ids=[],
+        context_bundle={},
+        budget={},
+        run_record={
+            "project_id": project_id,
+            "goal_type": "survey_plus_innovations",
+        },
+    )
+
+    assert seen_state["project_id"] == project_id
+    assert result.project_id == project_id

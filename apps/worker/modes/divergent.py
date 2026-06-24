@@ -502,10 +502,18 @@ def _failed_idea_memory_prompt_items(
         payload = item.get("payload_json") or {}
         items.append(
             {
-                "title": item.get("title"),
-                "summary_text": item.get("summary_text"),
-                "strongest_objection": payload.get("strongest_objection"),
-                "closest_prior_work": payload.get("closest_prior_work", [])[:3],
+                "title": _verifier_value(item.get("title")),
+                "summary_text": _verifier_value(item.get("summary_text")),
+                "strongest_objection": _verifier_value(
+                    payload.get("strongest_objection")
+                ),
+                "closest_prior_work": [
+                    _verifier_closest_prior_work(work)
+                    for work in payload.get("closest_prior_work", [])[
+                        :_VERIFIER_RECORD_MAX_ITEMS
+                    ]
+                    if isinstance(work, dict)
+                ],
             }
         )
     return items

@@ -49,6 +49,7 @@ async def create_run(
         "updated_at": now,
         "workspace_id": user["workspace_id"],
         "created_by": user["id"],
+        "project_id": request.project_id,
     }
 
     try:

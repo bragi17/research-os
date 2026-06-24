@@ -59,6 +59,7 @@ class CreateRunV2Request(BaseModel):
     library_pool_ids: list[UUID] = Field(default_factory=list)
     budget: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
+    project_id: UUID | None = None
     parent_run_id: UUID | None = None
     context_bundle_id: UUID | None = None
 
@@ -155,6 +156,7 @@ async def create_run_v2(
         "updated_at": now,
         "workspace_id": user["workspace_id"],
         "created_by": user["id"],
+        "project_id": request.project_id,
         # v2 multi-mode columns
         "mode": request.mode.value,
         "parent_run_id": request.parent_run_id,
@@ -190,6 +192,7 @@ async def create_run_v2(
     result.setdefault("mode", request.mode.value)
     result.setdefault("parent_run_id", request.parent_run_id)
     result.setdefault("context_bundle_id", request.context_bundle_id)
+    result.setdefault("project_id", request.project_id)
     result.setdefault("current_stage", "init")
     return result
 
@@ -228,6 +231,7 @@ async def spawn_run(
         "updated_at": now,
         "workspace_id": user["workspace_id"],
         "created_by": user["id"],
+        "project_id": parent.get("project_id"),
         # v2 multi-mode columns
         "mode": request.target_mode.value,
         "parent_run_id": run_id,

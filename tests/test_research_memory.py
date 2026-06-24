@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -115,8 +116,43 @@ async def test_create_memory_edge(mock_pool):
 
     sql = mock_pool.fetchrow.call_args.args[0]
     assert "INSERT INTO research_memory_edge" in sql
+    assert "FROM research_memory_item source_item" in sql
+    assert "target_item.project_id = source_item.project_id" in sql
     assert "ON CONFLICT (source_item_id, target_item_id, edge_type)" in sql
     assert result["edge_type"] == "derived_from"
+
+
+@pytest.mark.asyncio
+async def test_create_memory_edge_rejects_cross_project_items(mock_pool):
+    mock_pool.fetchrow.return_value = None
+
+    from apps.api.database import create_research_memory_edge
+
+    with pytest.raises(ValueError, match="same project"):
+        await create_research_memory_edge(
+            {
+                "project_id": PROJECT_ID,
+                "source_item_id": ITEM_ID,
+                "target_item_id": TARGET_ID,
+                "edge_type": "derived_from",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_memory_payload_must_be_json_object(mock_pool):
+    from apps.api.database import upsert_research_memory_item
+
+    with pytest.raises(ValueError, match="payload_json must be a JSON object"):
+        await upsert_research_memory_item(
+            {
+                "project_id": PROJECT_ID,
+                "source_run_id": RUN_ID,
+                "item_type": "failed_idea",
+                "stable_key": "bad-payload",
+                "payload_json": ["not", "an", "object"],
+            }
+        )
 
 
 def test_memory_items_from_state_emits_paper_and_failed_idea():
@@ -164,3 +200,36 @@ def test_memory_items_from_state_emits_paper_and_failed_idea():
         failed["payload_json"]["strongest_objection"]
         == "Covered by verified prior art."
     )
+
+
+@pytest.mark.asyncio
+async def test_create_run_accepts_project_id(mock_pool):
+    mock_pool.fetchrow.return_value = _record(
+        {
+            "id": RUN_ID,
+            "project_id": PROJECT_ID,
+            "title": "Project run",
+            "topic": "research agents",
+        }
+    )
+
+    from apps.api.database import create_run
+
+    result = await create_run(
+        {
+            "id": RUN_ID,
+            "project_id": PROJECT_ID,
+            "title": "Project run",
+            "topic": "research agents",
+            "status": "queued",
+            "goal_type": "survey_plus_innovations",
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+        }
+    )
+
+    sql = mock_pool.fetchrow.call_args.args[0]
+    values = mock_pool.fetchrow.call_args.args[1:]
+    assert "project_id" in sql
+    assert PROJECT_ID in values
+    assert result["project_id"] == PROJECT_ID

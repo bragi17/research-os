@@ -11,7 +11,10 @@ from apps.api.db import pool as db_pool
 
 
 def _jsonb_object(value: Any) -> dict[str, Any]:
-    return orjson.loads(orjson.dumps(value or {}))
+    normalized = orjson.loads(orjson.dumps(value or {}))
+    if not isinstance(normalized, dict):
+        raise ValueError("payload_json must be a JSON object")
+    return normalized
 
 
 async def upsert_research_memory_item(data: dict[str, Any]) -> dict[str, Any]:
@@ -86,21 +89,33 @@ async def create_research_memory_edge(data: dict[str, Any]) -> dict[str, Any]:
         INSERT INTO research_memory_edge (
             project_id, source_item_id, target_item_id,
             edge_type, evidence, payload_json
-        ) VALUES (
-            $1, $2, $3,
-            $4, $5, $6
         )
+        SELECT
+            source_item.project_id,
+            source_item.id,
+            target_item.id,
+            $4,
+            $5,
+            $6
+        FROM research_memory_item source_item
+        JOIN research_memory_item target_item
+            ON target_item.id = $2
+            AND target_item.project_id = source_item.project_id
+        WHERE source_item.id = $1
+            AND source_item.project_id = $3
         ON CONFLICT (source_item_id, target_item_id, edge_type)
         DO UPDATE SET
             evidence = EXCLUDED.evidence,
             payload_json = EXCLUDED.payload_json
         RETURNING *
         """,
-        data["project_id"],
         data["source_item_id"],
         data["target_item_id"],
+        data["project_id"],
         data["edge_type"],
         data.get("evidence"),
         payload_json,
     )
+    if row is None:
+        raise ValueError("Memory edge endpoints must belong to the same project")
     return db_pool.record_to_dict(row)

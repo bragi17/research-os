@@ -1893,6 +1893,35 @@ async def test_idea_composition_includes_failed_idea_memory(monkeypatch):
     )
 
 
+def test_failed_idea_memory_prompt_items_are_bounded():
+    long_text = "x" * 1000
+
+    prompt_items = divergent._failed_idea_memory_prompt_items(
+        [
+            {
+                "title": long_text,
+                "summary_text": long_text,
+                "payload_json": {
+                    "strongest_objection": long_text,
+                    "closest_prior_work": [
+                        {"title": long_text, "raw_json": {"unsafe": long_text}},
+                    ],
+                },
+            }
+        ]
+    )
+
+    rendered = divergent.json.dumps(prompt_items, default=str)
+    assert "raw_json" not in rendered
+    assert len(prompt_items[0]["title"]) <= divergent._VERIFIER_TEXT_MAX_LENGTH
+    assert len(prompt_items[0]["summary_text"]) <= divergent._VERIFIER_TEXT_MAX_LENGTH
+    assert (
+        len(prompt_items[0]["strongest_objection"])
+        <= divergent._VERIFIER_TEXT_MAX_LENGTH
+    )
+    assert len(rendered) < 1500
+
+
 @pytest.mark.asyncio
 async def test_idea_portfolio_excludes_rejected_jury_cards(monkeypatch):
     async def fake_emit_progress(*args, **kwargs):
