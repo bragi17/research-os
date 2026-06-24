@@ -74,6 +74,18 @@ def _normalize_title(title: str) -> str:
     return " ".join(normalized.split())
 
 
+def _stable_unique(values: list[str]) -> list[str]:
+    """Return values deduplicated in first-seen order."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
 # ---------------------------------------------------------------------------
 # Progress event emitter — writes fine-grained actions to run_event table
 # ---------------------------------------------------------------------------
@@ -354,6 +366,12 @@ async def verify_paper_candidates_for_run(
     source: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Verify paper candidates and persist verification records when possible."""
+    if not candidate_ids:
+        return {}
+
+    source_run_id = UUID(str(run_id))
+    unique_candidate_ids = _stable_unique(candidate_ids)
+
     from apps.api.database import upsert_paper_verification
     from services.paper_verification import PaperVerifier, candidate_from_id
 
@@ -365,18 +383,20 @@ async def verify_paper_candidates_for_run(
     )
     records: dict[str, dict[str, Any]] = {}
     try:
-        for candidate_id in candidate_ids:
+        for candidate_id in unique_candidate_ids:
             candidate = candidate_from_id(
                 candidate_id,
                 title=title_map.get(candidate_id),
                 source=source,
             )
             record = await verifier.verify(candidate)
-            payload = record.model_dump(mode="json")
-            payload["source_run_id"] = UUID(str(run_id))
-            records[candidate_id] = payload
+            db_payload = record.model_dump(mode="python")
+            db_payload["source_run_id"] = source_run_id
+            context_payload = record.model_dump(mode="json")
+            context_payload["source_run_id"] = str(source_run_id)
+            records[candidate_id] = context_payload
             try:
-                await upsert_paper_verification(payload)
+                await upsert_paper_verification(db_payload)
             except Exception as exc:
                 logger.debug(
                     "paper_verification.persist_failed",

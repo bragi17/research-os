@@ -22,6 +22,7 @@ from apps.worker.modes.base import (
     ModeGraphState,
     _estimate_cost,
     _normalize_title,
+    _stable_unique,
     check_should_continue,
     emit_progress,
     extract_claims,
@@ -411,7 +412,11 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
             venues=venue_whitelist[:5],
         )
 
-    all_new = library_ids + new_candidates + chain_candidates
+    all_new = [
+        pid
+        for pid in _stable_unique(library_ids + new_candidates + chain_candidates)
+        if pid not in state.candidate_paper_ids
+    ]
     verification_map = await verify_paper_candidates_for_run(
         state.run_id,
         all_new,
