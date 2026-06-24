@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import Link from "next/link";
 import {
   listLibraryPapers,
   searchLibrary,
@@ -11,17 +10,8 @@ import {
   uploadToLibrary,
   type LibraryPaper,
 } from "@/lib/api";
-
-const STATUS_STYLES: Record<string, { bg: string; text: string }> = {
-  analyzed: { bg: "var(--accent-green-soft)", text: "var(--accent-green)" },
-  deep_analyzed: { bg: "var(--accent-green-soft)", text: "var(--accent-green)" },
-  light_analyzed: { bg: "var(--accent-blue-soft)", text: "var(--accent-blue)" },
-  indexed: { bg: "var(--accent-green-soft)", text: "var(--accent-green)" },
-  partial: { bg: "var(--accent-amber-soft)", text: "var(--accent-amber)" },
-  pending: { bg: "var(--accent-amber-soft)", text: "var(--accent-amber)" },
-  processing: { bg: "var(--accent-blue-soft)", text: "var(--accent-blue)" },
-  failed: { bg: "var(--accent-red-soft)", text: "var(--accent-red)" },
-};
+import { LibraryPaperCard } from "@/features/library/LibraryPaperCard";
+import { LibraryUploadPanel } from "@/features/library/LibraryUploadPanel";
 
 export default function LibraryPage() {
   const [papers, setPapers] = useState<LibraryPaper[]>([]);
@@ -191,83 +181,18 @@ export default function LibraryPage() {
 
       {/* Upload panel */}
       {showUpload && (
-        <div className="card-static p-5 mb-5 animate-fade-up">
-          {/* Tab: arXiv ID / File Upload */}
-          <div className="flex gap-4 mb-4">
-            <button
-              onClick={() => setUploadTab("arxiv")}
-              className={`text-[13px] font-medium pb-1 transition-colors ${uploadTab === "arxiv" ? "text-[var(--accent)] border-b-2 border-[var(--accent)]" : "text-[var(--text-muted)]"}`}
-            >
-              arXiv ID
-            </button>
-            <button
-              onClick={() => setUploadTab("file")}
-              className={`text-[13px] font-medium pb-1 transition-colors ${uploadTab === "file" ? "text-[var(--accent)] border-b-2 border-[var(--accent)]" : "text-[var(--text-muted)]"}`}
-            >
-              Upload File
-            </button>
-          </div>
-
-          {uploadTab === "arxiv" ? (
-            <>
-              <div className="flex gap-3">
-                <input
-                  type="text"
-                  className="input-field text-[13px] flex-1"
-                  style={{ fontFamily: "var(--font-mono)" }}
-                  placeholder="e.g. 2505.24431"
-                  value={uploadId}
-                  onChange={(e) => setUploadId(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") handleUpload(); }}
-                />
-                <button onClick={handleUpload} disabled={uploading || !uploadId.trim()} className="btn-primary text-[13px] px-5">
-                  {uploading ? <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />Adding</span> : "Add"}
-                </button>
-              </div>
-              <p className="text-[11px] text-[var(--text-muted)] mt-2">
-                The paper will be downloaded from arXiv, parsed, tagged, and indexed.
-              </p>
-            </>
-          ) : (
-            <>
-              <div className="flex gap-3 items-center">
-                <label className="flex-1 cursor-pointer">
-                  <div className="input-field text-[13px] text-center py-6 border-dashed hover:border-[var(--accent)] transition-colors">
-                    {selectedFile ? (
-                      <span className="text-[var(--text-primary)]">{selectedFile.name}</span>
-                    ) : (
-                      <span className="text-[var(--text-muted)]">
-                        Click to select .tar.gz, .gz, or .zip file
-                      </span>
-                    )}
-                  </div>
-                  <input type="file" className="hidden" accept=".tar.gz,.tgz,.gz,.zip,.tex"
-                    onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
-                </label>
-                <button
-                  onClick={handleFileUpload}
-                  disabled={uploading || !selectedFile}
-                  className="btn-primary text-[13px] px-5"
-                >
-                  {uploading ? <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />Uploading</span> : "Upload"}
-                </button>
-              </div>
-              <p className="text-[11px] text-[var(--text-muted)] mt-2">
-                Upload a LaTeX source archive (same format as arXiv downloads). The paper will be parsed and indexed.
-              </p>
-            </>
-          )}
-
-          {uploading && (
-            <div className="flex items-center gap-2 mt-3 text-[11px] text-[var(--text-muted)]">
-              <div className="h-3 w-3 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin shrink-0" />
-              <span className="animate-pulse">Downloading → Parsing → Analyzing → Tagging → Embedding → Storing...</span>
-            </div>
-          )}
-          {uploadError && (
-            <p className="text-[12px] text-[var(--accent-red)] mt-2">{uploadError}</p>
-          )}
-        </div>
+        <LibraryUploadPanel
+          uploadTab={uploadTab}
+          uploadId={uploadId}
+          uploading={uploading}
+          uploadError={uploadError}
+          selectedFile={selectedFile}
+          onTabChange={setUploadTab}
+          onUploadIdChange={setUploadId}
+          onFileChange={setSelectedFile}
+          onUpload={handleUpload}
+          onFileUpload={handleFileUpload}
+        />
       )}
 
       {/* Search */}
@@ -371,107 +296,16 @@ export default function LibraryPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {filteredPapers.map((paper) => {
-            const statusStyle = STATUS_STYLES[paper.status] ?? STATUS_STYLES.pending;
-            return (
-              <div key={paper.id} className="card-static p-5">
-                <div className="flex items-start justify-between gap-4 mb-2">
-                  <h3
-                    className="text-[15px] font-medium text-[var(--text-primary)] leading-snug flex-1 line-clamp-2"
-                    style={{ fontFamily: "var(--font-display)" }}
-                  >
-                    {paper.title}
-                  </h3>
-                  <span
-                    className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider"
-                    style={{
-                      background: statusStyle.bg,
-                      color: statusStyle.text,
-                    }}
-                  >
-                    {paper.status}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2 text-[12px] text-[var(--text-muted)] mb-3">
-                  {paper.venue && <span className="font-medium">{paper.venue}</span>}
-                  {paper.venue && paper.year && <span>&middot;</span>}
-                  {paper.year && <span>{paper.year}</span>}
-                  {paper.arxiv_id && (
-                    <>
-                      <span>&middot;</span>
-                      <span style={{ fontFamily: "var(--font-mono)" }}>{paper.arxiv_id}</span>
-                    </>
-                  )}
-                  {paper.citation_count > 0 && (
-                    <>
-                      <span>&middot;</span>
-                      <span>{paper.citation_count} citations</span>
-                    </>
-                  )}
-                  {paper.field && (
-                    <>
-                      <span>&middot;</span>
-                      <span className="text-[var(--accent)]">{paper.field}</span>
-                    </>
-                  )}
-                </div>
-
-                {/* Keywords pills */}
-                {paper.keywords.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mb-3">
-                    {paper.keywords.slice(0, 6).map((kw) => (
-                      <span
-                        key={kw}
-                        className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--accent-soft)] text-[var(--accent)]"
-                      >
-                        {kw}
-                      </span>
-                    ))}
-                    {paper.keywords.length > 6 && (
-                      <span className="text-[10px] text-[var(--text-muted)] self-center">
-                        +{paper.keywords.length - 6} more
-                      </span>
-                    )}
-                  </div>
-                )}
-
-                {/* Re-analyzing progress */}
-                {reanalyzingId === paper.id && (
-                  <div className="flex items-center gap-2 mb-3 text-[11px] text-[var(--text-muted)]">
-                    <div className="h-3 w-3 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin shrink-0" />
-                    <span className="animate-pulse">Analyzing: content → sections → LLM analysis → tagging → embedding → storing...</span>
-                  </div>
-                )}
-
-                {/* Actions */}
-                <div className="flex items-center gap-2">
-                  <Link
-                    href={`/library/papers/${paper.id}`}
-                    className="btn-secondary text-[12px] px-3 py-1.5"
-                  >
-                    View
-                  </Link>
-                  {(paper.status === "partial" || paper.status === "pending" || paper.status === "light_analyzed") && (
-                    <button
-                      onClick={() => handleReanalyze(paper.id)}
-                      disabled={reanalyzingId === paper.id}
-                      className="btn-secondary text-[12px] px-3 py-1.5"
-                    >
-                      {reanalyzingId === paper.id ? "Analyzing..." : "Re-analyze"}
-                    </button>
-                  )}
-                  <button
-                    onClick={() => handleRemove(paper.id)}
-                    disabled={removingId === paper.id}
-                    className="btn-danger text-[12px] px-3 py-1.5"
-                  >
-                    {removingId === paper.id ? "Removing..." : "Remove"}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+          {filteredPapers.map((paper) => (
+            <LibraryPaperCard
+              key={paper.id}
+              paper={paper}
+              removingId={removingId}
+              reanalyzingId={reanalyzingId}
+              onRemove={handleRemove}
+              onReanalyze={handleReanalyze}
+            />
+          ))}
         </div>
       )}
     </div>

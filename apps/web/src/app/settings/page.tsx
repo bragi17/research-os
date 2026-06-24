@@ -1,78 +1,9 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import Link from "next/link";
-
-interface SettingItem {
-  key: string;
-  value: string;
-  display_value?: string;
-  is_set: boolean;
-  is_sensitive: boolean;
-}
-
-interface LLMProfile {
-  provider: string;
-  label: string;
-  base_url: string;
-  model: string;
-  api_key_preview: string;
-  is_key_set: boolean;
-  last_test_status: string | null;
-  last_test_error: string | null;
-  last_test_at: string | null;
-}
-
-interface Category {
-  id: string;
-  label: string;
-  items: SettingItem[];
-  profile?: LLMProfile;
-}
-
-interface LLMEdit {
-  api_key: string;
-  base_url: string;
-  model: string;
-  label: string;
-}
-
-const DEFAULT_LLM_EDIT: LLMEdit = {
-  api_key: "",
-  base_url: "https://api.deepseek.com",
-  model: "deepseek-v4-pro",
-  label: "DeepSeek",
-};
-
-const llmEditFromProfile = (profile?: LLMProfile): LLMEdit => ({
-  api_key: "",
-  base_url: profile?.base_url || DEFAULT_LLM_EDIT.base_url,
-  model: profile?.model || DEFAULT_LLM_EDIT.model,
-  label: profile?.label || DEFAULT_LLM_EDIT.label,
-});
-
-const isDirtyLlmEdit = (current: LLMEdit, saved: LLMEdit) => (
-  current.api_key.trim().length > 0
-  || current.base_url !== saved.base_url
-  || current.model !== saved.model
-  || current.label !== saved.label
-);
-
-const CATEGORY_ICONS: Record<string, string> = {
-  llm: "🧠",
-  embedding: "📐",
-  rerank: "🔄",
-  academic: "🎓",
-  storage: "💾",
-};
-
-const CATEGORY_DESC: Record<string, string> = {
-  llm: "Configure the LLM provider for research analysis, paper review, and innovation generation.",
-  embedding: "Configure the embedding model for vector search and RAG indexing.",
-  rerank: "Configure the rerank model for search result relevance scoring.",
-  academic: "API keys for Semantic Scholar, OpenAlex, and other academic data sources.",
-  storage: "File storage paths and service URLs.",
-};
+import { SettingsCategoryCard } from "@/features/settings/SettingsCategoryCard";
+import { DEFAULT_LLM_EDIT, isDirtyLlmEdit, llmEditFromProfile } from "@/features/settings/llmProfile";
+import type { Category, LLMEdit, TestResult } from "@/features/settings/types";
 
 export default function SettingsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
@@ -80,7 +11,7 @@ export default function SettingsPage() {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<string | null>(null);
-  const [testResults, setTestResults] = useState<Record<string, { status: string; detail: string }>>({});
+  const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
   const [testing, setTesting] = useState<string | null>(null);
   const [llmEdit, setLlmEdit] = useState<LLMEdit>(DEFAULT_LLM_EDIT);
   const [savedLlmEdit, setSavedLlmEdit] = useState<LLMEdit>(DEFAULT_LLM_EDIT);
@@ -297,161 +228,20 @@ export default function SettingsPage() {
 
       {/* Categories */}
       {categories.map((cat) => (
-        <div key={cat.id} className="card-static overflow-hidden">
-          {/* Category header */}
-          <div className="px-5 py-4 border-b border-[var(--border-subtle)]">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <span className="text-base">{CATEGORY_ICONS[cat.id] || "⚙"}</span>
-                <div>
-                  <h2 className="text-[14px] font-semibold text-[var(--text-primary)]">{cat.label}</h2>
-                  <p className="text-[11px] text-[var(--text-muted)] mt-0.5">{CATEGORY_DESC[cat.id] || ""}</p>
-                </div>
-              </div>
-              {/* Test button for Embedding */}
-              {cat.id === "embedding" && (
-                <button
-                  onClick={() => handleTest(cat.id as "llm" | "embedding")}
-                  disabled={testing === cat.id}
-                  className="btn-secondary text-[11px] px-3 py-1"
-                >
-                  {testing === cat.id ? "Testing..." : "Test Connection"}
-                </button>
-              )}
-            </div>
-            {/* Test result */}
-            {testResults[cat.id] && (
-              <div className={`mt-2 text-[12px] px-3 py-1.5 rounded-lg ${
-                testResults[cat.id].status === "ok"
-                  ? "bg-[var(--accent-green-soft)] text-[var(--accent-green)]"
-                  : "bg-[var(--accent-red-soft)] text-[var(--accent-red)]"
-              }`}>
-                {testResults[cat.id].status === "ok" ? "✓ " : "✗ "}
-                {testResults[cat.id].detail}
-              </div>
-            )}
-          </div>
-
-          {/* Setting items */}
-          {cat.id === "llm" ? (
-            <div className="px-5 py-4 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-[160px_1fr] gap-3 items-center">
-                <span className="text-[12px] text-[var(--text-secondary)] font-medium">Provider</span>
-                <div className="text-[13px] text-[var(--text-primary)]">DeepSeek</div>
-
-                <label htmlFor="llm-base-url" className="text-[12px] text-[var(--text-secondary)] font-medium">
-                  Base URL
-                </label>
-                <input
-                  id="llm-base-url"
-                  type="text"
-                  className="input-field text-[13px] py-1.5"
-                  value={llmEdit.base_url}
-                  onChange={(e) => handleLlmEdit("base_url", e.target.value)}
-                />
-
-                <label htmlFor="llm-model" className="text-[12px] text-[var(--text-secondary)] font-medium">
-                  Model
-                </label>
-                <input
-                  id="llm-model"
-                  type="text"
-                  className="input-field text-[13px] py-1.5"
-                  value={llmEdit.model}
-                  onChange={(e) => handleLlmEdit("model", e.target.value)}
-                />
-
-                <label htmlFor="llm-api-key" className="text-[12px] text-[var(--text-secondary)] font-medium">
-                  API key
-                </label>
-                <input
-                  id="llm-api-key"
-                  type="password"
-                  className="input-field text-[13px] py-1.5"
-                  value={llmEdit.api_key}
-                  placeholder={cat.profile?.is_key_set ? cat.profile.api_key_preview || "(set)" : "(not set)"}
-                  onChange={(e) => handleLlmEdit("api_key", e.target.value)}
-                />
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                  <span className={`px-1.5 py-0.5 rounded-full ${
-                    cat.profile?.is_key_set
-                      ? "bg-[var(--accent-green-soft)] text-[var(--accent-green)]"
-                      : "bg-[var(--accent-amber-soft)] text-[var(--accent-amber)]"
-                  }`}>
-                    {cat.profile?.is_key_set ? "key set" : "key empty"}
-                  </span>
-                  {cat.profile?.api_key_preview && (
-                    <span className="text-[var(--text-muted)]" style={{ fontFamily: "var(--font-mono)" }}>
-                      {cat.profile.api_key_preview}
-                    </span>
-                  )}
-                  {cat.profile?.last_test_status && (
-                    <span className={cat.profile.last_test_status === "ok" ? "text-[var(--accent-green)]" : "text-[var(--accent-red)]"}>
-                      Last test: {cat.profile.last_test_status}
-                      {cat.profile.last_test_error ? ` (${cat.profile.last_test_error})` : ""}
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button onClick={handleSaveLlm} disabled={saving} className="btn-primary text-[11px] px-3 py-1">
-                    {saving ? "Saving..." : "Save DeepSeek"}
-                  </button>
-                  <button
-                    onClick={() => handleTest("llm")}
-                    disabled={testing === "llm"}
-                    className="btn-secondary text-[11px] px-3 py-1"
-                  >
-                    {testing === "llm" ? "Testing..." : "Test Connection"}
-                  </button>
-                  <button
-                    onClick={() => handleClearLlmKey(cat)}
-                    disabled={saving || (!cat.profile?.is_key_set && !llmEdit.api_key.trim())}
-                    className="btn-secondary text-[11px] px-3 py-1"
-                  >
-                    Clear API Key
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="divide-y divide-[var(--border-subtle)]">
-              {cat.items.map((item) => {
-                const editValue = edits[item.key];
-                const isEdited = editValue !== undefined;
-
-                return (
-                  <div key={item.key} className="flex items-center gap-4 px-5 py-3">
-                    <div className="w-[220px] shrink-0">
-                      <span className="text-[12px] text-[var(--text-secondary)] font-medium" style={{ fontFamily: "var(--font-mono)" }}>
-                        {item.key}
-                      </span>
-                    </div>
-                    <div className="flex-1">
-                      <input
-                        type={item.is_sensitive ? "password" : "text"}
-                        className={`input-field text-[13px] py-1.5 ${isEdited ? "border-[var(--accent)]" : ""}`}
-                        style={{ fontFamily: "var(--font-mono)" }}
-                        value={isEdited ? editValue : item.value}
-                        placeholder={item.is_set ? "(set)" : "(not set)"}
-                        onChange={(e) => handleEdit(item.key, e.target.value)}
-                      />
-                    </div>
-                    <div className="w-[60px] shrink-0 text-right">
-                      {item.is_set ? (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--accent-green-soft)] text-[var(--accent-green)]">set</span>
-                      ) : (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--accent-amber-soft)] text-[var(--accent-amber)]">empty</span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        <SettingsCategoryCard
+          key={cat.id}
+          category={cat}
+          edits={edits}
+          llmEdit={llmEdit}
+          saving={saving}
+          testing={testing}
+          testResult={testResults[cat.id]}
+          onEdit={handleEdit}
+          onLlmEdit={handleLlmEdit}
+          onSaveLlm={handleSaveLlm}
+          onClearLlmKey={handleClearLlmKey}
+          onTest={handleTest}
+        />
       ))}
     </div>
   );
