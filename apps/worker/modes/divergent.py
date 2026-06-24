@@ -1,7 +1,7 @@
 """
 Research OS - Divergent Mode (Mode C): Cross-Domain Innovation
 
-7-stage LangGraph StateGraph for generating novel research ideas
+8-stage LangGraph StateGraph for generating novel research ideas
 by borrowing methods from other domains.
 """
 
@@ -520,6 +520,28 @@ Output MUST be valid JSON: an array of these objects.
 IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
 """
 
+_NOVELTY_JURY_SYSTEM = """\
+You are an independent research novelty jury. Judge each innovation idea \
+against only the verified prior-art records attached to that idea.
+
+For EACH idea, decide whether the proposed mechanism is meaningfully distinct \
+from the verified prior art and testable as a research contribution.
+
+Use quality_verdict="pursue" only when the idea has a meaningfully distinct, \
+testable mechanism of transfer. Use quality_verdict="reject" for duplicate \
+ideas, ideas directly covered by verified prior art, or ideas whose mechanism \
+is not distinguishable from the attached prior-art records. Use \
+quality_verdict="hold" only when the distinction may exist but requires a \
+specific validation step before pursuit.
+
+Output MUST be valid JSON as either:
+- {"ideas": [{dedup_key: str, novelty_verdict: str, quality_verdict: "pursue" | "hold" | "reject", strongest_objection: str, required_validation: str}]}
+- or a raw array of those idea verdict objects.
+
+Do NOT fabricate prior art. Ground every objection in the provided \
+closest_prior_work and prior_art_details for that same dedup_key.
+"""
+
 _IDEA_PORTFOLIO_SYSTEM = """\
 You are a Research Idea Portfolio Manager.
 
@@ -1023,8 +1045,115 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     return updates
 
 
+async def novelty_jury(state: ModeGraphState) -> dict[str, Any]:
+    """Stage 6: Independently judge novelty against verified prior art."""
+    await emit_progress(state.run_id, "novelty_jury", "start", "Reviewing idea novelty against verified prior art")
+    updates: dict[str, Any] = {"current_stage": "analyze", "current_step": "novelty_jury"}
+    errors: list[str] = list(state.errors)
+    cost = state.current_cost_usd
+
+    reviewable_cards: list[dict[str, Any]] = []
+    reviewable_keys: set[str] = set()
+    for card in state.idea_cards:
+        if card.get("quality_verdict") == "reject":
+            continue
+        dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        reviewable_keys.add(dedup_key)
+        reviewable_cards.append(
+            {
+                "dedup_key": dedup_key,
+                "title": card.get("title", ""),
+                "problem_statement": card.get("problem_statement", ""),
+                "mechanism_of_transfer": card.get("mechanism_of_transfer", ""),
+                "expected_benefit": card.get("expected_benefit", ""),
+                "closest_prior_work": card.get("closest_prior_work", []),
+                "prior_art_details": card.get("prior_art_details", []),
+            }
+        )
+
+    if not reviewable_cards:
+        updates["idea_cards"] = [dict(card) for card in state.idea_cards]
+        updates["current_cost_usd"] = cost
+        updates["errors"] = errors
+        updates["messages"] = [
+            {"role": "assistant", "content": "Novelty jury reviewed 0 ideas."}
+        ]
+        logger.info("novelty_jury.done", reviewed=0)
+        await emit_progress(state.run_id, "novelty_jury", "done", "Novelty jury reviewed 0 ideas")
+        return updates
+
+    gateway = get_gateway()
+    payload = {
+        "topic": state.topic,
+        "ideas": reviewable_cards,
+    }
+    user_content = (
+        f"Research topic: {state.topic}\n\n"
+        f"## Grounded Novelty Jury Payload\n"
+        f"{json.dumps(payload, default=str)}\n\n"
+        f"Return one verdict per reviewable idea using the input dedup_key. "
+        f"Judge each idea only against its own closest_prior_work and "
+        f"prior_art_details."
+    )
+
+    result, delta, errs = await generate_llm_json(
+        _NOVELTY_JURY_SYSTEM, user_content, gateway, ModelTier.HIGH
+    )
+    cost += delta
+    errors.extend(errs)
+
+    verdicts: list[dict[str, Any]] = []
+    if isinstance(result, list):
+        verdicts = result
+    elif isinstance(result, dict) and isinstance(result.get("ideas"), list):
+        verdicts = result["ideas"]
+
+    verdict_map = {
+        str(verdict.get("dedup_key")): verdict
+        for verdict in verdicts
+        if verdict.get("dedup_key")
+    }
+
+    matched_count = 0
+    updated_cards: list[dict[str, Any]] = []
+    for card in state.idea_cards:
+        updated_card = dict(card)
+        if card.get("quality_verdict") == "reject":
+            updated_cards.append(updated_card)
+            continue
+
+        dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        verdict = verdict_map.get(dedup_key)
+        if not verdict or dedup_key not in reviewable_keys:
+            updated_cards.append(updated_card)
+            continue
+
+        for field in (
+            "novelty_verdict",
+            "quality_verdict",
+            "strongest_objection",
+            "required_validation",
+        ):
+            if field in verdict:
+                updated_card[field] = verdict[field]
+        updated_card["jury_status"] = "reviewed"
+        matched_count += 1
+        updated_cards.append(updated_card)
+
+    updates["idea_cards"] = updated_cards
+    updates["current_cost_usd"] = cost
+    updates["errors"] = errors
+    updates["messages"] = [
+        {"role": "assistant", "content": f"Novelty jury reviewed {matched_count} ideas."}
+    ]
+
+    logger.info("novelty_jury.done", reviewed=matched_count)
+    await emit_progress(state.run_id, "novelty_jury", "done", f"Novelty jury reviewed {matched_count} ideas")
+    return updates
+
+
 async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
-    """Stage 6: Assess practical feasibility.
+    """Stage 7: Assess practical feasibility.
 
     Evaluates data availability, compute requirements, experiment design
     feasibility, and timeline estimate. Updates feasibility scores.
@@ -1036,10 +1165,10 @@ async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
 
     gateway = get_gateway()
 
-    # Only assess ideas that survived prior art check (not flagged high-risk)
+    # Only assess ideas that survived novelty jury review.
     viable_ideas = [
         c for c in state.idea_cards
-        if not c.get("prior_art_found", False)
+        if c.get("quality_verdict") in {"pursue", "hold"}
     ]
 
     user_content = (
@@ -1140,7 +1269,7 @@ def _compute_evidence_score(card: dict[str, Any]) -> float:
 
 
 async def idea_portfolio(state: ModeGraphState) -> dict[str, Any]:
-    """Stage 7: Rank and finalize idea cards.
+    """Stage 8: Rank and finalize idea cards.
 
     Sorts by composite score (novelty * 0.4 + feasibility * 0.3 + evidence * 0.3).
     Generates summary report_markdown. Builds context_bundle with final
@@ -1261,7 +1390,7 @@ async def idea_portfolio(state: ModeGraphState) -> dict[str, Any]:
 
 
 def create_divergent_graph() -> StateGraph:
-    """Create the 7-stage Divergent (Mode C) LangGraph StateGraph."""
+    """Create the 8-stage Divergent (Mode C) LangGraph StateGraph."""
     workflow = StateGraph(ModeGraphState)
 
     workflow.add_node("normalize_pain_package", normalize_pain_package)
@@ -1269,6 +1398,7 @@ def create_divergent_graph() -> StateGraph:
     workflow.add_node("method_transfer_screening", method_transfer_screening)
     workflow.add_node("idea_composition", idea_composition)
     workflow.add_node("prior_art_check", prior_art_check)
+    workflow.add_node("novelty_jury", novelty_jury)
     workflow.add_node("feasibility_review", feasibility_review)
     workflow.add_node("idea_portfolio", idea_portfolio)
 
@@ -1289,7 +1419,8 @@ def create_divergent_graph() -> StateGraph:
 
     workflow.add_edge("method_transfer_screening", "idea_composition")
     workflow.add_edge("idea_composition", "prior_art_check")
-    workflow.add_edge("prior_art_check", "feasibility_review")
+    workflow.add_edge("prior_art_check", "novelty_jury")
+    workflow.add_edge("novelty_jury", "feasibility_review")
 
     # Check after feasibility — could loop back for more retrieval
     workflow.add_conditional_edges(
