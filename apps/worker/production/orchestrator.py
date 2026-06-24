@@ -977,7 +977,7 @@ async def _maybe_regate_submission_after_coding_task(task: dict[str, Any]) -> No
     if task.get("status") != "completed":
         return
     metadata = task.get("metadata_json") if isinstance(task.get("metadata_json"), dict) else {}
-    if metadata.get("stage") != "submission_revision":
+    if metadata.get("stage") not in {"submission_revision", "submission_audit"}:
         return
     submission_id = metadata.get("submission_id")
     if not submission_id:

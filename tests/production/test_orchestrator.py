@@ -1854,3 +1854,34 @@ async def test_submission_revision_task_reruns_submission_gate_after_completion(
     assert fake_db.submission_updates[-1][1]["status"] == "ready"
     gate_report = json.loads((paper_dir / "SUBMISSION_GATE_REPORT.json").read_text(encoding="utf-8"))
     assert gate_report["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_submission_audit_task_reruns_submission_gate_after_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.worker.production import orchestrator
+
+    called: list[str] = []
+
+    async def fake_gate_submission_package(submission_id):
+        called.append(str(submission_id))
+        return {"id": submission_id, "status": "gated"}
+
+    monkeypatch.setattr(
+        orchestrator,
+        "gate_submission_package",
+        fake_gate_submission_package,
+    )
+
+    await orchestrator._maybe_regate_submission_after_coding_task(
+        {
+            "status": "completed",
+            "metadata_json": {
+                "stage": "submission_audit",
+                "submission_id": "00000000-0000-0000-0000-000000000001",
+            },
+        }
+    )
+
+    assert called == ["00000000-0000-0000-0000-000000000001"]
