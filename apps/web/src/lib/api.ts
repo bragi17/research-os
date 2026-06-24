@@ -163,6 +163,16 @@ export interface IdeaCard {
   novelty_score: number;
   feasibility_score: number;
   status: string;
+  dedup_key?: string | null;
+  novelty_verdict?: "novel" | "incremental" | "duplicate" | "unclear";
+  quality_verdict?: "pursue" | "hold" | "reject";
+  closest_prior_work?: Array<Record<string, unknown>>;
+  strongest_objection?: string | null;
+  required_validation?: string[];
+  jury_model?: string | null;
+  jury_trace_id?: string | null;
+  jury_status?: "pending" | "reviewed" | "error";
+  prior_art_details?: Array<Record<string, unknown>>;
 }
 
 export interface TimelineEntry {

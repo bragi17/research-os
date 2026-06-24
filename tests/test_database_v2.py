@@ -249,6 +249,117 @@ class TestUpdateIdeaCard:
         assert result is None
 
 
+class TestIdeaCardJuryFields:
+    @pytest.mark.asyncio
+    async def test_create_idea_card_accepts_jury_fields(self, mock_pool):
+        fake = _make_record({
+            "id": IDEA_ID,
+            "run_id": RUN_ID,
+            "title": "Adaptive Retrieval Judge",
+            "dedup_key": "adaptive-retrieval-judge",
+            "novelty_verdict": "incremental",
+            "quality_verdict": "hold",
+            "closest_prior_work": [{"title": "Prior Agent"}],
+            "required_validation": ["Compare against baseline retrieval"],
+            "jury_status": "reviewed",
+            "prior_art_details": [
+                {
+                    "candidate_key": "s2:123",
+                    "verification_status": "verified",
+                },
+            ],
+        })
+        mock_pool.fetchrow.return_value = fake
+
+        from apps.api.database import create_idea_card
+
+        result = await create_idea_card(
+            RUN_ID,
+            {
+                "title": "Adaptive Retrieval Judge",
+                "problem_statement": "Agent ideas are not independently challenged.",
+                "dedup_key": "adaptive-retrieval-judge",
+                "novelty_verdict": "incremental",
+                "quality_verdict": "hold",
+                "closest_prior_work": [{"title": "Prior Agent"}],
+                "required_validation": ["Compare against baseline retrieval"],
+                "jury_status": "reviewed",
+                "prior_art_details": [
+                    {
+                        "candidate_key": "s2:123",
+                        "verification_status": "verified",
+                    },
+                ],
+            },
+        )
+
+        sql = mock_pool.fetchrow.call_args[0][0]
+        assert "dedup_key" in sql
+        assert "novelty_verdict" in sql
+        assert result["quality_verdict"] == "hold"
+
+    @pytest.mark.asyncio
+    async def test_update_idea_card_accepts_jury_verdict(self, mock_pool):
+        mock_pool.fetchrow.return_value = _make_record({
+            "id": IDEA_ID,
+            "quality_verdict": "reject",
+            "strongest_objection": "Closest prior work already covers the transfer.",
+        })
+
+        from apps.api.database import update_idea_card
+
+        result = await update_idea_card(
+            IDEA_ID,
+            {
+                "quality_verdict": "reject",
+                "strongest_objection": "Closest prior work already covers the transfer.",
+            },
+        )
+
+        sql = mock_pool.fetchrow.call_args[0][0]
+        assert "quality_verdict" in sql
+        assert "strongest_objection" in sql
+        assert result["quality_verdict"] == "reject"
+
+    @pytest.mark.asyncio
+    async def test_update_idea_card_ignores_unknown_fields(self, mock_pool):
+        mock_pool.fetchrow.return_value = _make_record({
+            "id": IDEA_ID,
+            "title": "Allowed",
+        })
+
+        from apps.api.database import update_idea_card
+
+        result = await update_idea_card(
+            IDEA_ID,
+            {
+                "title": "Allowed",
+                "unknown_column": "blocked",
+            },
+        )
+
+        sql = mock_pool.fetchrow.call_args[0][0]
+        assert "title = $1" in sql
+        assert "unknown_column" not in sql
+        assert result["title"] == "Allowed"
+
+    @pytest.mark.asyncio
+    async def test_update_idea_card_with_only_unknown_fields_returns_current(self, mock_pool):
+        mock_pool.fetchrow.return_value = _make_record({
+            "id": IDEA_ID,
+            "title": "Current",
+        })
+
+        from apps.api.database import update_idea_card
+
+        result = await update_idea_card(IDEA_ID, {"unknown_column": "blocked"})
+
+        sql = mock_pool.fetchrow.call_args[0][0]
+        assert "SELECT" in sql
+        assert "unknown_column" not in sql
+        assert result["title"] == "Current"
+
+
 # ===================================================================
 # Context Bundle tests
 # ===================================================================
