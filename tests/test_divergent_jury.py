@@ -952,3 +952,62 @@ def test_build_prior_art_verifier_payload_bounds_compact_fallback():
     assert len(rendered) <= divergent._VERIFIER_PAYLOAD_MAX_CHARS
     assert len(payload) == 10
     assert all(item["dedup_key"] for item in payload)
+
+
+def test_build_prior_art_verifier_payload_bounds_oversized_existing_keys():
+    cards = [
+        {
+            "id": f"idea-{idx}",
+            "title": f"Legacy Key Idea {idx}",
+            "problem_statement": "Problem",
+            "dedup_key": f"legacy-key-{idx}-{'k' * 1000}",
+        }
+        for idx in range(10)
+    ]
+
+    payload = divergent._build_prior_art_verifier_payload(cards, {})
+    rendered = divergent.json.dumps(payload, default=str)
+
+    assert divergent.json.loads(rendered) == payload
+    assert len(rendered) <= divergent._VERIFIER_PAYLOAD_MAX_CHARS
+    assert all(len(item["dedup_key"]) <= 140 for item in payload)
+    assert len({item["dedup_key"] for item in payload}) == len(payload)
+
+
+def test_build_prior_art_verifier_payload_sanitizes_closest_prior_work():
+    payload = divergent._build_prior_art_verifier_payload(
+        [
+            {
+                "id": "idea-0",
+                "title": "Closest Prior Work Idea",
+                "problem_statement": "Problem",
+                "dedup_key": "closest-prior-work-idea",
+                "closest_prior_work": [
+                    {
+                        "title": "Closest Work",
+                        "raw_json": {"abstract": "x" * 2000},
+                        "notes": "n" * 2000,
+                    }
+                ],
+                "prior_art_details": [
+                    {
+                        "candidate_id": "s2-closest",
+                        "candidate_key": "s2:s2-closest",
+                        "canonical_title": "Closest Work",
+                        "verification_status": "verified",
+                    }
+                ],
+            }
+        ],
+        {},
+    )
+    rendered = divergent.json.dumps(payload, default=str)
+
+    assert divergent.json.loads(rendered) == payload
+    assert "raw_json" not in rendered
+    assert "notes" not in rendered
+    assert payload[0]["closest_prior_work"] == [
+        {
+            "title": "Closest Work",
+        }
+    ]

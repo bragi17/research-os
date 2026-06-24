@@ -68,6 +68,10 @@ def _normalized_idea_key(card: dict[str, Any]) -> str:
 def _idea_dedup_key(card: dict[str, Any]) -> str:
     """Build a stable duplicate key from an idea title and problem statement."""
     normalized_key = _normalized_idea_key(card)
+    return _bounded_dedup_key(normalized_key)
+
+
+def _bounded_dedup_key(normalized_key: str) -> str:
     if len(normalized_key) <= _DEDUP_KEY_MAX_LENGTH:
         return normalized_key
 
@@ -155,7 +159,12 @@ def _stable_card_dedup_keys(cards: list[dict[str, Any]]) -> list[str]:
     keys: list[str] = []
 
     for card in cards:
-        base_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        if card.get("dedup_key"):
+            base_key = _bounded_dedup_key(
+                _normalized_idea_key({"title": card["dedup_key"]})
+            )
+        else:
+            base_key = _idea_dedup_key(card)
         dedup_key = _unique_dedup_key(base_key, assigned_keys)
         assigned_keys.add(dedup_key)
         keys.append(dedup_key)
@@ -278,6 +287,24 @@ def _verifier_prior_art_detail(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _verifier_closest_prior_work(item: dict[str, Any]) -> dict[str, Any]:
+    allowed_fields = (
+        "title",
+        "doi",
+        "arxiv_id",
+        "candidate_id",
+        "candidate_key",
+        "s2_id",
+        "openalex_id",
+        "input_title",
+    )
+    return {
+        field: _verifier_value(item[field])
+        for field in allowed_fields
+        if item.get(field) is not None
+    }
+
+
 def _limit_verifier_payload(
     payload: list[dict[str, Any]],
     max_chars: int = _VERIFIER_PAYLOAD_MAX_CHARS,
@@ -363,7 +390,12 @@ def _build_prior_art_verifier_payload(
                 "idea_card": idea_card,
                 "dedup_key": dedup_key,
                 "prior_art_details": prior_art_details,
-                "closest_prior_work": card.get("closest_prior_work", []),
+                "closest_prior_work": [
+                    _verifier_closest_prior_work(item)
+                    for item in card.get("closest_prior_work", [])[
+                        :_VERIFIER_RECORD_MAX_ITEMS
+                    ]
+                ],
             }
         )
 
