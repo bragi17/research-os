@@ -6,13 +6,18 @@ import {
   listLibraryPapers,
   searchLibrary,
   removeFromLibrary,
+  analyzeLibraryPaper,
   getLibraryStats,
   uploadToLibrary,
   type LibraryPaper,
 } from "@/lib/api";
 
 const STATUS_STYLES: Record<string, { bg: string; text: string }> = {
+  analyzed: { bg: "var(--accent-green-soft)", text: "var(--accent-green)" },
+  deep_analyzed: { bg: "var(--accent-green-soft)", text: "var(--accent-green)" },
+  light_analyzed: { bg: "var(--accent-blue-soft)", text: "var(--accent-blue)" },
   indexed: { bg: "var(--accent-green-soft)", text: "var(--accent-green)" },
+  partial: { bg: "var(--accent-amber-soft)", text: "var(--accent-amber)" },
   pending: { bg: "var(--accent-amber-soft)", text: "var(--accent-amber)" },
   processing: { bg: "var(--accent-blue-soft)", text: "var(--accent-blue)" },
   failed: { bg: "var(--accent-red-soft)", text: "var(--accent-red)" },
@@ -32,9 +37,10 @@ export default function LibraryPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [reanalyzingId, setReanalyzingId] = useState<string | null>(null);
 
-  const fetchPapers = useCallback(async () => {
-    setLoading(true);
+  const fetchPapers = useCallback(async (showSpinner = false) => {
+    if (showSpinner) setLoading(true);
     try {
       const params = activeField ? `field=${encodeURIComponent(activeField)}` : undefined;
       const result = await listLibraryPapers(params);
@@ -56,31 +62,29 @@ export default function LibraryPage() {
   }, []);
 
   useEffect(() => {
-    fetchPapers();
+    fetchPapers(true);  // show spinner only on first load
     fetchStats();
   }, [fetchPapers, fetchStats]);
 
-  const handleSearch = useCallback(async () => {
+  // Debounced search — only triggers when query changes, not on every render
+  useEffect(() => {
     if (!searchQuery.trim()) {
+      // Empty query: refetch all papers
       fetchPapers();
       return;
     }
-    setLoading(true);
-    try {
-      const result = await searchLibrary(searchQuery.trim());
-      setPapers(result.items);
-      setTotal(result.total);
-    } catch {
-      /* silent */
-    } finally {
-      setLoading(false);
-    }
-  }, [searchQuery, fetchPapers]);
-
-  useEffect(() => {
-    const timeout = setTimeout(handleSearch, 300);
+    const timeout = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const result = await searchLibrary(searchQuery.trim());
+        setPapers(result.items);
+        setTotal(result.total);
+      } catch { /* silent */ }
+      finally { setLoading(false); }
+    }, 300);
     return () => clearTimeout(timeout);
-  }, [searchQuery, handleSearch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]);
 
   const handleRemove = async (id: string) => {
     setRemovingId(id);
@@ -138,6 +142,18 @@ export default function LibraryPage() {
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleReanalyze = async (paperId: string) => {
+    setReanalyzingId(paperId);
+    try {
+      await analyzeLibraryPaper(paperId);
+      fetchPapers();
+      fetchStats();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Re-analyze failed");
+    }
+    finally { setReanalyzingId(null); }
   };
 
   // Collect unique fields for filter chips
@@ -242,6 +258,12 @@ export default function LibraryPage() {
             </>
           )}
 
+          {uploading && (
+            <div className="flex items-center gap-2 mt-3 text-[11px] text-[var(--text-muted)]">
+              <div className="h-3 w-3 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin shrink-0" />
+              <span className="animate-pulse">Downloading → Parsing → Analyzing → Tagging → Embedding → Storing...</span>
+            </div>
+          )}
           {uploadError && (
             <p className="text-[12px] text-[var(--accent-red)] mt-2">{uploadError}</p>
           )}
@@ -332,7 +354,7 @@ export default function LibraryPage() {
           <div className="h-5 w-5 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
         </div>
       ) : filteredPapers.length === 0 ? (
-        <div className="card-static p-12 text-center animate-fade-up delay-200">
+        <div className="card-static p-12 text-center">
           <div className="text-3xl mb-3 opacity-40">
             <svg width="48" height="48" viewBox="0 0 48 48" fill="none" className="mx-auto">
               <rect x="8" y="10" width="32" height="28" rx="3" stroke="var(--text-muted)" strokeWidth="2" />
@@ -348,7 +370,7 @@ export default function LibraryPage() {
           </p>
         </div>
       ) : (
-        <div className="space-y-3 animate-fade-up delay-200">
+        <div className="space-y-3">
           {filteredPapers.map((paper) => {
             const statusStyle = STATUS_STYLES[paper.status] ?? STATUS_STYLES.pending;
             return (
@@ -414,6 +436,14 @@ export default function LibraryPage() {
                   </div>
                 )}
 
+                {/* Re-analyzing progress */}
+                {reanalyzingId === paper.id && (
+                  <div className="flex items-center gap-2 mb-3 text-[11px] text-[var(--text-muted)]">
+                    <div className="h-3 w-3 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin shrink-0" />
+                    <span className="animate-pulse">Analyzing: content → sections → LLM analysis → tagging → embedding → storing...</span>
+                  </div>
+                )}
+
                 {/* Actions */}
                 <div className="flex items-center gap-2">
                   <Link
@@ -422,6 +452,15 @@ export default function LibraryPage() {
                   >
                     View
                   </Link>
+                  {(paper.status === "partial" || paper.status === "pending" || paper.status === "light_analyzed") && (
+                    <button
+                      onClick={() => handleReanalyze(paper.id)}
+                      disabled={reanalyzingId === paper.id}
+                      className="btn-secondary text-[12px] px-3 py-1.5"
+                    >
+                      {reanalyzingId === paper.id ? "Analyzing..." : "Re-analyze"}
+                    </button>
+                  )}
                   <button
                     onClick={() => handleRemove(paper.id)}
                     disabled={removingId === paper.id}

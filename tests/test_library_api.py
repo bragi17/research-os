@@ -584,6 +584,118 @@ class TestAnalyzePaper:
         # Returns 400 (no content) since test paper has no arxiv_id or text
         assert r.status_code in (200, 400, 500)
 
+    def test_analyze_reingests_existing_arxiv_paper(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import apps.worker.agents.paper_ingestion as paper_ingestion
+
+        calls: list[dict[str, Any]] = []
+
+        class FakePipeline:
+            async def ingest(self, **kwargs: Any) -> dict[str, Any]:
+                calls.append(kwargs)
+                return {"id": "new-paper-id", "title": kwargs["title"]}
+
+        monkeypatch.setattr(
+            paper_ingestion,
+            "PaperIngestionPipeline",
+            lambda: FakePipeline(),
+        )
+        paper_id = uuid4()
+        _mock_library_papers[str(paper_id)] = {
+            "id": paper_id,
+            "title": "Existing arXiv Paper",
+            "arxiv_id": "2505.24431",
+            "authors": ["Ada"],
+            "year": 2025,
+            "venue": "arXiv",
+            "doi": None,
+            "project_tags": ["agent"],
+            "is_manually_uploaded": False,
+            "status": "partial",
+            "keywords": [],
+            "methods": [],
+            "datasets": [],
+            "benchmarks": [],
+            "innovation_points": [],
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+        }
+
+        r = client.post(f"/api/v1/library/papers/{paper_id}/analyze")
+
+        assert r.status_code == 200
+        assert r.json()["status"] == "completed"
+        assert calls == [
+            {
+                "arxiv_id": "2505.24431",
+                "title": "Existing arXiv Paper",
+                "metadata": {
+                    "authors": ["Ada"],
+                    "year": 2025,
+                    "venue": "arXiv",
+                    "doi": None,
+                },
+                "source_run_id": None,
+                "project_tags": ["agent"],
+                "is_manually_uploaded": False,
+            }
+        ]
+        assert str(paper_id) not in _mock_library_papers
+
+    def test_analyze_closes_semantic_scholar_adapter_on_match_failure(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import libs.adapters.semantic_scholar as semantic_scholar
+
+        close = AsyncMock()
+
+        class FakeSemanticScholarAdapter:
+            def __init__(self, api_key: str | None = None) -> None:
+                self.api_key = api_key
+
+            async def match_paper(self, title: str) -> dict[str, Any]:
+                raise RuntimeError("temporary S2 failure")
+
+            async def close(self) -> None:
+                await close()
+
+        monkeypatch.setattr(
+            semantic_scholar,
+            "SemanticScholarAdapter",
+            FakeSemanticScholarAdapter,
+        )
+        paper_id = uuid4()
+        _mock_library_papers[str(paper_id)] = {
+            "id": paper_id,
+            "title": "Paper Without Arxiv",
+            "arxiv_id": None,
+            "authors": [],
+            "year": None,
+            "venue": "",
+            "doi": None,
+            "project_tags": [],
+            "is_manually_uploaded": False,
+            "status": "partial",
+            "keywords": [],
+            "methods": [],
+            "datasets": [],
+            "benchmarks": [],
+            "innovation_points": [],
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+        }
+
+        r = client.post(f"/api/v1/library/papers/{paper_id}/analyze")
+
+        assert r.status_code == 400
+        assert "no arXiv ID found" in r.json()["detail"]
+        close.assert_awaited_once()
+
 
 # ===================================================================
 # GET /api/v1/library/search/titles?q=

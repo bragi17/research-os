@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 
+import os
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -24,6 +26,9 @@ from services.library.tools_db import (
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/library", tags=["library"])
+NO_ARXIV_DETAIL = (
+    "Cannot re-analyze: no arXiv ID found. Try adding the paper again with an arXiv ID."
+)
 
 
 # POST /papers — add paper to library (full ingestion pipeline)
@@ -111,32 +116,79 @@ async def trigger_analysis(paper_id: UUID) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Paper not found")
 
     try:
-        # Delete existing paper and re-ingest
-        arxiv_id = paper.get("arxiv_id")
-        await delete_library_paper(paper_id)
+        arxiv_id = await _resolve_arxiv_id_for_paper(paper)
 
-        from apps.worker.agents.paper_ingestion import PaperIngestionPipeline
-        pipeline = PaperIngestionPipeline()
-        new_paper = await pipeline.ingest(
-            arxiv_id=arxiv_id,
-            title=paper.get("title", ""),
-            metadata={
-                "authors": paper.get("authors", []),
-                "year": paper.get("year"),
-                "venue": paper.get("venue", ""),
-                "doi": paper.get("doi"),
-            },
-            source_run_id=paper.get("source_run_id"),
-            project_tags=paper.get("project_tags", []),
-            is_manually_uploaded=paper.get("is_manually_uploaded", False),
-        )
-        return {"status": "completed", "paper_id": str(new_paper.get("id")), "paper": new_paper}
+        if not arxiv_id:
+            raise HTTPException(status_code=400, detail=NO_ARXIV_DETAIL)
+
+        new_paper = await _reingest_library_paper(paper_id, paper, arxiv_id)
+        return {
+            "status": "completed",
+            "paper_id": str(new_paper.get("id")),
+            "paper": new_paper,
+        }
 
     except HTTPException:
         raise
     except Exception as exc:
         logger.error("analyze.failed", paper_id=str(paper_id), error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+async def _resolve_arxiv_id_for_paper(paper: dict[str, Any]) -> str | None:
+    arxiv_id = paper.get("arxiv_id")
+    if arxiv_id:
+        return str(arxiv_id)
+
+    title = str(paper.get("title") or "").strip()
+    if not title:
+        return None
+
+    from libs.adapters.semantic_scholar import SemanticScholarAdapter
+
+    s2: SemanticScholarAdapter | None = None
+    try:
+        s2 = SemanticScholarAdapter(api_key=os.getenv("S2_API_KEY") or None)
+        match = await s2.match_paper(title)
+        paper_id = match.get("paperId")
+        if not paper_id:
+            return None
+        full = await s2.get_paper(paper_id)
+        external_ids = getattr(full, "external_ids", None) or {}
+        if isinstance(external_ids, dict) and external_ids.get("ArXiv"):
+            return str(external_ids["ArXiv"])
+    except Exception as exc:
+        logger.warning("library.resolve_arxiv_failed", title=title, error=str(exc))
+    finally:
+        if s2 is not None:
+            with suppress(Exception):
+                await s2.close()
+    return None
+
+
+async def _reingest_library_paper(
+    paper_id: UUID,
+    paper: dict[str, Any],
+    arxiv_id: str,
+) -> dict[str, Any]:
+    await delete_library_paper(paper_id)
+
+    from apps.worker.agents.paper_ingestion import PaperIngestionPipeline
+
+    pipeline = PaperIngestionPipeline()
+    return await pipeline.ingest(
+        arxiv_id=arxiv_id,
+        title=str(paper.get("title") or ""),
+        metadata={
+            "authors": paper.get("authors", []),
+            "year": paper.get("year"),
+            "venue": paper.get("venue", ""),
+            "doi": paper.get("doi"),
+        },
+        source_run_id=paper.get("source_run_id"),
+        project_tags=paper.get("project_tags", []),
+        is_manually_uploaded=paper.get("is_manually_uploaded", False),
+    )
 
 
 # GET /search?q= — hybrid text+vector search with rerank

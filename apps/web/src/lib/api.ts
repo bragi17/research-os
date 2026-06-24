@@ -252,6 +252,12 @@ export const addToLibrary = (data: Record<string, unknown>) =>
 export const removeFromLibrary = (id: string) =>
   apiFetch(`/api/v1/library/papers/${id}`, { method: "DELETE" });
 
+export const analyzeLibraryPaper = (id: string) =>
+  apiFetch<{ status: string; paper_id: string; paper: LibraryPaper }>(
+    `/api/v1/library/papers/${id}/analyze`,
+    { method: "POST" },
+  );
+
 export const searchLibrary = (q: string, limit = 20) =>
   apiFetch<{ items: LibraryPaper[]; total: number }>(`/api/v1/library/search?q=${encodeURIComponent(q)}&limit=${limit}`);
 
