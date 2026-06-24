@@ -1097,7 +1097,7 @@ async def test_novelty_jury_updates_cards_from_grounded_verdict(monkeypatch):
                         "novelty_verdict": "meaningfully_distinct",
                         "quality_verdict": "pursue",
                         "strongest_objection": "Needs ablation against closest prior work.",
-                        "required_validation": "Run target-domain ablation.",
+                        "required_validation": ["Run target-domain ablation."],
                     }
                 ]
             },
@@ -1140,7 +1140,7 @@ async def test_novelty_jury_updates_cards_from_grounded_verdict(monkeypatch):
             "novelty_verdict": "meaningfully_distinct",
             "quality_verdict": "pursue",
             "strongest_objection": "Needs ablation against closest prior work.",
-            "required_validation": "Run target-domain ablation.",
+            "required_validation": ["Run target-domain ablation."],
             "jury_status": "reviewed",
         }
     ]
@@ -1183,7 +1183,7 @@ async def test_novelty_jury_preserves_rejects_and_excludes_them(monkeypatch):
                     "novelty_verdict": "directly_covered",
                     "quality_verdict": "reject",
                     "strongest_objection": "Already covered by verified prior art.",
-                    "required_validation": "None.",
+                    "required_validation": ["None."],
                 }
             ],
             0.01,
@@ -1225,6 +1225,53 @@ async def test_novelty_jury_preserves_rejects_and_excludes_them(monkeypatch):
     assert updates["idea_cards"][1]["strongest_objection"] == (
         "Already covered by verified prior art."
     )
+    assert updates["idea_cards"][1]["required_validation"] == ["None."]
+
+
+@pytest.mark.asyncio
+async def test_novelty_jury_normalizes_required_validation_to_list(monkeypatch):
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_generate_llm_json(*args, **kwargs):
+        return (
+            {
+                "ideas": [
+                    {
+                        "dedup_key": "idea-alpha",
+                        "novelty_verdict": "incremental",
+                        "quality_verdict": "hold",
+                        "strongest_objection": "Needs a cleaner control.",
+                        "required_validation": "Run a baseline comparison.",
+                    }
+                ]
+            },
+            0.01,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=uuid4(),
+        topic="target task",
+        idea_cards=[
+            {
+                "id": "idea-0",
+                "dedup_key": "idea-alpha",
+                "title": "Idea Alpha",
+                "quality_verdict": "hold",
+            }
+        ],
+    )
+
+    updates = await divergent.novelty_jury(state)
+
+    assert updates["idea_cards"][0]["required_validation"] == [
+        "Run a baseline comparison."
+    ]
 
 
 @pytest.mark.asyncio

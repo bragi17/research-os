@@ -426,6 +426,14 @@ def _build_prior_art_verifier_payload(
     return _limit_verifier_payload(payload)
 
 
+def _list_of_strings(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if item is not None]
+    return [str(value)]
+
+
 # ---------------------------------------------------------------------------
 # Divergent-specific system prompts
 # ---------------------------------------------------------------------------
@@ -535,7 +543,7 @@ quality_verdict="hold" only when the distinction may exist but requires a \
 specific validation step before pursuit.
 
 Output MUST be valid JSON as either:
-- {"ideas": [{dedup_key: str, novelty_verdict: str, quality_verdict: "pursue" | "hold" | "reject", strongest_objection: str, required_validation: str}]}
+- {"ideas": [{dedup_key: str, novelty_verdict: str, quality_verdict: "pursue" | "hold" | "reject", strongest_objection: str, required_validation: [str]}]}
 - or a raw array of those idea verdict objects.
 
 Do NOT fabricate prior art. Ground every objection in the provided \
@@ -1132,10 +1140,13 @@ async def novelty_jury(state: ModeGraphState) -> dict[str, Any]:
             "novelty_verdict",
             "quality_verdict",
             "strongest_objection",
-            "required_validation",
         ):
             if field in verdict:
                 updated_card[field] = verdict[field]
+        if "required_validation" in verdict:
+            updated_card["required_validation"] = _list_of_strings(
+                verdict["required_validation"]
+            )
         updated_card["jury_status"] = "reviewed"
         matched_count += 1
         updated_cards.append(updated_card)
