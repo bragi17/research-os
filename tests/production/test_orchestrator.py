@@ -1718,6 +1718,88 @@ async def test_submission_gate_ready_when_independent_audits_pass(
 
 
 @pytest.mark.asyncio
+async def test_submission_gate_skips_duplicate_active_audit_task(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from apps.worker.production import orchestrator
+
+    fake_db = FakeProductionDb()
+    monkeypatch.setattr(orchestrator, "db", fake_db)
+    base = _set_workspace_base(monkeypatch, tmp_path)
+    project_id = uuid4()
+    manuscript_id = uuid4()
+    submission_id = uuid4()
+    workspace = base / "project"
+    paper_dir = workspace / "manuscripts" / str(manuscript_id)
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "paper.md").write_text("# Paper\nCited claim [1].\n", encoding="utf-8")
+    (paper_dir / "claims_snapshot.json").write_text("[]", encoding="utf-8")
+    (paper_dir / "artifact_snapshot.json").write_text("[]", encoding="utf-8")
+    fake_db.projects[project_id] = {
+        "id": project_id,
+        "default_workspace_path": str(workspace),
+        **_now_row(),
+    }
+    fake_db.claim_entries.append({
+        "id": uuid4(),
+        "project_id": project_id,
+        "experiment_plan_id": uuid4(),
+        "claim_text": "The method improves citation reliability.",
+        "status": "supported",
+        "support_level": 0.91,
+        **_now_row(),
+    })
+    fake_db.manuscripts[manuscript_id] = {
+        "id": manuscript_id,
+        "project_id": project_id,
+        "title": "Paper",
+        "paper_dir": str(paper_dir),
+        "status": "drafting",
+        **_now_row(),
+    }
+    fake_db.submissions[submission_id] = {
+        "id": submission_id,
+        "manuscript_package_id": manuscript_id,
+        "venue": "ICLR",
+        "status": "preparing",
+        "checklist_json": {
+            "required_files": [
+                "paper.md",
+                "claims_snapshot.json",
+                "artifact_snapshot.json",
+            ],
+        },
+        "anonymity_report_json": {},
+        "compile_report_json": {},
+        "claim_audit_report_json": {},
+        "citation_audit_report_json": {},
+        "artifact_provenance_report_json": {},
+        "paper_claim_audit_report_json": {},
+        "adversarial_audit_report_json": {},
+        **_now_row(),
+    }
+    fake_db.coding_tasks[uuid4()] = {
+        "id": uuid4(),
+        "project_id": project_id,
+        "status": "running",
+        "metadata_json": {
+            "stage": "submission_audit",
+            "submission_id": str(submission_id),
+        },
+        **_now_row(),
+    }
+
+    result = await orchestrator.gate_submission_package(submission_id)
+
+    assert result["status"] == "gated"
+    assert fake_db.submission_updates[-1][1]["paper_claim_audit_report_json"][
+        "missing"
+    ] is True
+    assert fake_db.created_coding_tasks == []
+
+
+@pytest.mark.asyncio
 async def test_submission_gate_skips_duplicate_active_revision_task(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
