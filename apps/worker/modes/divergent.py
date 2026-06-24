@@ -8,6 +8,7 @@ by borrowing methods from other domains.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Literal
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -30,6 +31,50 @@ logger = get_logger(__name__)
 
 # Re-export for runner
 DivergentState = ModeGraphState
+
+
+def _idea_dedup_key(card: dict[str, Any]) -> str:
+    """Build a stable duplicate key from an idea title and problem statement."""
+    title = card.get("title") or ""
+    problem_statement = card.get("problem_statement") or ""
+    raw_key = f"{title} {problem_statement}".lower()
+    dedup_key = re.sub(r"[^a-z0-9]+", "-", raw_key).strip("-")
+    dedup_key = dedup_key[:140].strip("-")
+    return dedup_key or "untitled-idea"
+
+
+def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return copied idea cards with duplicate cards marked for rejection."""
+    seen: dict[str, dict[str, Any]] = {}
+    deduped_cards: list[dict[str, Any]] = []
+
+    for card in cards:
+        next_card = dict(card)
+        dedup_key = _idea_dedup_key(next_card)
+        next_card["dedup_key"] = dedup_key
+
+        if dedup_key in seen:
+            first_card = seen[dedup_key]
+            original_idea = (
+                first_card.get("id")
+                or first_card.get("title")
+                or first_card.get("dedup_key")
+                or "earlier idea"
+            )
+            next_card["novelty_verdict"] = "duplicate"
+            next_card["quality_verdict"] = "reject"
+            next_card["jury_status"] = "reviewed"
+            next_card["strongest_objection"] = f"Duplicate of idea {original_idea}."
+        else:
+            next_card.setdefault("novelty_verdict", "unclear")
+            next_card.setdefault("quality_verdict", "hold")
+            next_card.setdefault("jury_status", "pending")
+            seen[dedup_key] = next_card
+
+        deduped_cards.append(next_card)
+
+    return deduped_cards
+
 
 # ---------------------------------------------------------------------------
 # Divergent-specific system prompts
@@ -449,7 +494,7 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
         card.setdefault("novelty_score", 0.5)
         card.setdefault("feasibility_score", 0.5)
 
-    updates["idea_cards"] = idea_cards
+    updates["idea_cards"] = _dedupe_idea_cards(idea_cards)
     updates["current_cost_usd"] = cost
     updates["errors"] = errors
     updates["messages"] = [
