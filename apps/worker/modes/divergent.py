@@ -170,9 +170,13 @@ def _attach_prior_art_details(
 
     for card in cards:
         dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        if dedup_key not in prior_art_records_by_key:
+            updated_cards.append(dict(card))
+            continue
+
         records = [
             _verification_record_to_dict(record)
-            for record in prior_art_records_by_key.get(dedup_key, [])
+            for record in prior_art_records_by_key[dedup_key]
         ]
         verified_records = [
             record
@@ -207,10 +211,20 @@ def _build_prior_art_verifier_payload(
             for key, value in card.items()
             if key not in {"prior_art_details", "closest_prior_work"}
         }
+        prior_art_details = [
+            {
+                **_prior_art_summary(record),
+                "verification_status": record.get("verification_status"),
+                "verification_method": record.get("verification_method"),
+                "verification_reason": record.get("verification_reason"),
+            }
+            for record in card.get("prior_art_details", [])[:5]
+        ]
         payload.append(
             {
                 "idea_card": idea_card,
-                "prior_art_details": card.get("prior_art_details", []),
+                "dedup_key": card.get("dedup_key"),
+                "prior_art_details": prior_art_details,
                 "closest_prior_work": card.get("closest_prior_work", []),
             }
         )
@@ -726,6 +740,7 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         f"already exists using only that idea card's prior_art_details and "
         f"closest_prior_work. Output MUST be valid JSON: an array of objects with:\n"
         f"- idea_title: str\n"
+        f"- dedup_key: str (copy this from the input idea_card)\n"
         f"- verdict: \"reject\" | \"hold\" | \"finalize\" | \"continue_search\"\n"
         f"- prior_art_found: bool\n"
         f"- similar_works: [{{title: str, similarity_reason: str}}]\n"
@@ -746,11 +761,19 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         checks = result["checks"]
 
     # Update idea cards with prior art status
-    check_map = {c.get("idea_title", ""): c for c in checks}
+    check_map = {
+        str(c.get("dedup_key")): c
+        for c in checks
+        if c.get("dedup_key")
+    }
+    title_check_map = {c.get("idea_title", ""): c for c in checks}
     updated_cards: list[dict[str, Any]] = []
     for card in state.idea_cards:
-        title = card.get("title", "")
-        check = check_map.get(title, {})
+        dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        check = check_map.get(
+            dedup_key,
+            title_check_map.get(card.get("title", ""), {}),
+        )
         prior_art_found = check.get("prior_art_found", False)
         updated_card = {
             **card,
