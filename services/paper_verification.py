@@ -44,7 +44,7 @@ def normalize_arxiv_id(value: str | None) -> str | None:
     match = _ARXIV_RE.search(clean)
     if not match:
         return None
-    return match.group(1)
+    return re.sub(r"(?i)v\d+$", "", match.group(1))
 
 
 def normalize_doi(value: str | None) -> str | None:
@@ -118,10 +118,14 @@ def candidate_from_id(
         fields["doi"] = normalize_doi(clean)
     elif lower.startswith("10."):
         fields["doi"] = normalize_doi(clean)
-    elif lower.startswith(("s2:", "semanticscholar:")):
-        fields["s2_id"] = clean.split(":", 1)[1].strip()
     elif lower.startswith(("oa:", "openalex:")) or lower.startswith(_OPENALEX_URL_PREFIX):
         fields["openalex_id"] = _normalize_openalex_id(clean)
+    elif lower.startswith(("s2:", "semanticscholar:")):
+        fields["s2_id"] = clean.split(":", 1)[1].strip()
+    elif arxiv_id := normalize_arxiv_id(clean):
+        fields["arxiv_id"] = arxiv_id
+    elif clean:
+        fields["s2_id"] = clean
 
     return PaperCandidate(**fields)
 
@@ -132,6 +136,7 @@ class PaperVerifier:
     def __init__(
         self,
         *,
+        s2: SemanticScholarAdapter | None = None,
         semantic_scholar: SemanticScholarAdapter | None = None,
         crossref: CrossrefAdapter | None = None,
         openalex: OpenAlexAdapter | None = None,
@@ -139,9 +144,13 @@ class PaperVerifier:
         crossref_email: str | None = None,
         openalex_email: str | None = None,
     ) -> None:
-        self.semantic_scholar = semantic_scholar or SemanticScholarAdapter(
-            api_key=s2_api_key
-        )
+        s2_adapter = s2 or semantic_scholar
+        self._owns_s2 = s2_adapter is None
+        self._owns_crossref = crossref is None
+        self._owns_openalex = openalex is None
+
+        self.s2 = s2_adapter or SemanticScholarAdapter(api_key=s2_api_key)
+        self.semantic_scholar = self.s2
         self.crossref = crossref or CrossrefAdapter(email=crossref_email)
         self.openalex = openalex or OpenAlexAdapter(email=openalex_email)
 
@@ -215,7 +224,7 @@ class PaperVerifier:
         if not candidate.arxiv_id:
             return None
 
-        paper = await self.semantic_scholar.get_paper(
+        paper = await self.s2.get_paper(
             f"ARXIV:{candidate.arxiv_id}",
             fields=["paperId", "title", "externalIds"],
         )
@@ -247,7 +256,7 @@ class PaperVerifier:
         if not candidate.s2_id:
             return None
 
-        paper = await self.semantic_scholar.get_paper(
+        paper = await self.s2.get_paper(
             candidate.s2_id,
             fields=["paperId", "title", "externalIds"],
         )
@@ -283,12 +292,12 @@ class PaperVerifier:
         if not candidate.title:
             return None
 
-        match = await self.semantic_scholar.match_paper(candidate.title)
+        match = await self.s2.match_paper(candidate.title)
         paper_id = match.get("paperId")
         if not paper_id:
             return None
 
-        paper = await self.semantic_scholar.get_paper(
+        paper = await self.s2.get_paper(
             paper_id,
             fields=["paperId", "title", "externalIds"],
         )
@@ -308,9 +317,12 @@ class PaperVerifier:
 
     async def close(self) -> None:
         """Close owned adapter clients."""
-        await self.semantic_scholar.close()
-        await self.crossref.close()
-        await self.openalex.close()
+        if self._owns_s2:
+            await self.s2.close()
+        if self._owns_crossref:
+            await self.crossref.close()
+        if self._owns_openalex:
+            await self.openalex.close()
 
     def _unverified(self, candidate: PaperCandidate, *, reason: str) -> PaperVerificationRecord:
         return PaperVerificationRecord(

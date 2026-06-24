@@ -7,6 +7,7 @@ from services.paper_verification import (
     PaperVerifier,
     candidate_from_id,
     candidate_key,
+    normalize_arxiv_id,
     normalize_doi,
 )
 
@@ -56,6 +57,14 @@ class ExceptionVerifier(StubVerifier):
         raise RuntimeError("temporary outage")
 
 
+class CloseCountingAdapter:
+    def __init__(self, *args, **kwargs):
+        self.close_count = 0
+
+    async def close(self):
+        self.close_count += 1
+
+
 def test_candidate_key_prefers_stable_identifier():
     assert (
         candidate_key(PaperCandidate(candidate_id="x", arxiv_id="2505.24431"))
@@ -66,6 +75,13 @@ def test_candidate_key_prefers_stable_identifier():
         == "doi:10.1000/test"
     )
     assert candidate_key(PaperCandidate(candidate_id="x", s2_id="abc")) == "s2:abc"
+
+
+def test_candidate_key_strips_arxiv_version_suffix():
+    assert normalize_arxiv_id("2505.24431v2") == "2505.24431"
+    assert candidate_key(PaperCandidate(candidate_id="x", arxiv_id="2505.24431v1")) == (
+        candidate_key(PaperCandidate(candidate_id="x", arxiv_id="2505.24431v2"))
+    )
 
 
 def test_normalize_doi_strips_url_and_marker():
@@ -82,6 +98,61 @@ def test_candidate_from_openalex_id():
         openalex_id="W123",
         source="recommendation",
     )
+
+
+def test_candidate_from_raw_s2_id():
+    candidate = candidate_from_id("abc123")
+
+    assert candidate.s2_id == "abc123"
+
+
+def test_candidate_from_bare_arxiv_id():
+    candidate = candidate_from_id("2505.24431v2")
+
+    assert candidate.arxiv_id == "2505.24431"
+    assert candidate.s2_id is None
+
+
+def test_paper_verifier_accepts_s2_alias():
+    stub = CloseCountingAdapter()
+    verifier = PaperVerifier(s2=stub)
+
+    assert verifier.s2 is stub
+    assert verifier.semantic_scholar is stub
+
+
+@pytest.mark.asyncio
+async def test_close_does_not_close_injected_adapters():
+    s2 = CloseCountingAdapter()
+    crossref = CloseCountingAdapter()
+    openalex = CloseCountingAdapter()
+    verifier = PaperVerifier(s2=s2, crossref=crossref, openalex=openalex)
+
+    await verifier.close()
+
+    assert s2.close_count == 0
+    assert crossref.close_count == 0
+    assert openalex.close_count == 0
+
+
+@pytest.mark.asyncio
+async def test_close_closes_owned_adapters(monkeypatch):
+    created = []
+
+    class OwnedAdapter(CloseCountingAdapter):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            created.append(self)
+
+    monkeypatch.setattr("services.paper_verification.SemanticScholarAdapter", OwnedAdapter)
+    monkeypatch.setattr("services.paper_verification.CrossrefAdapter", OwnedAdapter)
+    monkeypatch.setattr("services.paper_verification.OpenAlexAdapter", OwnedAdapter)
+
+    verifier = PaperVerifier()
+
+    await verifier.close()
+
+    assert [adapter.close_count for adapter in created] == [1, 1, 1]
 
 
 @pytest.mark.asyncio
