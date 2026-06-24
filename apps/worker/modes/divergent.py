@@ -472,8 +472,15 @@ def _list_of_strings(value: Any) -> list[str]:
 
 
 def _allowed_value(value: Any, allowed: set[str], default: str) -> str:
-    normalized = str(value or "")
+    normalized = str(value or "").strip().lower()
     return normalized if normalized in allowed else default
+
+
+def _passed_novelty_jury(card: dict[str, Any]) -> bool:
+    return (
+        card.get("jury_status") == "reviewed"
+        and card.get("quality_verdict") in {"pursue", "hold"}
+    )
 
 
 def _build_novelty_jury_payload(
@@ -1179,7 +1186,15 @@ async def novelty_jury(state: ModeGraphState) -> dict[str, Any]:
         dedup_key = str(card["dedup_key"])
         verdict = verdict_map.get(dedup_key)
         if not verdict or dedup_key not in reviewable_keys:
-            updated_card.setdefault("quality_verdict", "hold")
+            updated_card["novelty_verdict"] = "unclear"
+            updated_card["quality_verdict"] = "reject"
+            updated_card["strongest_objection"] = (
+                "Novelty jury did not return a verdict."
+            )
+            updated_card["required_validation"] = [
+                "Rerun novelty jury or manually verify novelty."
+            ]
+            updated_card["jury_status"] = "error"
             updated_cards.append(updated_card)
             continue
 
@@ -1231,7 +1246,7 @@ async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
     # Only assess ideas that survived novelty jury review.
     viable_ideas = [
         c for c in state.idea_cards
-        if c.get("quality_verdict") in {"pursue", "hold"}
+        if _passed_novelty_jury(c)
     ]
 
     user_content = (
@@ -1263,7 +1278,7 @@ async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
     updated_cards: list[dict[str, Any]] = []
     for card in state.idea_cards:
         title = card.get("title", "")
-        assessment = assess_map.get(title, {})
+        assessment = assess_map.get(title, {}) if _passed_novelty_jury(card) else {}
         updated_card = {
             **card,
             "feasibility_score": assessment.get(
@@ -1353,7 +1368,7 @@ async def idea_portfolio(state: ModeGraphState) -> dict[str, Any]:
     # Compute composite scores locally
     portfolio_candidates = [
         card for card in state.idea_cards
-        if card.get("quality_verdict") in {"pursue", "hold"}
+        if _passed_novelty_jury(card)
     ]
     scored_cards: list[dict[str, Any]] = []
     for card in portfolio_candidates:

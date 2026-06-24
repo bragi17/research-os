@@ -1518,6 +1518,113 @@ async def test_novelty_jury_clamps_invalid_or_missing_verdict_fields(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_novelty_jury_normalizes_verdict_case_and_whitespace(monkeypatch):
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_generate_llm_json(*args, **kwargs):
+        return (
+            {
+                "ideas": [
+                    {
+                        "dedup_key": "idea-alpha",
+                        "novelty_verdict": " Duplicate ",
+                        "quality_verdict": "Reject ",
+                        "strongest_objection": "Already covered.",
+                        "required_validation": ["None."],
+                    }
+                ]
+            },
+            0.01,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=uuid4(),
+        topic="target task",
+        idea_cards=[
+            {
+                "id": "idea-0",
+                "dedup_key": "idea-alpha",
+                "title": "Idea Alpha",
+                "quality_verdict": "hold",
+                "novelty_verdict": "unclear",
+            }
+        ],
+    )
+
+    updates = await divergent.novelty_jury(state)
+
+    assert updates["idea_cards"][0]["novelty_verdict"] == "duplicate"
+    assert updates["idea_cards"][0]["quality_verdict"] == "reject"
+    assert updates["idea_cards"][0]["jury_status"] == "reviewed"
+
+
+@pytest.mark.asyncio
+async def test_novelty_jury_marks_missing_verdicts_as_errors(monkeypatch):
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_generate_llm_json(*args, **kwargs):
+        return (
+            {
+                "ideas": [
+                    {
+                        "dedup_key": "idea-alpha",
+                        "novelty_verdict": "novel",
+                        "quality_verdict": "pursue",
+                        "strongest_objection": "Needs validation.",
+                        "required_validation": ["Run ablation."],
+                    }
+                ]
+            },
+            0.01,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=uuid4(),
+        topic="target task",
+        idea_cards=[
+            {
+                "id": "idea-0",
+                "dedup_key": "idea-alpha",
+                "title": "Idea Alpha",
+                "quality_verdict": "hold",
+            },
+            {
+                "id": "idea-1",
+                "dedup_key": "idea-beta",
+                "title": "Idea Beta",
+                "quality_verdict": "hold",
+            },
+        ],
+    )
+
+    updates = await divergent.novelty_jury(state)
+
+    assert updates["idea_cards"][0]["quality_verdict"] == "pursue"
+    assert updates["idea_cards"][0]["jury_status"] == "reviewed"
+    assert updates["idea_cards"][1]["quality_verdict"] == "reject"
+    assert updates["idea_cards"][1]["novelty_verdict"] == "unclear"
+    assert updates["idea_cards"][1]["jury_status"] == "error"
+    assert updates["idea_cards"][1]["strongest_objection"] == (
+        "Novelty jury did not return a verdict."
+    )
+    assert updates["idea_cards"][1]["required_validation"] == [
+        "Rerun novelty jury or manually verify novelty."
+    ]
+
+
+@pytest.mark.asyncio
 async def test_novelty_jury_no_reviewable_cards_skips_llm_and_advances(monkeypatch):
     progress_events: list[tuple[str, str]] = []
 
@@ -1613,18 +1720,21 @@ async def test_feasibility_review_filters_by_quality_verdict(monkeypatch):
             {
                 "title": "Pursue Prior Art Idea",
                 "quality_verdict": "pursue",
+                "jury_status": "reviewed",
                 "prior_art_found": True,
                 "feasibility_score": 0.1,
             },
             {
                 "title": "Hold Idea",
                 "quality_verdict": "hold",
+                "jury_status": "reviewed",
                 "prior_art_found": False,
                 "feasibility_score": 0.1,
             },
             {
                 "title": "Rejected Clean Idea",
                 "quality_verdict": "reject",
+                "jury_status": "reviewed",
                 "prior_art_found": False,
                 "feasibility_score": 0.1,
             },
@@ -1646,6 +1756,54 @@ async def test_feasibility_review_filters_by_quality_verdict(monkeypatch):
     assert updates["idea_cards"][1]["feasibility_score"] == 0.6
     assert updates["idea_cards"][2]["feasibility_score"] == 0.1
     assert updates["idea_cards"][3]["feasibility_score"] == 0.1
+
+
+@pytest.mark.asyncio
+async def test_feasibility_review_does_not_update_rejected_duplicate_titles(monkeypatch):
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_generate_llm_json(system_prompt, user_content, gateway, tier):
+        assert user_content.count("Shared Title") == 1
+        return (
+            [
+                {
+                    "idea_title": "Shared Title",
+                    "overall_feasibility": 0.9,
+                    "data_available": True,
+                },
+            ],
+            0.02,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=uuid4(),
+        topic="target task",
+        idea_cards=[
+            {
+                "title": "Shared Title",
+                "quality_verdict": "hold",
+                "jury_status": "reviewed",
+                "feasibility_score": 0.1,
+            },
+            {
+                "title": "Shared Title",
+                "quality_verdict": "reject",
+                "jury_status": "reviewed",
+                "feasibility_score": 0.2,
+            },
+        ],
+    )
+
+    updates = await divergent.feasibility_review(state)
+
+    assert updates["idea_cards"][0]["feasibility_score"] == 0.9
+    assert updates["idea_cards"][1]["feasibility_score"] == 0.2
 
 
 def test_divergent_graph_routes_prior_art_through_novelty_jury():
@@ -1685,6 +1843,7 @@ async def test_idea_portfolio_excludes_rejected_jury_cards(monkeypatch):
             {
                 "title": "Rejected Duplicate",
                 "quality_verdict": "reject",
+                "jury_status": "reviewed",
                 "novelty_verdict": "duplicate",
                 "novelty_score": 1.0,
                 "feasibility_score": 1.0,
@@ -1692,6 +1851,7 @@ async def test_idea_portfolio_excludes_rejected_jury_cards(monkeypatch):
             {
                 "title": "Viable Idea",
                 "quality_verdict": "hold",
+                "jury_status": "reviewed",
                 "novelty_verdict": "incremental",
                 "novelty_score": 0.4,
                 "feasibility_score": 0.4,
