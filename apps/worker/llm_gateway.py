@@ -12,17 +12,21 @@ import hashlib
 import json
 import re
 import time
-from dataclasses import dataclass
-from enum import Enum
 from typing import Any, TypeVar
 
 from langchain_openai import ChatOpenAI
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel
 from structlog import get_logger
 
+from apps.worker.llm import (
+    DEFAULT_MODELS,
+    ModelConfig,
+    ModelTier,
+    build_generic_model_from_prompt,
+    json_schema_to_pydantic,
+)
 from services.llm_settings import (
-    DEFAULT_DEEPSEEK_MODEL,
     LLMProfile,
     get_active_llm_profile,
     redact_secret_text,
@@ -31,45 +35,6 @@ from services.llm_settings import (
 logger = get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
-
-
-class ModelTier(str, Enum):
-    """Model tier for cost/quality tradeoffs."""
-
-    HIGH = "high"      # Highest quality/reasoning intent
-    MEDIUM = "medium"  # Balanced quality/cost intent
-    LOW = "low"        # Lowest latency/cost intent
-
-
-@dataclass
-class ModelConfig:
-    """Configuration for a model."""
-
-    name: str
-    tier: ModelTier
-    max_tokens: int = 4096
-    supports_json: bool = True
-    supports_vision: bool = False
-
-
-# Default model configurations
-DEFAULT_MODELS = {
-    ModelTier.HIGH: ModelConfig(
-        name=DEFAULT_DEEPSEEK_MODEL,
-        tier=ModelTier.HIGH,
-        max_tokens=8192,
-    ),
-    ModelTier.MEDIUM: ModelConfig(
-        name=DEFAULT_DEEPSEEK_MODEL,
-        tier=ModelTier.MEDIUM,
-        max_tokens=4096,
-    ),
-    ModelTier.LOW: ModelConfig(
-        name=DEFAULT_DEEPSEEK_MODEL,
-        tier=ModelTier.LOW,
-        max_tokens=2048,
-    ),
-}
 
 
 class LLMGateway:
@@ -388,10 +353,10 @@ class LLMGateway:
         try:
             if schema:
                 # Build dynamic Pydantic model from JSON schema
-                pydantic_model = _json_schema_to_pydantic(schema)
+                pydantic_model = json_schema_to_pydantic(schema)
             else:
                 # Use a generic wrapper that accepts any JSON
-                pydantic_model = _build_generic_model_from_prompt(messages)
+                pydantic_model = build_generic_model_from_prompt(messages)
 
             result = await self.chat_structured(
                 pydantic_model,
@@ -505,97 +470,6 @@ class LLMGateway:
     def total_tokens(self) -> int:
         """Total tokens consumed across all calls."""
         return self._total_tokens
-
-
-# ======================================================================
-# JSON Schema → Pydantic model conversion
-# ======================================================================
-
-
-def _json_schema_to_pydantic(schema: dict[str, Any]) -> type[BaseModel]:
-    """
-    Convert a JSON schema dict to a dynamic Pydantic model.
-    Handles common types: string, number, integer, boolean, array, object.
-    """
-    properties = schema.get("properties", {})
-    required = set(schema.get("required", []))
-
-    fields: dict[str, Any] = {}
-    for name, prop in properties.items():
-        field_type = _resolve_type(prop)
-        if name in required:
-            fields[name] = (field_type, ...)
-        else:
-            fields[name] = (field_type, Field(default=None))
-
-    # If schema has no properties, create a generic container
-    if not fields:
-        fields["data"] = (dict[str, Any], Field(default_factory=dict))
-
-    return create_model("DynamicSchema", **fields)
-
-
-def _resolve_type(prop: dict[str, Any]) -> type:
-    """Resolve a JSON schema property to a Python type."""
-    t = prop.get("type", "string")
-    if t == "string":
-        return str | None
-    if t == "number":
-        return float | None
-    if t == "integer":
-        return int | None
-    if t == "boolean":
-        return bool | None
-    if t == "array":
-        return list[Any]
-    if t == "object":
-        return dict[str, Any]
-    return str | None
-
-
-def _build_generic_model_from_prompt(messages: list[dict[str, str]]) -> type[BaseModel]:
-    """
-    Analyze the system prompt to infer expected JSON keys and build
-    a Pydantic model. Looks for patterns like:
-      - "Output MUST be valid JSON with keys:"
-      - "- key_name: type  (description)"
-    """
-    system_content = ""
-    for msg in messages:
-        if msg["role"] == "system":
-            system_content = msg["content"]
-            break
-
-    # Try to extract key names from common prompt patterns
-    fields: dict[str, Any] = {}
-
-    # Pattern: "- key_name: type" or "- key_name: [type]"
-    key_pattern = re.findall(
-        r'[-*]\s+(\w+):\s+(str|string|int|float|number|bool|\[.*?\]|list|array|dict|object)',
-        system_content,
-        re.IGNORECASE,
-    )
-    for name, type_hint in key_pattern:
-        if "list" in type_hint.lower() or "[" in type_hint or "array" in type_hint.lower():
-            fields[name] = (list[Any], Field(default_factory=list))
-        elif type_hint.lower() in ("str", "string"):
-            fields[name] = (str, Field(default=""))
-        elif type_hint.lower() in ("int", "integer", "float", "number"):
-            fields[name] = (float | None, Field(default=None))
-        elif type_hint.lower() in ("bool",):
-            fields[name] = (bool, Field(default=False))
-        elif type_hint.lower() in ("dict", "object"):
-            fields[name] = (dict[str, Any], Field(default_factory=dict))
-        else:
-            fields[name] = (str | None, Field(default=None))
-
-    if not fields:
-        # Fallback: generic model that accepts anything
-        fields["result"] = (dict[str, Any], Field(default_factory=dict))
-        fields["items"] = (list[Any], Field(default_factory=list))
-        fields["summary"] = (str, Field(default=""))
-
-    return create_model("InferredOutput", **fields)
 
 
 # ======================================================================
