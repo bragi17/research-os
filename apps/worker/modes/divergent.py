@@ -40,6 +40,8 @@ _VERIFIER_TEXT_MAX_LENGTH = 240
 _VERIFIER_LIST_MAX_ITEMS = 3
 _VERIFIER_RECORD_MAX_ITEMS = 5
 _VERIFIER_CARD_MAX_ITEMS = 10
+_NOVELTY_VERDICTS = {"novel", "incremental", "duplicate", "unclear"}
+_QUALITY_VERDICTS = {"pursue", "hold", "reject"}
 _VERIFIER_CARD_FIELDS = (
     "id",
     "title",
@@ -432,6 +434,21 @@ def _list_of_strings(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if item is not None]
     return [str(value)]
+
+
+def _allowed_value(value: Any, allowed: set[str], default: str) -> str:
+    normalized = str(value or "")
+    return normalized if normalized in allowed else default
+
+
+def _build_novelty_jury_payload(
+    topic: str,
+    cards: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "topic": topic,
+        "ideas": _build_prior_art_verifier_payload(cards, {}),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1060,27 +1077,18 @@ async def novelty_jury(state: ModeGraphState) -> dict[str, Any]:
     errors: list[str] = list(state.errors)
     cost = state.current_cost_usd
 
+    keyed_cards = _cards_with_stable_dedup_keys(state.idea_cards)
     reviewable_cards: list[dict[str, Any]] = []
     reviewable_keys: set[str] = set()
-    for card in state.idea_cards:
+    for card in keyed_cards:
         if card.get("quality_verdict") == "reject":
             continue
-        dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        dedup_key = str(card["dedup_key"])
         reviewable_keys.add(dedup_key)
-        reviewable_cards.append(
-            {
-                "dedup_key": dedup_key,
-                "title": card.get("title", ""),
-                "problem_statement": card.get("problem_statement", ""),
-                "mechanism_of_transfer": card.get("mechanism_of_transfer", ""),
-                "expected_benefit": card.get("expected_benefit", ""),
-                "closest_prior_work": card.get("closest_prior_work", []),
-                "prior_art_details": card.get("prior_art_details", []),
-            }
-        )
+        reviewable_cards.append(card)
 
     if not reviewable_cards:
-        updates["idea_cards"] = [dict(card) for card in state.idea_cards]
+        updates["idea_cards"] = [dict(card) for card in keyed_cards]
         updates["current_cost_usd"] = cost
         updates["errors"] = errors
         updates["messages"] = [
@@ -1091,10 +1099,7 @@ async def novelty_jury(state: ModeGraphState) -> dict[str, Any]:
         return updates
 
     gateway = get_gateway()
-    payload = {
-        "topic": state.topic,
-        "ideas": reviewable_cards,
-    }
+    payload = _build_novelty_jury_payload(state.topic, reviewable_cards)
     user_content = (
         f"Research topic: {state.topic}\n\n"
         f"## Grounded Novelty Jury Payload\n"
@@ -1124,29 +1129,35 @@ async def novelty_jury(state: ModeGraphState) -> dict[str, Any]:
 
     matched_count = 0
     updated_cards: list[dict[str, Any]] = []
-    for card in state.idea_cards:
+    for card in keyed_cards:
         updated_card = dict(card)
         if card.get("quality_verdict") == "reject":
             updated_cards.append(updated_card)
             continue
 
-        dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        dedup_key = str(card["dedup_key"])
         verdict = verdict_map.get(dedup_key)
         if not verdict or dedup_key not in reviewable_keys:
+            updated_card.setdefault("quality_verdict", "hold")
             updated_cards.append(updated_card)
             continue
 
-        for field in (
-            "novelty_verdict",
-            "quality_verdict",
-            "strongest_objection",
-        ):
-            if field in verdict:
-                updated_card[field] = verdict[field]
-        if "required_validation" in verdict:
-            updated_card["required_validation"] = _list_of_strings(
-                verdict["required_validation"]
-            )
+        updated_card["novelty_verdict"] = _allowed_value(
+            verdict.get("novelty_verdict"),
+            _NOVELTY_VERDICTS,
+            "unclear",
+        )
+        updated_card["quality_verdict"] = _allowed_value(
+            verdict.get("quality_verdict"),
+            _QUALITY_VERDICTS,
+            "hold",
+        )
+        updated_card["strongest_objection"] = str(
+            verdict.get("strongest_objection") or ""
+        )
+        updated_card["required_validation"] = _list_of_strings(
+            verdict.get("required_validation")
+        )
         updated_card["jury_status"] = "reviewed"
         matched_count += 1
         updated_cards.append(updated_card)
@@ -1179,12 +1190,12 @@ async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
     # Only assess ideas that survived novelty jury review.
     viable_ideas = [
         c for c in state.idea_cards
-        if c.get("quality_verdict") in {"pursue", "hold"}
+        if c.get("quality_verdict", "hold") in {"pursue", "hold"}
     ]
 
     user_content = (
         f"Research topic: {state.topic}\n\n"
-        f"## Viable Idea Cards (passed prior art check)\n"
+        f"## Viable Idea Cards (passed novelty jury)\n"
         f"{json.dumps(viable_ideas[:10], default=str)}\n\n"
         f"For each idea, assess:\n"
         f"- data_available (bool): can the required data be obtained?\n"
