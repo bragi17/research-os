@@ -249,6 +249,116 @@ class TestUpdateIdeaCard:
         assert result is None
 
 
+class TestIdeaCardJuryFields:
+    @pytest.mark.asyncio
+    async def test_create_idea_card_accepts_jury_fields(self, mock_pool):
+        fake = _make_record({
+            "id": IDEA_ID,
+            "run_id": RUN_ID,
+            "title": "Adaptive Retrieval Judge",
+            "dedup_key": "adaptive-retrieval-judge",
+            "novelty_verdict": "incremental",
+            "quality_verdict": "hold",
+            "closest_prior_work": [{"title": "Prior Agent"}],
+            "required_validation": ["Compare against baseline retrieval"],
+            "jury_status": "reviewed",
+            "prior_art_details": [
+                {
+                    "candidate_key": "s2:123",
+                    "verification_status": "verified",
+                },
+            ],
+        })
+        mock_pool.fetchrow.return_value = fake
+
+        from apps.api.database import create_idea_card
+
+        result = await create_idea_card(
+            RUN_ID,
+            {
+                "title": "Adaptive Retrieval Judge",
+                "problem_statement": "Agent ideas are not independently challenged.",
+                "dedup_key": "adaptive-retrieval-judge",
+                "novelty_verdict": "incremental",
+                "quality_verdict": "hold",
+                "closest_prior_work": [{"title": "Prior Agent"}],
+                "required_validation": ["Compare against baseline retrieval"],
+                "jury_status": "reviewed",
+                "prior_art_details": [
+                    {
+                        "candidate_key": "s2:123",
+                        "verification_status": "verified",
+                    },
+                ],
+            },
+        )
+
+        sql = mock_pool.fetchrow.call_args[0][0]
+        assert "dedup_key" in sql
+        assert "novelty_verdict" in sql
+        params = mock_pool.fetchrow.call_args.args[1:]
+        assert params[3] == []
+        assert params[10] == "pending"
+        assert params[13] == "candidate"
+        assert params[14] == "adaptive-retrieval-judge"
+        assert params[15] == "incremental"
+        assert params[17] == [{"title": "Prior Agent"}]
+        assert result["quality_verdict"] == "hold"
+
+    @pytest.mark.asyncio
+    async def test_update_idea_card_accepts_jury_verdict(self, mock_pool):
+        mock_pool.fetchrow.return_value = _make_record({
+            "id": IDEA_ID,
+            "quality_verdict": "reject",
+            "strongest_objection": "Closest prior work already covers the transfer.",
+        })
+
+        from apps.api.database import update_idea_card
+
+        result = await update_idea_card(
+            IDEA_ID,
+            {
+                "quality_verdict": "reject",
+                "strongest_objection": "Closest prior work already covers the transfer.",
+            },
+        )
+
+        sql = mock_pool.fetchrow.call_args[0][0]
+        assert "quality_verdict" in sql
+        assert "strongest_objection" in sql
+        assert result["quality_verdict"] == "reject"
+
+    @pytest.mark.asyncio
+    async def test_update_idea_card_rejects_mixed_unknown_fields(self, mock_pool):
+        from apps.api.database import update_idea_card
+
+        with pytest.raises(
+            ValueError,
+            match="Invalid idea_card update fields: \\['unknown_column'\\]",
+        ):
+            await update_idea_card(
+                IDEA_ID,
+                {
+                    "title": "Allowed",
+                    "unknown_column": "blocked",
+                },
+            )
+
+        mock_pool.fetchrow.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_idea_card_rejects_only_unknown_fields(self, mock_pool):
+        from apps.api.database import update_idea_card
+
+        with pytest.raises(
+            ValueError,
+            match="Invalid idea_card update fields: \\['unknown_column'\\]",
+        ):
+            await update_idea_card(IDEA_ID, {"unknown_column": "blocked"})
+
+        mock_pool.fetchrow.assert_not_awaited()
+
+
 # ===================================================================
 # Context Bundle tests
 # ===================================================================

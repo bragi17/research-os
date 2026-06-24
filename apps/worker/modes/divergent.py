@@ -1,13 +1,15 @@
 """
 Research OS - Divergent Mode (Mode C): Cross-Domain Innovation
 
-7-stage LangGraph StateGraph for generating novel research ideas
+8-stage LangGraph StateGraph for generating novel research ideas
 by borrowing methods from other domains.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from typing import Any, Literal
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -30,6 +32,466 @@ logger = get_logger(__name__)
 
 # Re-export for runner
 DivergentState = ModeGraphState
+
+_DEDUP_KEY_MAX_LENGTH = 140
+_DEDUP_KEY_HASH_LENGTH = 8
+_VERIFIER_PAYLOAD_MAX_CHARS = 7600
+_VERIFIER_TEXT_MAX_LENGTH = 240
+_VERIFIER_LIST_MAX_ITEMS = 3
+_VERIFIER_RECORD_MAX_ITEMS = 5
+_VERIFIER_CARD_MAX_ITEMS = 10
+_NOVELTY_VERDICTS = {"novel", "incremental", "duplicate", "unclear"}
+_QUALITY_VERDICTS = {"pursue", "hold", "reject"}
+_NOVELTY_JURY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "ideas": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "dedup_key": {"type": "string"},
+                    "novelty_verdict": {
+                        "type": "string",
+                        "enum": ["novel", "incremental", "duplicate", "unclear"],
+                    },
+                    "quality_verdict": {
+                        "type": "string",
+                        "enum": ["pursue", "hold", "reject"],
+                    },
+                    "strongest_objection": {"type": "string"},
+                    "required_validation": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": [
+                    "dedup_key",
+                    "novelty_verdict",
+                    "quality_verdict",
+                    "strongest_objection",
+                    "required_validation",
+                ],
+            },
+        },
+    },
+    "required": ["ideas"],
+}
+_VERIFIER_CARD_FIELDS = (
+    "id",
+    "title",
+    "problem_statement",
+    "borrowed_method",
+    "source_domain",
+    "mechanism_of_transfer",
+    "expected_benefit",
+    "risks",
+    "required_experiments",
+    "novelty_score",
+    "feasibility_score",
+    "novelty_verdict",
+    "quality_verdict",
+    "prior_art_check_status",
+)
+
+
+def _normalized_idea_key(card: dict[str, Any]) -> str:
+    title = card.get("title") or ""
+    problem_statement = card.get("problem_statement") or ""
+    raw_key = f"{title} {problem_statement}".lower()
+    normalized_key = re.sub(r"[^a-z0-9]+", "-", raw_key).strip("-")
+    return normalized_key or "untitled-idea"
+
+
+def _idea_dedup_key(card: dict[str, Any]) -> str:
+    """Build a stable duplicate key from an idea title and problem statement."""
+    normalized_key = _normalized_idea_key(card)
+    return _bounded_dedup_key(normalized_key)
+
+
+def _bounded_dedup_key(normalized_key: str) -> str:
+    if len(normalized_key) <= _DEDUP_KEY_MAX_LENGTH:
+        return normalized_key
+
+    digest = hashlib.sha256(normalized_key.encode("utf-8")).hexdigest()[
+        :_DEDUP_KEY_HASH_LENGTH
+    ]
+    suffix = f"-{digest}"
+    prefix_length = _DEDUP_KEY_MAX_LENGTH - len(suffix)
+    return f"{normalized_key[:prefix_length].rstrip('-')}{suffix}"
+
+
+def _duplicate_dedup_key(base_key: str, duplicate_number: int) -> str:
+    suffix = f"-dup-{duplicate_number}"
+    if len(base_key) + len(suffix) <= _DEDUP_KEY_MAX_LENGTH:
+        return f"{base_key}{suffix}"
+
+    digest = hashlib.sha256(base_key.encode("utf-8")).hexdigest()[
+        :_DEDUP_KEY_HASH_LENGTH
+    ]
+    suffix = f"{suffix}-{digest}"
+    prefix_length = _DEDUP_KEY_MAX_LENGTH - len(suffix)
+    return f"{base_key[:prefix_length].rstrip('-')}{suffix}"
+
+
+def _unique_dedup_key(base_key: str, assigned_keys: set[str]) -> str:
+    if base_key not in assigned_keys:
+        return base_key
+
+    duplicate_number = 2
+    while True:
+        candidate_key = _duplicate_dedup_key(base_key, duplicate_number)
+        if candidate_key not in assigned_keys:
+            return candidate_key
+        duplicate_number += 1
+
+
+def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return copied idea cards with duplicate cards marked for rejection."""
+    seen: dict[str, dict[str, Any]] = {}
+    seen_counts: dict[str, int] = {}
+    assigned_keys: set[str] = set()
+    deduped_cards: list[dict[str, Any]] = []
+
+    for card in cards:
+        next_card = dict(card)
+        dedup_key = _idea_dedup_key(next_card)
+
+        if dedup_key in seen:
+            seen_counts[dedup_key] += 1
+            assigned_key = _duplicate_dedup_key(dedup_key, seen_counts[dedup_key])
+            while assigned_key in assigned_keys:
+                seen_counts[dedup_key] += 1
+                assigned_key = _duplicate_dedup_key(
+                    dedup_key, seen_counts[dedup_key]
+                )
+            first_card = seen[dedup_key]
+            original_idea = (
+                first_card.get("id")
+                or first_card.get("title")
+                or first_card.get("dedup_key")
+                or "earlier idea"
+            )
+            next_card["dedup_key"] = assigned_key
+            next_card["duplicate_of_dedup_key"] = first_card["dedup_key"]
+            next_card["novelty_verdict"] = "duplicate"
+            next_card["quality_verdict"] = "reject"
+            next_card["jury_status"] = "reviewed"
+            next_card["strongest_objection"] = f"Duplicate of idea {original_idea}."
+        else:
+            next_card["dedup_key"] = _unique_dedup_key(dedup_key, assigned_keys)
+            next_card.setdefault("novelty_verdict", "unclear")
+            next_card.setdefault("quality_verdict", "hold")
+            next_card.setdefault("jury_status", "pending")
+            seen[dedup_key] = next_card
+            seen_counts[dedup_key] = 1
+
+        assigned_keys.add(next_card["dedup_key"])
+        deduped_cards.append(next_card)
+
+    return deduped_cards
+
+
+def _stable_card_dedup_keys(cards: list[dict[str, Any]]) -> list[str]:
+    assigned_keys: set[str] = set()
+    keys: list[str] = []
+
+    for card in cards:
+        if card.get("dedup_key"):
+            base_key = _bounded_dedup_key(
+                _normalized_idea_key({"title": card["dedup_key"]})
+            )
+        else:
+            base_key = _idea_dedup_key(card)
+        dedup_key = _unique_dedup_key(base_key, assigned_keys)
+        assigned_keys.add(dedup_key)
+        keys.append(dedup_key)
+
+    return keys
+
+
+def _cards_with_stable_dedup_keys(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {**card, "dedup_key": dedup_key}
+        for card, dedup_key in zip(cards, _stable_card_dedup_keys(cards))
+    ]
+
+
+def _verification_record_to_dict(record: Any) -> dict[str, Any]:
+    if isinstance(record, dict):
+        return dict(record)
+    if hasattr(record, "model_dump"):
+        return record.model_dump(mode="json")
+    if hasattr(record, "dict"):
+        return record.dict()
+    return {}
+
+
+def _is_verified_record(record: dict[str, Any]) -> bool:
+    status = record.get("verification_status")
+    return getattr(status, "value", status) == "verified"
+
+
+def _prior_art_summary(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": record.get("canonical_title")
+        or record.get("title")
+        or record.get("input_title"),
+        "doi": record.get("canonical_doi") or record.get("doi"),
+        "arxiv_id": record.get("canonical_arxiv_id") or record.get("arxiv_id"),
+        "candidate_id": record.get("candidate_id"),
+        "candidate_key": record.get("candidate_key"),
+        "s2_id": record.get("canonical_s2_id") or record.get("s2_id"),
+        "openalex_id": record.get("canonical_openalex_id")
+        or record.get("openalex_id"),
+        "input_title": record.get("input_title"),
+    }
+
+
+def _attach_prior_art_details(
+    cards: list[dict[str, Any]],
+    prior_art_records_by_key: dict[str, list[Any]],
+) -> list[dict[str, Any]]:
+    """Return copied cards with verified prior-art records attached."""
+    updated_cards: list[dict[str, Any]] = []
+
+    for card in cards:
+        dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        if dedup_key not in prior_art_records_by_key:
+            updated_cards.append(dict(card))
+            continue
+
+        records = [
+            _verification_record_to_dict(record)
+            for record in prior_art_records_by_key[dedup_key]
+        ]
+        verified_records = [
+            record
+            for record in records
+            if _is_verified_record(record)
+        ]
+        if not verified_records:
+            next_card = dict(card)
+            next_card.setdefault("prior_art_details", [])
+            next_card.setdefault("closest_prior_work", [])
+            updated_cards.append(next_card)
+            continue
+
+        closest_prior_work = [
+            _prior_art_summary(record) for record in verified_records[:5]
+        ]
+
+        updated_cards.append(
+            {
+                **card,
+                "prior_art_details": verified_records,
+                "closest_prior_work": closest_prior_work,
+            }
+        )
+
+    return updated_cards
+
+
+def _verifier_value(value: Any) -> Any:
+    if isinstance(value, str):
+        if len(value) <= _VERIFIER_TEXT_MAX_LENGTH:
+            return value
+        return f"{value[: _VERIFIER_TEXT_MAX_LENGTH - 3].rstrip()}..."
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_verifier_value(item) for item in value[:_VERIFIER_LIST_MAX_ITEMS]]
+    return str(value)[:_VERIFIER_TEXT_MAX_LENGTH]
+
+
+def _verifier_idea_card(card: dict[str, Any], dedup_key: str) -> dict[str, Any]:
+    idea_card = {"dedup_key": dedup_key}
+    for field in _VERIFIER_CARD_FIELDS:
+        if field in card:
+            idea_card[field] = _verifier_value(card[field])
+    return idea_card
+
+
+def _verifier_prior_art_detail(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **{
+            key: _verifier_value(value)
+            for key, value in _prior_art_summary(record).items()
+            if value is not None
+        },
+        "verification_status": record.get("verification_status"),
+        "verification_method": record.get("verification_method"),
+        "verification_reason": _verifier_value(record.get("verification_reason")),
+    }
+
+
+def _verifier_closest_prior_work(item: dict[str, Any]) -> dict[str, Any]:
+    allowed_fields = (
+        "title",
+        "doi",
+        "arxiv_id",
+        "candidate_id",
+        "candidate_key",
+        "s2_id",
+        "openalex_id",
+        "input_title",
+    )
+    return {
+        field: _verifier_value(item[field])
+        for field in allowed_fields
+        if item.get(field) is not None
+    }
+
+
+def _verifier_payload_key(value: Any) -> str:
+    raw_key = str(value or "unknown-idea")
+    return _bounded_dedup_key(_normalized_idea_key({"title": raw_key}))
+
+
+def _append_within_limit(
+    items: list[dict[str, Any]],
+    item: dict[str, Any],
+    max_chars: int,
+) -> bool:
+    candidate = [*items, item]
+    if len(json.dumps(candidate, default=str)) > max_chars:
+        return False
+    items.append(item)
+    return True
+
+
+def _limit_verifier_payload(
+    payload: list[dict[str, Any]],
+    max_chars: int = _VERIFIER_PAYLOAD_MAX_CHARS,
+) -> list[dict[str, Any]]:
+    for record_limit in (_VERIFIER_RECORD_MAX_ITEMS, 3, 1, 0):
+        candidate = [
+            {
+                **item,
+                "prior_art_details": item.get("prior_art_details", [])[:record_limit],
+                "closest_prior_work": item.get("closest_prior_work", [])[:record_limit],
+            }
+            for item in payload
+        ]
+        if len(json.dumps(candidate, default=str)) <= max_chars:
+            return candidate
+
+    compact_payload = []
+    for item in payload:
+        card = item.get("idea_card", {})
+        dedup_key = _verifier_payload_key(
+            item.get("dedup_key") or card.get("dedup_key")
+        )
+        compact_payload.append(
+            {
+                "idea_card": {
+                    "dedup_key": dedup_key,
+                    "id": card.get("id"),
+                    "title": card.get("title"),
+                },
+                "dedup_key": dedup_key,
+                "prior_art_details": [],
+                "closest_prior_work": [],
+            }
+        )
+    if len(json.dumps(compact_payload, default=str)) <= max_chars:
+        return compact_payload
+
+    minimal_payload = [
+        {
+            "idea_card": {
+                "dedup_key": _verifier_payload_key(item.get("dedup_key")),
+                "title": item.get("idea_card", {}).get("title"),
+            },
+            "dedup_key": _verifier_payload_key(item.get("dedup_key")),
+            "prior_art_details": [],
+            "closest_prior_work": [],
+        }
+        for item in payload
+    ]
+    if len(json.dumps(minimal_payload, default=str)) <= max_chars:
+        return minimal_payload
+
+    bounded_payload: list[dict[str, Any]] = []
+    for item in payload:
+        dedup_key = _verifier_payload_key(item.get("dedup_key"))
+        next_item = {
+            "idea_card": {"dedup_key": dedup_key},
+            "dedup_key": dedup_key,
+            "prior_art_details": [],
+            "closest_prior_work": [],
+        }
+        if not _append_within_limit(bounded_payload, next_item, max_chars):
+            break
+    return bounded_payload
+
+
+def _build_prior_art_verifier_payload(
+    cards: list[dict[str, Any]],
+    prior_art_records_by_key: dict[str, list[Any]],
+) -> list[dict[str, Any]]:
+    keyed_cards = _cards_with_stable_dedup_keys(cards[:_VERIFIER_CARD_MAX_ITEMS])
+    attached_cards = _attach_prior_art_details(keyed_cards, prior_art_records_by_key)
+    payload: list[dict[str, Any]] = []
+
+    for card in attached_cards:
+        dedup_key = str(card["dedup_key"])
+        idea_card = _verifier_idea_card(card, dedup_key)
+        verified_records = [
+            _verification_record_to_dict(record)
+            for record in card.get("prior_art_details", [])
+            if _is_verified_record(_verification_record_to_dict(record))
+        ]
+        prior_art_details = [
+            _verifier_prior_art_detail(record)
+            for record in verified_records[:_VERIFIER_RECORD_MAX_ITEMS]
+        ]
+        payload.append(
+            {
+                "idea_card": idea_card,
+                "dedup_key": dedup_key,
+                "prior_art_details": prior_art_details,
+                "closest_prior_work": [
+                    _verifier_closest_prior_work(item)
+                    for item in card.get("closest_prior_work", [])[
+                        :_VERIFIER_RECORD_MAX_ITEMS
+                    ]
+                ],
+            }
+        )
+
+    return _limit_verifier_payload(payload)
+
+
+def _list_of_strings(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if item is not None]
+    return [str(value)]
+
+
+def _allowed_value(value: Any, allowed: set[str], default: str) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in allowed else default
+
+
+def _passed_novelty_jury(card: dict[str, Any]) -> bool:
+    return (
+        card.get("jury_status") == "reviewed"
+        and card.get("quality_verdict") in {"pursue", "hold"}
+    )
+
+
+def _build_novelty_jury_payload(
+    topic: str,
+    cards: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "topic": topic,
+        "ideas": _build_prior_art_verifier_payload(cards, {}),
+    }
+
 
 # ---------------------------------------------------------------------------
 # Divergent-specific system prompts
@@ -123,6 +585,30 @@ For EACH idea, produce an object with:
 Output MUST be valid JSON: an array of these objects.
 
 IMPORTANT: If the input data is empty, insufficient, or missing, return a valid JSON with empty arrays/strings for all fields. Do NOT fabricate or hallucinate data. Include a "note" field explaining what was missing.
+"""
+
+_NOVELTY_JURY_SYSTEM = """\
+You are an independent research novelty jury. Judge each innovation idea \
+against only the verified prior-art records attached to that idea.
+
+For EACH idea, decide whether the proposed mechanism is meaningfully distinct \
+from the verified prior art and testable as a research contribution.
+
+Do not reward wording changes, agent orchestration language, or broad \
+repackaging.
+
+Use quality_verdict="pursue" only when the idea has a meaningfully distinct, \
+testable mechanism of transfer. Use quality_verdict="reject" for duplicate \
+ideas, ideas directly covered by verified prior art, or ideas whose mechanism \
+is not distinguishable from the attached prior-art records. Use \
+quality_verdict="hold" only when the distinction may exist but requires a \
+specific validation step before pursuit.
+
+Return strict JSON with a top-level ideas array:
+{"ideas": [{dedup_key: str, novelty_verdict: str, quality_verdict: "pursue" | "hold" | "reject", strongest_objection: str, required_validation: [str]}]}
+
+Do NOT fabricate prior art. Ground every objection in the provided \
+closest_prior_work and prior_art_details for that same dedup_key.
 """
 
 _IDEA_PORTFOLIO_SYSTEM = """\
@@ -449,7 +935,7 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
         card.setdefault("novelty_score", 0.5)
         card.setdefault("feasibility_score", 0.5)
 
-    updates["idea_cards"] = idea_cards
+    updates["idea_cards"] = _dedupe_idea_cards(idea_cards)
     updates["current_cost_usd"] = cost
     updates["errors"] = errors
     updates["messages"] = [
@@ -474,54 +960,74 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     cost = state.current_cost_usd
 
     gateway = get_gateway()
+    keyed_idea_cards = _cards_with_stable_dedup_keys(state.idea_cards)
 
-    # Build search queries from idea card titles and borrowed methods
-    search_queries: list[dict[str, Any]] = []
-    for card in state.idea_cards[:10]:
+    # Build search jobs from idea card titles and borrowed methods.
+    search_jobs: list[dict[str, Any]] = []
+    for card in keyed_idea_cards[:10]:
         title = card.get("title", "")
         method = card.get("borrowed_method", "")
         query_text = f"{title} {method}".strip()
         if query_text:
-            search_queries.append({
-                "query": query_text,
-                "type": "prior_art",
-                "source": "both",
-                "priority": 1,
-            })
+            search_jobs.append(
+                {
+                    "dedup_key": str(card.get("dedup_key") or _idea_dedup_key(card)),
+                    "query": {
+                        "query": query_text,
+                        "type": "prior_art",
+                        "source": "both",
+                        "priority": 1,
+                    },
+                }
+            )
 
     # Search S2 + OpenAlex for similar papers
     existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
-    prior_art_papers: list[str] = []
     prior_art_verification: dict[str, dict[str, Any]] = {}
-    if search_queries:
+    prior_art_records_by_key: dict[str, list[dict[str, Any]]] = {}
+    for job in search_jobs:
         found, _executed, search_errors, title_map = await search_academic_sources(
             topic=state.topic,
-            queries=search_queries[:10],
+            queries=[job["query"]],
             existing_titles=existing_titles,
-        )
-        prior_art_papers = found
-        prior_art_verification = await verify_paper_candidates_for_run(
-            state.run_id,
-            prior_art_papers,
-            title_map=title_map,
-            source="prior_art",
         )
         errors.extend(search_errors)
 
+        card_verification = await verify_paper_candidates_for_run(
+            state.run_id,
+            found,
+            title_map=title_map,
+            source="prior_art",
+        )
+        normalized_verification = {
+            candidate_id: _verification_record_to_dict(record)
+            for candidate_id, record in card_verification.items()
+        }
+        prior_art_records_by_key[job["dedup_key"]] = list(
+            normalized_verification.values()
+        )
+        prior_art_verification.update(normalized_verification)
+
     # Use VERIFIER prompt from templates.py to assess novelty
     verifier_system = get_system_prompt(PromptName.VERIFIER)
+    verifier_payload = _build_prior_art_verifier_payload(
+        keyed_idea_cards[:10],
+        prior_art_records_by_key,
+    )
+    verifier_payload_json = json.dumps(verifier_payload, default=str)
 
     user_content = (
         f"Research topic: {state.topic}\n\n"
-        f"## Idea Cards to Verify\n"
-        f"{json.dumps(state.idea_cards[:10], default=str)}\n\n"
-        f"## Prior Art Papers Found (IDs)\n"
-        f"{json.dumps(prior_art_papers[:20], default=str)}\n\n"
         f"## Verified Prior Art Records\n"
-        f"{json.dumps(prior_art_verification, default=str)[:8000]}\n\n"
+        f"Records are nested with the idea card they belong to. Do not use "
+        f"records from one idea to judge another idea.\n\n"
+        f"## Idea Cards With Per-Card Prior Art\n"
+        f"{verifier_payload_json}\n\n"
         f"For EACH idea card, assess whether substantially similar work "
-        f"already exists. Output MUST be valid JSON: an array of objects with:\n"
+        f"already exists using only that idea card's prior_art_details and "
+        f"closest_prior_work. Output MUST be valid JSON: an array of objects with:\n"
         f"- idea_title: str\n"
+        f"- dedup_key: str (copy this from the input idea_card)\n"
         f"- verdict: \"reject\" | \"hold\" | \"finalize\" | \"continue_search\"\n"
         f"- prior_art_found: bool\n"
         f"- similar_works: [{{title: str, similarity_reason: str}}]\n"
@@ -542,23 +1048,54 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         checks = result["checks"]
 
     # Update idea cards with prior art status
-    check_map = {c.get("idea_title", ""): c for c in checks}
-    updated_cards: list[dict[str, Any]] = []
-    for card in state.idea_cards:
+    check_map = {
+        str(c.get("dedup_key")): c
+        for c in checks
+        if c.get("dedup_key")
+    }
+    title_buckets: dict[str, list[dict[str, Any]]] = {}
+    for check in checks:
+        title = check.get("idea_title", "")
+        if title:
+            title_buckets.setdefault(title, []).append(check)
+    card_title_counts: dict[str, int] = {}
+    for card in keyed_idea_cards:
         title = card.get("title", "")
-        check = check_map.get(title, {})
+        if title:
+            card_title_counts[title] = card_title_counts.get(title, 0) + 1
+    title_check_map = {
+        title: title_checks[0]
+        for title, title_checks in title_buckets.items()
+        if len(title_checks) == 1 and card_title_counts.get(title) == 1
+    }
+    updated_cards: list[dict[str, Any]] = []
+    for card in keyed_idea_cards:
+        dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        check = check_map.get(
+            dedup_key,
+            title_check_map.get(card.get("title", ""), {}),
+        )
         prior_art_found = check.get("prior_art_found", False)
         updated_card = {
             **card,
             "prior_art_check_status": "high_risk" if prior_art_found else "checked",
             "prior_art_found": prior_art_found,
-            "prior_art_details": check.get("similar_works", []),
+            "similar_works": card.get("similar_works", []),
+            "prior_art_similar_works": check.get(
+                "similar_works",
+                card.get("prior_art_similar_works", []),
+            ),
             "novelty_score": check.get(
                 "adjusted_novelty_score",
                 card.get("novelty_score", 0.5),
             ),
         }
         updated_cards.append(updated_card)
+
+    updated_cards = _attach_prior_art_details(
+        updated_cards,
+        prior_art_records_by_key,
+    )
 
     updates["idea_cards"] = updated_cards
     updated_bundle = dict(state.context_bundle)
@@ -577,8 +1114,124 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     return updates
 
 
+async def novelty_jury(state: ModeGraphState) -> dict[str, Any]:
+    """Stage 6: Independently judge novelty against verified prior art."""
+    await emit_progress(state.run_id, "novelty_jury", "start", "Reviewing idea novelty against verified prior art")
+    updates: dict[str, Any] = {"current_stage": "analyze", "current_step": "novelty_jury"}
+    errors: list[str] = list(state.errors)
+    cost = state.current_cost_usd
+
+    keyed_cards = _cards_with_stable_dedup_keys(state.idea_cards)
+    reviewable_cards: list[dict[str, Any]] = []
+    reviewable_keys: set[str] = set()
+    for card in keyed_cards:
+        if card.get("quality_verdict") == "reject":
+            continue
+        dedup_key = str(card["dedup_key"])
+        reviewable_keys.add(dedup_key)
+        reviewable_cards.append(card)
+
+    if not reviewable_cards:
+        updates["idea_cards"] = [dict(card) for card in keyed_cards]
+        updates["current_cost_usd"] = cost
+        updates["errors"] = errors
+        updates["messages"] = [
+            {"role": "assistant", "content": "Novelty jury reviewed 0 ideas."}
+        ]
+        logger.info("novelty_jury.done", reviewed=0)
+        await emit_progress(state.run_id, "novelty_jury", "done", "Novelty jury reviewed 0 ideas")
+        return updates
+
+    gateway = get_gateway()
+    verdicts: list[dict[str, Any]] = []
+    for offset in range(0, len(reviewable_cards), _VERIFIER_CARD_MAX_ITEMS):
+        batch = reviewable_cards[offset: offset + _VERIFIER_CARD_MAX_ITEMS]
+        payload = _build_novelty_jury_payload(state.topic, batch)
+        user_content = (
+            f"Research topic: {state.topic}\n\n"
+            f"## Grounded Novelty Jury Payload\n"
+            f"{json.dumps(payload, default=str)}\n\n"
+            f"Return one verdict per reviewable idea using the input dedup_key. "
+            f"Judge each idea only against its own closest_prior_work and "
+            f"prior_art_details."
+        )
+
+        result, delta, errs = await generate_llm_json(
+            _NOVELTY_JURY_SYSTEM,
+            user_content,
+            gateway,
+            ModelTier.HIGH,
+            schema=_NOVELTY_JURY_SCHEMA,
+        )
+        cost += delta
+        errors.extend(errs)
+
+        if isinstance(result, dict) and isinstance(result.get("ideas"), list):
+            verdicts.extend(result["ideas"])
+
+    verdict_map = {
+        str(verdict.get("dedup_key")): verdict
+        for verdict in verdicts
+        if verdict.get("dedup_key")
+    }
+
+    matched_count = 0
+    updated_cards: list[dict[str, Any]] = []
+    for card in keyed_cards:
+        updated_card = dict(card)
+        if card.get("quality_verdict") == "reject":
+            updated_cards.append(updated_card)
+            continue
+
+        dedup_key = str(card["dedup_key"])
+        verdict = verdict_map.get(dedup_key)
+        if not verdict or dedup_key not in reviewable_keys:
+            updated_card["novelty_verdict"] = "unclear"
+            updated_card["quality_verdict"] = "reject"
+            updated_card["strongest_objection"] = (
+                "Novelty jury did not return a verdict."
+            )
+            updated_card["required_validation"] = [
+                "Rerun novelty jury or manually verify novelty."
+            ]
+            updated_card["jury_status"] = "error"
+            updated_cards.append(updated_card)
+            continue
+
+        updated_card["novelty_verdict"] = _allowed_value(
+            verdict.get("novelty_verdict"),
+            _NOVELTY_VERDICTS,
+            "unclear",
+        )
+        updated_card["quality_verdict"] = _allowed_value(
+            verdict.get("quality_verdict"),
+            _QUALITY_VERDICTS,
+            "hold",
+        )
+        updated_card["strongest_objection"] = str(
+            verdict.get("strongest_objection") or ""
+        )
+        updated_card["required_validation"] = _list_of_strings(
+            verdict.get("required_validation")
+        )
+        updated_card["jury_status"] = "reviewed"
+        matched_count += 1
+        updated_cards.append(updated_card)
+
+    updates["idea_cards"] = updated_cards
+    updates["current_cost_usd"] = cost
+    updates["errors"] = errors
+    updates["messages"] = [
+        {"role": "assistant", "content": f"Novelty jury reviewed {matched_count} ideas."}
+    ]
+
+    logger.info("novelty_jury.done", reviewed=matched_count)
+    await emit_progress(state.run_id, "novelty_jury", "done", f"Novelty jury reviewed {matched_count} ideas")
+    return updates
+
+
 async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
-    """Stage 6: Assess practical feasibility.
+    """Stage 7: Assess practical feasibility.
 
     Evaluates data availability, compute requirements, experiment design
     feasibility, and timeline estimate. Updates feasibility scores.
@@ -590,15 +1243,15 @@ async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
 
     gateway = get_gateway()
 
-    # Only assess ideas that survived prior art check (not flagged high-risk)
+    # Only assess ideas that survived novelty jury review.
     viable_ideas = [
         c for c in state.idea_cards
-        if not c.get("prior_art_found", False)
+        if _passed_novelty_jury(c)
     ]
 
     user_content = (
         f"Research topic: {state.topic}\n\n"
-        f"## Viable Idea Cards (passed prior art check)\n"
+        f"## Viable Idea Cards (passed novelty jury)\n"
         f"{json.dumps(viable_ideas[:10], default=str)}\n\n"
         f"For each idea, assess:\n"
         f"- data_available (bool): can the required data be obtained?\n"
@@ -624,6 +1277,10 @@ async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
     assess_map = {a.get("idea_title", ""): a for a in assessments}
     updated_cards: list[dict[str, Any]] = []
     for card in state.idea_cards:
+        if not _passed_novelty_jury(card):
+            updated_cards.append(dict(card))
+            continue
+
         title = card.get("title", "")
         assessment = assess_map.get(title, {})
         updated_card = {
@@ -694,7 +1351,7 @@ def _compute_evidence_score(card: dict[str, Any]) -> float:
 
 
 async def idea_portfolio(state: ModeGraphState) -> dict[str, Any]:
-    """Stage 7: Rank and finalize idea cards.
+    """Stage 8: Rank and finalize idea cards.
 
     Sorts by composite score (novelty * 0.4 + feasibility * 0.3 + evidence * 0.3).
     Generates summary report_markdown. Builds context_bundle with final
@@ -713,8 +1370,12 @@ async def idea_portfolio(state: ModeGraphState) -> dict[str, Any]:
     gateway = get_gateway()
 
     # Compute composite scores locally
+    portfolio_candidates = [
+        card for card in state.idea_cards
+        if _passed_novelty_jury(card)
+    ]
     scored_cards: list[dict[str, Any]] = []
-    for card in state.idea_cards:
+    for card in portfolio_candidates:
         evidence = _compute_evidence_score(card)
         composite = _compute_composite_score(card)
         scored_card = {
@@ -815,7 +1476,7 @@ async def idea_portfolio(state: ModeGraphState) -> dict[str, Any]:
 
 
 def create_divergent_graph() -> StateGraph:
-    """Create the 7-stage Divergent (Mode C) LangGraph StateGraph."""
+    """Create the 8-stage Divergent (Mode C) LangGraph StateGraph."""
     workflow = StateGraph(ModeGraphState)
 
     workflow.add_node("normalize_pain_package", normalize_pain_package)
@@ -823,6 +1484,7 @@ def create_divergent_graph() -> StateGraph:
     workflow.add_node("method_transfer_screening", method_transfer_screening)
     workflow.add_node("idea_composition", idea_composition)
     workflow.add_node("prior_art_check", prior_art_check)
+    workflow.add_node("novelty_jury", novelty_jury)
     workflow.add_node("feasibility_review", feasibility_review)
     workflow.add_node("idea_portfolio", idea_portfolio)
 
@@ -843,7 +1505,8 @@ def create_divergent_graph() -> StateGraph:
 
     workflow.add_edge("method_transfer_screening", "idea_composition")
     workflow.add_edge("idea_composition", "prior_art_check")
-    workflow.add_edge("prior_art_check", "feasibility_review")
+    workflow.add_edge("prior_art_check", "novelty_jury")
+    workflow.add_edge("novelty_jury", "feasibility_review")
 
     # Check after feasibility — could loop back for more retrieval
     workflow.add_conditional_edges(

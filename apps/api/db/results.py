@@ -10,6 +10,106 @@ import orjson
 from apps.api.db import pool as db_pool
 
 
+IDEA_CARD_JSONB_FIELDS = {
+    "closest_prior_work",
+    "prior_art_details",
+}
+
+IDEA_CARD_CREATE_FIELDS = [
+    "run_id",
+    "title",
+    "problem_statement",
+    "source_pain_point_ids",
+    "borrowed_methods",
+    "source_domains",
+    "mechanism_of_transfer",
+    "expected_benefit",
+    "risks",
+    "required_experiments",
+    "prior_art_check_status",
+    "novelty_score",
+    "feasibility_score",
+    "status",
+    "dedup_key",
+    "novelty_verdict",
+    "quality_verdict",
+    "closest_prior_work",
+    "strongest_objection",
+    "required_validation",
+    "jury_model",
+    "jury_trace_id",
+    "jury_status",
+    "prior_art_details",
+]
+
+IDEA_CARD_CREATE_DEFAULTS: dict[str, Any] = {
+    "problem_statement": None,
+    "source_pain_point_ids": [],
+    "borrowed_methods": [],
+    "source_domains": [],
+    "mechanism_of_transfer": None,
+    "expected_benefit": None,
+    "risks": [],
+    "required_experiments": [],
+    "prior_art_check_status": "pending",
+    "novelty_score": None,
+    "feasibility_score": None,
+    "status": "candidate",
+    "dedup_key": None,
+    "novelty_verdict": "unclear",
+    "quality_verdict": "hold",
+    "closest_prior_work": [],
+    "strongest_objection": None,
+    "required_validation": [],
+    "jury_model": None,
+    "jury_trace_id": None,
+    "jury_status": "pending",
+    "prior_art_details": [],
+}
+
+IDEA_CARD_UPDATE_FIELDS = {
+    field for field in IDEA_CARD_CREATE_FIELDS if field != "run_id"
+}
+
+
+def _copy_idea_card_default(field: str) -> Any:
+    default = IDEA_CARD_CREATE_DEFAULTS[field]
+    if isinstance(default, list):
+        return list(default)
+    if isinstance(default, dict):
+        return dict(default)
+    return default
+
+
+def _prepare_idea_card_value(field: str, value: Any) -> Any:
+    if field in IDEA_CARD_JSONB_FIELDS:
+        return orjson.loads(orjson.dumps(value))
+    return value
+
+
+def _idea_card_create_value(
+    run_id: UUID,
+    data: dict[str, Any],
+    field: str,
+) -> Any:
+    if field == "run_id":
+        return run_id
+    if field == "title":
+        value = data["title"]
+    else:
+        value = data[field] if field in data else _copy_idea_card_default(field)
+    return _prepare_idea_card_value(field, value)
+
+
+async def _get_idea_card(idea_id: UUID) -> dict[str, Any] | None:
+    pool = await db_pool.get_pool()
+    row = await pool.fetchrow(
+        "SELECT * FROM idea_card WHERE id = $1",
+        idea_id,
+    )
+    return db_pool.record_to_dict(row) if row else None
+
+
 async def list_hypotheses(run_id: UUID) -> list[dict[str, Any]]:
     """SELECT all hypotheses for a given run."""
     pool = await db_pool.get_pool()
@@ -216,40 +316,24 @@ async def create_idea_card(
     data: dict[str, Any],
 ) -> dict[str, Any]:
     """INSERT a new idea_card and return the created row."""
+    columns = IDEA_CARD_CREATE_FIELDS
+    placeholders = [f"${idx}" for idx in range(1, len(columns) + 1)]
+    values = [
+        _idea_card_create_value(run_id, data, field)
+        for field in columns
+    ]
+
     pool = await db_pool.get_pool()
     row = await pool.fetchrow(
-        """
+        f"""
         INSERT INTO idea_card (
-            run_id, title, problem_statement,
-            source_pain_point_ids, borrowed_methods, source_domains,
-            mechanism_of_transfer, expected_benefit,
-            risks, required_experiments,
-            prior_art_check_status, novelty_score, feasibility_score,
-            status
+            {", ".join(columns)}
         ) VALUES (
-            $1, $2, $3,
-            $4, $5, $6,
-            $7, $8,
-            $9, $10,
-            $11, $12, $13,
-            $14
+            {", ".join(placeholders)}
         )
         RETURNING *
         """,
-        run_id,
-        data["title"],
-        data.get("problem_statement"),
-        data.get("source_pain_point_ids", []),
-        data.get("borrowed_methods", []),
-        data.get("source_domains", []),
-        data.get("mechanism_of_transfer"),
-        data.get("expected_benefit"),
-        data.get("risks", []),
-        data.get("required_experiments", []),
-        data.get("prior_art_check_status", "pending"),
-        data.get("novelty_score"),
-        data.get("feasibility_score"),
-        data.get("status", "candidate"),
+        *values,
     )
     return db_pool.record_to_dict(row)
 
@@ -291,19 +375,25 @@ async def update_idea_card(
 ) -> dict[str, Any] | None:
     """UPDATE specific columns on an idea_card and return the updated row."""
     if not updates:
-        pool = await db_pool.get_pool()
-        row = await pool.fetchrow(
-            "SELECT * FROM idea_card WHERE id = $1",
-            idea_id,
+        return await _get_idea_card(idea_id)
+
+    invalid_fields = set(updates) - IDEA_CARD_UPDATE_FIELDS
+    if invalid_fields:
+        raise ValueError(
+            f"Invalid idea_card update fields: {sorted(invalid_fields)}",
         )
-        return db_pool.record_to_dict(row) if row else None
+
+    filtered_updates = [
+        (field, updates[field])
+        for field in updates
+    ]
 
     set_parts: list[str] = []
     values: list[Any] = []
     idx = 1
-    for col, val in updates.items():
+    for col, val in filtered_updates:
         set_parts.append(f"{col} = ${idx}")
-        values.append(val)
+        values.append(_prepare_idea_card_value(col, val))
         idx += 1
 
     values.append(idea_id)
