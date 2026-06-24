@@ -550,3 +550,40 @@ async def test_lease_guarded_update_helpers_require_current_worker(
     assert job_args == ("completed", job_id, "worker-a", "lease-a")
     assert task["id"] == task_id
     assert job["id"] == job_id
+
+
+@pytest.mark.asyncio
+async def test_create_submission_package_includes_independent_audit_fields(
+    monkeypatch,
+) -> None:
+    from apps.api.db import production
+
+    captured: dict[str, object] = {}
+
+    class Pool:
+        async def fetchrow(self, sql, *values):
+            captured["sql"] = sql
+            captured["values"] = values
+            return {
+                "id": "00000000-0000-0000-0000-000000000010",
+                "paper_claim_audit_report_json": {"passed": True},
+                "adversarial_audit_report_json": {"passed": False},
+            }
+
+    async def fake_pool():
+        return Pool()
+
+    monkeypatch.setattr(production.db_pool, "get_pool", fake_pool)
+    monkeypatch.setattr(production.db_pool, "record_to_dict", dict)
+
+    await production.create_submission_package(
+        {
+            "manuscript_package_id": "00000000-0000-0000-0000-000000000001",
+            "venue": "ICLR",
+            "paper_claim_audit_report_json": {"passed": True},
+            "adversarial_audit_report_json": {"passed": False},
+        }
+    )
+
+    assert "paper_claim_audit_report_json" in str(captured["sql"])
+    assert "adversarial_audit_report_json" in str(captured["sql"])

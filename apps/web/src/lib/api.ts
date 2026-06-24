@@ -584,6 +584,8 @@ export interface SubmissionPackage {
   claim_audit_report_json: Record<string, unknown>;
   citation_audit_report_json: Record<string, unknown>;
   artifact_provenance_report_json: Record<string, unknown>;
+  paper_claim_audit_report_json: Record<string, unknown>;
+  adversarial_audit_report_json: Record<string, unknown>;
   status: string;
   created_at: string;
   updated_at: string;

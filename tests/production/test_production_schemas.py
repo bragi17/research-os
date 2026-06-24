@@ -475,3 +475,22 @@ def test_table_create_and_response_models_cover_representative_entities() -> Non
     assert terminal_session.session_type == "local"
     assert terminal_session.status == "opening"
     assert terminal_response.id == terminal_id
+
+
+def test_submission_package_has_independent_audit_reports():
+    from libs.schemas.production import SubmissionPackageCreate
+
+    package = SubmissionPackageCreate(
+        manuscript_package_id="00000000-0000-0000-0000-000000000001",
+        venue="ICLR",
+        paper_claim_audit_report_json={"passed": True},
+        adversarial_audit_report_json={
+            "passed": False,
+            "blockers": ["missing ablation"],
+        },
+    )
+
+    assert package.paper_claim_audit_report_json["passed"] is True
+    assert package.adversarial_audit_report_json["blockers"] == [
+        "missing ablation"
+    ]
