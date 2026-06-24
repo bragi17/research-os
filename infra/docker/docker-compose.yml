@@ -14,6 +14,7 @@ services:
       - ../../scripts/migration/001_init_schema.sql:/docker-entrypoint-initdb.d/001_init_schema.sql
       - ../../scripts/migration/002_add_users.sql:/docker-entrypoint-initdb.d/002_add_users.sql
       - ../../scripts/migration/008_research_production.sql:/docker-entrypoint-initdb.d/008_research_production.sql
+      - ../../scripts/migration/009_paper_verification.sql:/docker-entrypoint-initdb.d/009_paper_verification.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ros_user -d research_os"]
       interval: 10s
