@@ -1229,6 +1229,8 @@ SUBMISSION_PACKAGE_COLUMNS = (
     "claim_audit_report_json",
     "citation_audit_report_json",
     "artifact_provenance_report_json",
+    "paper_claim_audit_report_json",
+    "adversarial_audit_report_json",
     "status",
 )
 
@@ -1243,6 +1245,8 @@ async def create_submission_package(data: dict[str, Any]) -> dict[str, Any]:
         "claim_audit_report_json": {},
         "citation_audit_report_json": {},
         "artifact_provenance_report_json": {},
+        "paper_claim_audit_report_json": {},
+        "adversarial_audit_report_json": {},
         "status": "preparing",
         **data,
     }
@@ -1290,6 +1294,8 @@ async def update_submission_package(
             "claim_audit_report_json",
             "citation_audit_report_json",
             "artifact_provenance_report_json",
+            "paper_claim_audit_report_json",
+            "adversarial_audit_report_json",
             "status",
         }),
     )

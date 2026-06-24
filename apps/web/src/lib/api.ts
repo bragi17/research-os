@@ -584,6 +584,8 @@ export interface SubmissionPackage {
   claim_audit_report_json: Record<string, unknown>;
   citation_audit_report_json: Record<string, unknown>;
   artifact_provenance_report_json: Record<string, unknown>;
+  paper_claim_audit_report_json: Record<string, unknown>;
+  adversarial_audit_report_json: Record<string, unknown>;
   status: string;
   created_at: string;
   updated_at: string;
@@ -663,7 +665,8 @@ export type ExperimentJobCreate = Omit<ExperimentJob, "id" | "created_at" | "upd
 export type ClaimLedgerCreate = Omit<ClaimLedger, "id" | "created_at" | "updated_at">;
 export type TerminalSessionCreate = Omit<TerminalSession, "id" | "created_at">;
 export type ManuscriptPackageCreate = Omit<ManuscriptPackage, "id" | "created_at" | "updated_at">;
-export type SubmissionPackageCreate = Omit<SubmissionPackage, "id" | "created_at" | "updated_at">;
+export type SubmissionPackageCreate = Pick<SubmissionPackage, "manuscript_package_id" | "venue"> &
+  Partial<Omit<SubmissionPackage, "id" | "created_at" | "updated_at" | "manuscript_package_id" | "venue">>;
 
 const productionPath = (path: string, params?: Record<string, ProductionQueryValue>) =>
   `/api/v1/production${path}${productionQuery(params)}`;

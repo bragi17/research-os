@@ -127,7 +127,7 @@ migration explicitly, for example:
 
 ```bash
 docker compose -f infra/docker/docker-compose.yml exec -T postgres \
-  psql -U ros_user -d research_os < scripts/migration/011_research_memory.sql
+  psql -U ros_user -d research_os < scripts/migration/012_submission_audit_gates.sql
 ```
 
 ### 3. Install Dependencies

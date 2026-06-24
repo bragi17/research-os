@@ -857,6 +857,8 @@ class SubmissionPackageCreate(BaseModel):
     claim_audit_report_json: dict[str, Any] = Field(default_factory=dict)
     citation_audit_report_json: dict[str, Any] = Field(default_factory=dict)
     artifact_provenance_report_json: dict[str, Any] = Field(default_factory=dict)
+    paper_claim_audit_report_json: dict[str, Any] = Field(default_factory=dict)
+    adversarial_audit_report_json: dict[str, Any] = Field(default_factory=dict)
     status: SubmissionPackageStatus = SubmissionPackageStatus.PREPARING
 
     @field_validator("submission_dir")
