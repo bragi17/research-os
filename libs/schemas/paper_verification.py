@@ -37,6 +37,7 @@ class PaperCandidate(BaseModel):
 
 
 class PaperVerificationRecord(BaseModel):
+    id: UUID | None = None
     source_run_id: UUID | None = None
     candidate_key: str
     candidate_id: str | None = None
@@ -52,3 +53,5 @@ class PaperVerificationRecord(BaseModel):
     verification_reason: str | None = None
     raw_json: dict[str, Any] = Field(default_factory=dict)
     verified_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
