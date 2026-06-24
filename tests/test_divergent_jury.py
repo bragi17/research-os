@@ -918,3 +918,37 @@ def test_build_prior_art_verifier_payload_is_bounded_valid_json_without_raw_json
     assert payload[0]["dedup_key"] == "large-idea-problem"
     assert payload[0]["idea_card"]["dedup_key"] == "large-idea-problem"
     assert len(payload[0]["prior_art_details"]) == 5
+
+
+def test_build_prior_art_verifier_payload_bounds_compact_fallback():
+    cards = [
+        {
+            "id": f"idea-{idx}-{'i' * 400}",
+            "title": f"Long Idea {idx} {'t' * 400}",
+            "problem_statement": f"Long Problem {idx} {'p' * 400}",
+            "dedup_key": f"long-idea-{idx}-{'k' * 180}",
+            "borrowed_method": f"Long Method {idx} {'m' * 400}",
+        }
+        for idx in range(10)
+    ]
+    records_by_key = {
+        card["dedup_key"]: [
+            {
+                "candidate_id": f"s2-{idx}-{record_idx}",
+                "candidate_key": f"s2:s2-{idx}-{record_idx}",
+                "canonical_title": f"Prior Work {idx}-{record_idx} {'x' * 400}",
+                "verification_status": "verified",
+                "verification_reason": "same setup " + ("r" * 400),
+            }
+            for record_idx in range(8)
+        ]
+        for idx, card in enumerate(cards)
+    }
+
+    payload = divergent._build_prior_art_verifier_payload(cards, records_by_key)
+    rendered = divergent.json.dumps(payload, default=str)
+
+    assert divergent.json.loads(rendered) == payload
+    assert len(rendered) <= divergent._VERIFIER_PAYLOAD_MAX_CHARS
+    assert len(payload) == 10
+    assert all(item["dedup_key"] for item in payload)

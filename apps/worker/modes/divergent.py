@@ -309,7 +309,33 @@ def _limit_verifier_payload(
                 "closest_prior_work": [],
             }
         )
-    return compact_payload
+    if len(json.dumps(compact_payload, default=str)) <= max_chars:
+        return compact_payload
+
+    minimal_payload = [
+        {
+            "idea_card": {
+                "dedup_key": item.get("dedup_key"),
+                "title": item.get("idea_card", {}).get("title"),
+            },
+            "dedup_key": item.get("dedup_key"),
+            "prior_art_details": [],
+            "closest_prior_work": [],
+        }
+        for item in payload
+    ]
+    if len(json.dumps(minimal_payload, default=str)) <= max_chars:
+        return minimal_payload
+
+    return [
+        {
+            "idea_card": {"dedup_key": item.get("dedup_key")},
+            "dedup_key": item.get("dedup_key"),
+            "prior_art_details": [],
+            "closest_prior_work": [],
+        }
+        for item in payload
+    ]
 
 
 def _build_prior_art_verifier_payload(
