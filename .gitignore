@@ -24,6 +24,8 @@ Thumbs.db
 node_modules/
 .next/
 out/
+*.tsbuildinfo
+apps/web/tsconfig.tsbuildinfo
 
 # Test
 .pytest_cache/
@@ -35,3 +37,6 @@ htmlcov/
 research_os_docs/
 .venv/
 .claude/settings.local.json
+
+# Local indexing/tool output
+.codegraph/
