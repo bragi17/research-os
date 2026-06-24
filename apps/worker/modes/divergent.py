@@ -130,6 +130,50 @@ def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped_cards
 
 
+def _attach_prior_art_details(
+    cards: list[dict[str, Any]],
+    prior_art_records_by_key: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Return copied cards with verified prior-art records attached."""
+    updated_cards: list[dict[str, Any]] = []
+
+    for card in cards:
+        dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        records = prior_art_records_by_key.get(dedup_key, [])
+        verified_records = [
+            record
+            for record in records
+            if getattr(
+                record.get("verification_status"),
+                "value",
+                record.get("verification_status"),
+            )
+            == "verified"
+        ]
+        closest_prior_work = [
+            {
+                "title": record.get("title")
+                or record.get("canonical_title")
+                or record.get("input_title"),
+                "doi": record.get("doi") or record.get("canonical_doi"),
+                "arxiv_id": record.get("arxiv_id")
+                or record.get("canonical_arxiv_id"),
+                "candidate_key": record.get("candidate_key"),
+            }
+            for record in verified_records[:5]
+        ]
+
+        updated_cards.append(
+            {
+                **card,
+                "prior_art_details": verified_records,
+                "closest_prior_work": closest_prior_work,
+            }
+        )
+
+    return updated_cards
+
+
 # ---------------------------------------------------------------------------
 # Divergent-specific system prompts
 # ---------------------------------------------------------------------------
@@ -651,13 +695,27 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
             **card,
             "prior_art_check_status": "high_risk" if prior_art_found else "checked",
             "prior_art_found": prior_art_found,
-            "prior_art_details": check.get("similar_works", []),
+            "similar_works": check.get(
+                "similar_works",
+                card.get("similar_works", []),
+            ),
             "novelty_score": check.get(
                 "adjusted_novelty_score",
                 card.get("novelty_score", 0.5),
             ),
         }
         updated_cards.append(updated_card)
+
+    prior_art_records_by_key = {
+        str(card.get("dedup_key") or _idea_dedup_key(card)): list(
+            prior_art_verification.values()
+        )
+        for card in updated_cards
+    }
+    updated_cards = _attach_prior_art_details(
+        updated_cards,
+        prior_art_records_by_key,
+    )
 
     updates["idea_cards"] = updated_cards
     updated_bundle = dict(state.context_bundle)

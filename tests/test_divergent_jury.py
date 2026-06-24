@@ -122,3 +122,70 @@ def test_dedupe_idea_cards_returns_copies_without_mutating_input():
         deduped_card is not input_card
         for deduped_card, input_card in zip(deduped, cards)
     )
+
+
+def test_attach_prior_art_details_keeps_only_verified_records():
+    cards = [
+        {
+            "title": "Idea A",
+            "problem_statement": "Problem A",
+            "dedup_key": "idea-a",
+        },
+        {
+            "title": "Idea B",
+            "problem_statement": "Problem B",
+        },
+    ]
+    original_cards = [dict(card) for card in cards]
+    idea_b_key = divergent._idea_dedup_key(cards[1])
+    verified_record = {
+        "candidate_id": "s2-verified",
+        "candidate_key": "s2-verified-key",
+        "title": "Verified Work",
+        "doi": "10.1234/example",
+        "arxiv_id": "2401.00001",
+        "verification_status": "verified",
+    }
+    unverified_record = {
+        "candidate_id": "s2-unverified",
+        "title": "Unverified Work",
+        "verification_status": "unverified",
+    }
+    fallback_verified_record = {
+        "candidate_id": "s2-fallback",
+        "canonical_title": "Fallback Work",
+        "verification_status": "verified",
+    }
+
+    updated_cards = divergent._attach_prior_art_details(
+        cards,
+        {
+            "idea-a": [verified_record, unverified_record],
+            idea_b_key: [fallback_verified_record],
+        },
+    )
+
+    assert cards == original_cards
+    assert updated_cards is not cards
+    assert all(
+        updated_card is not input_card
+        for updated_card, input_card in zip(updated_cards, cards)
+    )
+    assert updated_cards[0]["prior_art_details"] == [verified_record]
+    assert updated_cards[0]["closest_prior_work"] == [
+        {
+            "title": "Verified Work",
+            "doi": "10.1234/example",
+            "arxiv_id": "2401.00001",
+            "candidate_key": "s2-verified-key",
+        }
+    ]
+    assert updated_cards[1]["prior_art_details"] == [fallback_verified_record]
+    assert updated_cards[1]["closest_prior_work"] == [
+        {
+            "title": "Fallback Work",
+            "doi": None,
+            "arxiv_id": None,
+            "candidate_key": None,
+        }
+    ]
