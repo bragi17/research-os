@@ -11,7 +11,7 @@ Usage:
 import asyncio
 import os
 import time
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -429,3 +429,54 @@ class TestListRuns:
             # At least one run should have mode set
             modes = [r.get("mode") for r in runs if r.get("mode")]
             assert len(modes) > 0
+
+
+@pytest.mark.asyncio
+async def test_divergent_run_persists_idea_cards(monkeypatch):
+    from apps.worker.modes.base import ModeGraphState
+    from apps.worker.runner import WorkerRunner
+
+    run_id = uuid4()
+    saved_cards: list[tuple[UUID, dict]] = []
+
+    async def fake_create_idea_card(card_run_id, data):
+        saved_cards.append((card_run_id, dict(data)))
+        return {"id": str(uuid4()), **data}
+
+    monkeypatch.setattr(
+        "apps.api.database.create_idea_card",
+        fake_create_idea_card,
+    )
+
+    runner = WorkerRunner()
+    state = ModeGraphState(
+        run_id=run_id,
+        topic="research agents",
+        mode="divergent",
+    )
+    state.idea_cards = [
+        {
+            "title": "Reviewer-Guided Retrieval",
+            "problem_statement": "Agents cite plausible papers.",
+            "dedup_key": "reviewer-guided-retrieval-agents-cite-plausible-papers",
+            "quality_verdict": "hold",
+            "required_validation": ["Compare against verified prior art."],
+            "closest_prior_work": [{"title": "Verifier Agents"}],
+        }
+    ]
+
+    await runner._persist_results(run_id, state)
+
+    assert saved_cards == [
+        (
+            run_id,
+            {
+                "title": "Reviewer-Guided Retrieval",
+                "problem_statement": "Agents cite plausible papers.",
+                "dedup_key": "reviewer-guided-retrieval-agents-cite-plausible-papers",
+                "quality_verdict": "hold",
+                "required_validation": ["Compare against verified prior art."],
+                "closest_prior_work": [{"title": "Verifier Agents"}],
+            },
+        )
+    ]

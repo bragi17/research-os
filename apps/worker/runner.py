@@ -287,7 +287,11 @@ class WorkerRunner:
 
     async def _persist_results(self, run_id: UUID, state) -> None:
         """Persist workflow results (pain points, comparison, context bundle) to DB."""
-        from apps.api.database import create_context_bundle, create_pain_point
+        from apps.api.database import (
+            create_context_bundle,
+            create_idea_card,
+            create_pain_point,
+        )
 
         try:
             # Save pain points — combine state.pain_points + state.gaps
@@ -358,6 +362,20 @@ class WorkerRunner:
                 except Exception as exc:
                     logger.debug("persist_papers_failed", error=str(exc))
 
+            # Save generated idea cards from divergent runs.
+            saved_ideas = 0
+            for idea_card in getattr(state, "idea_cards", []) or []:
+                if not isinstance(idea_card, dict):
+                    continue
+                payload = dict(idea_card)
+                if not payload.get("title"):
+                    continue
+                try:
+                    await create_idea_card(run_id, payload)
+                    saved_ideas += 1
+                except Exception as exc:
+                    logger.debug("persist_idea_card_failed", error=str(exc))
+
             # Save context bundle (comparison matrix, mindmap, etc.)
             bundle_data = state.context_bundle or {}
             if bundle_data:
@@ -384,6 +402,7 @@ class WorkerRunner:
 
             logger.info("worker.results_persisted", run_id=str(run_id),
                         pain_points=len(state.pain_points or []),
+                        idea_cards=saved_ideas,
                         has_comparison=bool(state.comparison_matrix))
         except Exception as exc:
             logger.error("worker.persist_results_failed", error=str(exc))
