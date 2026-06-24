@@ -8,6 +8,8 @@ the right parameters and returns the expected data structures.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4, UUID
@@ -542,6 +544,22 @@ class TestGetReadingPath:
 
 
 class TestPaperVerification:
+    def test_migration_cascades_source_run_delete(self):
+        migration_sql = Path(
+            "scripts/migration/009_paper_verification.sql"
+        ).read_text()
+        table_sql = migration_sql.split("CREATE UNIQUE INDEX", 1)[0]
+
+        assert "CREATE TABLE IF NOT EXISTS paper_verification" in table_sql
+        assert (
+            "source_run_id UUID REFERENCES research_run(id) ON DELETE CASCADE"
+            in table_sql
+        )
+        assert (
+            "source_run_id UUID REFERENCES research_run(id) ON DELETE SET NULL"
+            not in table_sql
+        )
+
     @pytest.mark.asyncio
     async def test_upserts_verification_record(self, mock_pool):
         fake = _make_record({

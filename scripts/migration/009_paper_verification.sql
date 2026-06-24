@@ -1,7 +1,7 @@
 -- Paper verification records for search candidates and prior-art hits.
 CREATE TABLE IF NOT EXISTS paper_verification (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    source_run_id UUID REFERENCES research_run(id) ON DELETE SET NULL,
+    source_run_id UUID REFERENCES research_run(id) ON DELETE CASCADE,
     candidate_key TEXT NOT NULL,
     candidate_id TEXT,
     source TEXT,
