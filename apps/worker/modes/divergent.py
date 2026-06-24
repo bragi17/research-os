@@ -152,8 +152,8 @@ def _attach_prior_art_details(
         ]
         closest_prior_work = [
             {
-                "title": record.get("title")
-                or record.get("canonical_title")
+                "title": record.get("canonical_title")
+                or record.get("title")
                 or record.get("input_title"),
                 "doi": record.get("doi") or record.get("canonical_doi"),
                 "arxiv_id": record.get("arxiv_id")
@@ -618,38 +618,54 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
 
     gateway = get_gateway()
 
-    # Build search queries from idea card titles and borrowed methods
-    search_queries: list[dict[str, Any]] = []
+    # Build search jobs from idea card titles and borrowed methods.
+    search_jobs: list[dict[str, Any]] = []
     for card in state.idea_cards[:10]:
         title = card.get("title", "")
         method = card.get("borrowed_method", "")
         query_text = f"{title} {method}".strip()
         if query_text:
-            search_queries.append({
-                "query": query_text,
-                "type": "prior_art",
-                "source": "both",
-                "priority": 1,
-            })
+            search_jobs.append(
+                {
+                    "dedup_key": str(card.get("dedup_key") or _idea_dedup_key(card)),
+                    "query": {
+                        "query": query_text,
+                        "type": "prior_art",
+                        "source": "both",
+                        "priority": 1,
+                    },
+                }
+            )
 
     # Search S2 + OpenAlex for similar papers
     existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
     prior_art_papers: list[str] = []
+    seen_prior_art_papers: set[str] = set()
     prior_art_verification: dict[str, dict[str, Any]] = {}
-    if search_queries:
+    prior_art_records_by_key: dict[str, list[dict[str, Any]]] = {}
+    for job in search_jobs:
         found, _executed, search_errors, title_map = await search_academic_sources(
             topic=state.topic,
-            queries=search_queries[:10],
+            queries=[job["query"]],
             existing_titles=existing_titles,
         )
-        prior_art_papers = found
-        prior_art_verification = await verify_paper_candidates_for_run(
+        errors.extend(search_errors)
+
+        for candidate_id in found:
+            if candidate_id not in seen_prior_art_papers:
+                prior_art_papers.append(candidate_id)
+                seen_prior_art_papers.add(candidate_id)
+
+        card_verification = await verify_paper_candidates_for_run(
             state.run_id,
-            prior_art_papers,
+            found,
             title_map=title_map,
             source="prior_art",
         )
-        errors.extend(search_errors)
+        prior_art_records_by_key[job["dedup_key"]] = list(
+            card_verification.values()
+        )
+        prior_art_verification.update(card_verification)
 
     # Use VERIFIER prompt from templates.py to assess novelty
     verifier_system = get_system_prompt(PromptName.VERIFIER)
@@ -706,12 +722,6 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         }
         updated_cards.append(updated_card)
 
-    prior_art_records_by_key = {
-        str(card.get("dedup_key") or _idea_dedup_key(card)): list(
-            prior_art_verification.values()
-        )
-        for card in updated_cards
-    }
     updated_cards = _attach_prior_art_details(
         updated_cards,
         prior_art_records_by_key,

@@ -142,6 +142,7 @@ def test_attach_prior_art_details_keeps_only_verified_records():
         "candidate_id": "s2-verified",
         "candidate_key": "s2-verified-key",
         "title": "Verified Work",
+        "canonical_title": "Canonical Verified Work",
         "doi": "10.1234/example",
         "arxiv_id": "2401.00001",
         "verification_status": "verified",
@@ -174,7 +175,7 @@ def test_attach_prior_art_details_keeps_only_verified_records():
     assert updated_cards[0]["prior_art_details"] == [verified_record]
     assert updated_cards[0]["closest_prior_work"] == [
         {
-            "title": "Verified Work",
+            "title": "Canonical Verified Work",
             "doi": "10.1234/example",
             "arxiv_id": "2401.00001",
             "candidate_key": "s2-verified-key",
