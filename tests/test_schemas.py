@@ -1,12 +1,11 @@
 """Tests for core schemas and data models."""
 import pytest
-from uuid import uuid4
-
 from libs.schemas.run import (
     Budget, Policy, RunState, RunStatus, GoalType,
     CreateRunRequest, ScoreSignals, HypothesisCandidate,
     HypothesisType, HypothesisStatus,
 )
+from uuid import uuid4
 
 
 class TestBudget:
