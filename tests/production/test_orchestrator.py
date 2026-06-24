@@ -1377,11 +1377,21 @@ async def test_prepare_manuscript_and_gate_submission_write_files_and_full_audit
     }
 
     manuscript = await orchestrator.prepare_manuscript_drafting(manuscript_id)
-    submission = await orchestrator.gate_submission_package(submission_id)
 
     paper_dir = Path(fake_db.manuscript_updates[-1][1]["paper_dir"])
     assert not paper_dir.is_absolute()
     paper_dir = workspace / paper_dir
+    (paper_dir / "PAPER_CLAIM_AUDIT.json").write_text(
+        '{"passed": true, "checked_claims": 1, "unsupported_claims": [], "blockers": []}',
+        encoding="utf-8",
+    )
+    (paper_dir / "KILL_ARGUMENT.json").write_text(
+        '{"passed": true, "strongest_rejection_argument": "No fatal issue found.", "required_rebuttal": [], "blockers": []}',
+        encoding="utf-8",
+    )
+
+    submission = await orchestrator.gate_submission_package(submission_id)
+
     assert manuscript["status"] == "drafting"
     assert (paper_dir / "paper.md").read_text(encoding="utf-8").startswith("# Paper")
     assert (paper_dir / "claims_snapshot.json").exists()
@@ -1440,7 +1450,7 @@ async def test_prepare_manuscript_skips_duplicate_active_writer_task(
 
 
 @pytest.mark.asyncio
-async def test_submission_gate_runs_automatic_audits_without_external_reports(
+async def test_submission_gate_runs_automatic_audits_with_independent_reports(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1458,6 +1468,14 @@ async def test_submission_gate_runs_automatic_audits_without_external_reports(
     (paper_dir / "paper.md").write_text("# Paper\nCited claim [1].\n", encoding="utf-8")
     (paper_dir / "claims_snapshot.json").write_text("[]", encoding="utf-8")
     (paper_dir / "artifact_snapshot.json").write_text("[]", encoding="utf-8")
+    (paper_dir / "PAPER_CLAIM_AUDIT.json").write_text(
+        '{"passed": true, "checked_claims": 1, "unsupported_claims": [], "blockers": []}',
+        encoding="utf-8",
+    )
+    (paper_dir / "KILL_ARGUMENT.json").write_text(
+        '{"passed": true, "strongest_rejection_argument": "No fatal issue found.", "required_rebuttal": [], "blockers": []}',
+        encoding="utf-8",
+    )
     fake_db.projects[project_id] = {
         "id": project_id,
         "default_workspace_path": str(workspace),
@@ -1512,6 +1530,94 @@ async def test_submission_gate_runs_automatic_audits_without_external_reports(
 
 
 @pytest.mark.asyncio
+async def test_submission_gate_queues_audit_task_when_audit_reports_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from apps.worker.production import orchestrator
+
+    fake_db = FakeProductionDb()
+    monkeypatch.setattr(orchestrator, "db", fake_db)
+    base = _set_workspace_base(monkeypatch, tmp_path)
+    project_id = uuid4()
+    manuscript_id = uuid4()
+    submission_id = uuid4()
+    workspace = base / "project"
+    paper_dir = workspace / "manuscripts" / str(manuscript_id)
+    artifact = workspace / "plots" / "main.pdf"
+    paper_dir.mkdir(parents=True)
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"%PDF-1.4")
+    (paper_dir / "paper.md").write_text("# Paper\nCited claim [1].\n", encoding="utf-8")
+    (paper_dir / "claims_snapshot.json").write_text("[]", encoding="utf-8")
+    (paper_dir / "artifact_snapshot.json").write_text("[]", encoding="utf-8")
+    fake_db.projects[project_id] = {
+        "id": project_id,
+        "default_workspace_path": str(workspace),
+        **_now_row(),
+    }
+    fake_db.claim_entries.append({
+        "id": uuid4(),
+        "project_id": project_id,
+        "experiment_plan_id": uuid4(),
+        "claim_text": "The method improves citation reliability.",
+        "status": "supported",
+        "support_level": 0.91,
+        **_now_row(),
+    })
+    fake_db.code_artifacts.append({
+        "id": uuid4(),
+        "project_id": project_id,
+        "experiment_plan_id": None,
+        "artifact_type": "test_output",
+        "path": "plots/main.pdf",
+        "validation_status": "passed",
+        "summary": "main result figure",
+        **_now_row(),
+    })
+    fake_db.manuscripts[manuscript_id] = {
+        "id": manuscript_id,
+        "project_id": project_id,
+        "title": "Paper",
+        "paper_dir": str(paper_dir),
+        "status": "drafting",
+        **_now_row(),
+    }
+    fake_db.submissions[submission_id] = {
+        "id": submission_id,
+        "manuscript_package_id": manuscript_id,
+        "venue": "ICLR",
+        "status": "preparing",
+        "checklist_json": {
+            "required_files": [
+                "paper.md",
+                "claims_snapshot.json",
+                "artifact_snapshot.json",
+            ],
+        },
+        "anonymity_report_json": {},
+        "compile_report_json": {},
+        "claim_audit_report_json": {},
+        "citation_audit_report_json": {},
+        "artifact_provenance_report_json": {},
+        "paper_claim_audit_report_json": {},
+        "adversarial_audit_report_json": {},
+        **_now_row(),
+    }
+
+    result = await orchestrator.gate_submission_package(submission_id)
+
+    update = fake_db.submission_updates[-1][1]
+    audit_task = fake_db.created_coding_tasks[-1]
+    assert result["status"] == "gated"
+    assert update["paper_claim_audit_report_json"]["missing"] is True
+    assert update["adversarial_audit_report_json"]["missing"] is True
+    assert audit_task["metadata_json"]["stage"] == "submission_audit"
+    assert "PAPER_CLAIM_AUDIT.json" in audit_task["user_prompt"]
+    assert "KILL_ARGUMENT.json" in audit_task["user_prompt"]
+
+
+@pytest.mark.asyncio
 async def test_submission_gate_skips_duplicate_active_revision_task(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1528,6 +1634,14 @@ async def test_submission_gate_skips_duplicate_active_revision_task(
     paper_dir = workspace / "manuscripts" / str(manuscript_id)
     paper_dir.mkdir(parents=True)
     (paper_dir / "paper.md").write_text("# Paper\n", encoding="utf-8")
+    (paper_dir / "PAPER_CLAIM_AUDIT.json").write_text(
+        '{"passed": true, "checked_claims": 0, "unsupported_claims": [], "blockers": []}',
+        encoding="utf-8",
+    )
+    (paper_dir / "KILL_ARGUMENT.json").write_text(
+        '{"passed": true, "strongest_rejection_argument": "No fatal issue found.", "required_rebuttal": [], "blockers": []}',
+        encoding="utf-8",
+    )
     fake_db.projects[project_id] = {"id": project_id, "default_workspace_path": str(workspace), **_now_row()}
     fake_db.manuscripts[manuscript_id] = {
         "id": manuscript_id,
@@ -1587,6 +1701,14 @@ async def test_submission_revision_task_reruns_submission_gate_after_completion(
     (paper_dir / "paper.md").write_text("# Paper\nCited claim [1].\n", encoding="utf-8")
     (paper_dir / "claims_snapshot.json").write_text("[]", encoding="utf-8")
     (paper_dir / "artifact_snapshot.json").write_text("[]", encoding="utf-8")
+    (paper_dir / "PAPER_CLAIM_AUDIT.json").write_text(
+        '{"passed": true, "checked_claims": 1, "unsupported_claims": [], "blockers": []}',
+        encoding="utf-8",
+    )
+    (paper_dir / "KILL_ARGUMENT.json").write_text(
+        '{"passed": true, "strongest_rejection_argument": "No fatal issue found.", "required_rebuttal": [], "blockers": []}',
+        encoding="utf-8",
+    )
     fake_db.projects[project_id] = {
         "id": project_id,
         "default_workspace_path": str(workspace),

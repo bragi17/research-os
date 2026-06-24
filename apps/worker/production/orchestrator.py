@@ -884,6 +884,73 @@ async def _queue_submission_revision_task(
     )
 
 
+def _has_missing_audit_report(reports: dict[str, Any]) -> bool:
+    return bool(
+        reports.get("paper_claim_audit_report_json", {}).get("missing")
+        or reports.get("adversarial_audit_report_json", {}).get("missing")
+    )
+
+
+async def _queue_submission_audit_task(
+    *,
+    submission: dict[str, Any],
+    manuscript: dict[str, Any],
+    reports: dict[str, Any],
+) -> dict[str, Any] | None:
+    if await _has_active_stage_task(
+        project_id=manuscript["project_id"],
+        stage="submission_audit",
+        submission_id=str(submission["id"]),
+    ):
+        return None
+    project = await db.get_project(manuscript["project_id"])
+    if project is None:
+        return None
+    paper_dir = _paper_dir(manuscript, resolve_project_workspace_path(project))
+    if paper_dir is None:
+        return None
+    missing_files = [
+        report.get("required_file")
+        for report in (
+            reports.get("paper_claim_audit_report_json", {}),
+            reports.get("adversarial_audit_report_json", {}),
+        )
+        if report.get("missing") and report.get("required_file")
+    ]
+    prompt = (
+        "Create the missing independent submission audit reports for Research OS.\n"
+        f"Venue: {submission.get('venue')}.\n"
+        f"Missing report files: {json.dumps(missing_files, indent=2)}\n"
+        "Read paper.md, references, claim ledger exports, experiment artifacts, "
+        "and local report files in this directory.\n"
+        "Write PAPER_CLAIM_AUDIT.json when requested with keys passed, "
+        "checked_claims, unsupported_claims, blockers, and notes.\n"
+        "Write KILL_ARGUMENT.json when requested with keys passed, "
+        "strongest_rejection_argument, required_rebuttal, blockers, and notes.\n"
+        "Set passed to false and include blockers when the paper cannot "
+        "withstand the audit."
+    )
+    return await create_coding_task(
+        {
+            "project_id": manuscript["project_id"],
+            "provider": "codex",
+            "workspace_path": str(paper_dir),
+            "thread_name": f"submission-audit-{submission['id']}",
+            "system_prompt": (
+                "You are the independent submission audit agent for Research OS."
+            ),
+            "user_prompt": prompt,
+            "metadata_json": {
+                "stage": "submission_audit",
+                "submission_id": str(submission["id"]),
+                "manuscript_id": str(manuscript["id"]),
+                "reports": reports,
+            },
+            "status": "queued",
+        }
+    )
+
+
 async def _has_active_stage_task(
     *,
     project_id: UUID,
@@ -1256,6 +1323,7 @@ async def gate_submission_package(submission_id: UUID) -> dict[str, Any]:
     if project is None:
         raise ValueError(f"Project not found: {manuscript['project_id']}")
     workspace_root = resolve_project_workspace_path(project)
+    paper_dir = _paper_dir(manuscript, workspace_root)
 
     claims = await db.list_claim_ledger(project_id=manuscript["project_id"], limit=100, offset=0)
     artifacts = await db.list_code_artifacts(project_id=manuscript["project_id"], limit=100, offset=0)
@@ -1265,6 +1333,8 @@ async def gate_submission_package(submission_id: UUID) -> dict[str, Any]:
     anonymity_report = _submission_anonymity_report(submission, manuscript, workspace_root)
     citation_report = _submission_citation_report(submission, claims, manuscript, workspace_root)
     provenance_report = _artifact_provenance_report(artifacts, manuscript, workspace_root)
+    paper_claim_audit_report = _submission_paper_claim_audit_report(paper_dir)
+    adversarial_audit_report = _submission_adversarial_audit_report(paper_dir)
     blocker_count = (
         len(audit["blockers"])
         + len(checklist_report["missing_required_files"])
@@ -1272,6 +1342,8 @@ async def gate_submission_package(submission_id: UUID) -> dict[str, Any]:
         + (0 if anonymity_report["passed"] else 1)
         + (0 if citation_report["passed"] else 1)
         + (0 if provenance_report["passed"] else 1)
+        + (0 if paper_claim_audit_report["passed"] else 1)
+        + (0 if adversarial_audit_report["passed"] else 1)
     )
     next_status = "ready" if claims and blocker_count == 0 else "gated"
     reports = {
@@ -1281,6 +1353,8 @@ async def gate_submission_package(submission_id: UUID) -> dict[str, Any]:
         "anonymity_report_json": anonymity_report,
         "citation_audit_report_json": citation_report,
         "artifact_provenance_report_json": provenance_report,
+        "paper_claim_audit_report_json": paper_claim_audit_report,
+        "adversarial_audit_report_json": adversarial_audit_report,
     }
     row = await db.update_submission_package(
         submission_id,
@@ -1296,11 +1370,18 @@ async def gate_submission_package(submission_id: UUID) -> dict[str, Any]:
         reports=reports,
     )
     if next_status != "ready":
-        await _queue_submission_revision_task(
-            submission=row or {**submission, "status": next_status},
-            manuscript=manuscript,
-            reports=reports,
-        )
+        if _has_missing_audit_report(reports):
+            await _queue_submission_audit_task(
+                submission=row or {**submission, "status": next_status},
+                manuscript=manuscript,
+                reports=reports,
+            )
+        else:
+            await _queue_submission_revision_task(
+                submission=row or {**submission, "status": next_status},
+                manuscript=manuscript,
+                reports=reports,
+            )
     return row or submission
 
 
