@@ -143,6 +143,7 @@ class ModeGraphState(BaseModel):
 
     # Core identification
     run_id: UUID = Field(default_factory=uuid4)
+    project_id: UUID | None = None
     thread_id: str = ""
     mode: str = "atlas"
     current_stage: str = "plan"
@@ -199,6 +200,9 @@ class ModeGraphState(BaseModel):
     # Outputs
     report_markdown: str = ""
     export_urls: list[str] = Field(default_factory=list)
+    paper_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+    experiments: list[dict[str, Any]] = Field(default_factory=list)
 
     # Errors and warnings
     errors: list[str] = Field(default_factory=list)

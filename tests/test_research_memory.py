@@ -117,3 +117,50 @@ async def test_create_memory_edge(mock_pool):
     assert "INSERT INTO research_memory_edge" in sql
     assert "ON CONFLICT (source_item_id, target_item_id, edge_type)" in sql
     assert result["edge_type"] == "derived_from"
+
+
+def test_memory_items_from_state_emits_paper_and_failed_idea():
+    from apps.worker.modes.base import ModeGraphState
+    from services.research_memory import memory_items_from_state
+
+    state = ModeGraphState(
+        project_id=PROJECT_ID,
+        run_id=RUN_ID,
+        topic="research agents",
+        mode="divergent",
+        context_bundle={
+            "paper_summaries": [
+                {
+                    "paper_id": "s2:123",
+                    "title": "Agentic Retrieval",
+                    "summary": "Retrieval systems for agents.",
+                }
+            ]
+        },
+        idea_cards=[
+            {
+                "title": "Reviewer-Guided Retrieval",
+                "problem_statement": "Agents cite plausible papers.",
+                "dedup_key": (
+                    "reviewer-guided-retrieval-agents-cite-plausible-papers"
+                ),
+                "quality_verdict": "reject",
+                "strongest_objection": "Covered by verified prior art.",
+            }
+        ],
+    )
+
+    items = memory_items_from_state(state)
+
+    item_types = {item["item_type"] for item in items}
+    assert "paper" in item_types
+    assert "failed_idea" in item_types
+    failed = next(item for item in items if item["item_type"] == "failed_idea")
+    assert (
+        failed["stable_key"]
+        == "reviewer-guided-retrieval-agents-cite-plausible-papers"
+    )
+    assert (
+        failed["payload_json"]["strongest_objection"]
+        == "Covered by verified prior art."
+    )
