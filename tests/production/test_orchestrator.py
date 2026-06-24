@@ -346,6 +346,26 @@ def test_submission_paper_claim_audit_report_reads_file(tmp_path: Path) -> None:
     assert report["checked_claims"] == 3
 
 
+def test_submission_audit_report_blockers_override_passed_true(
+    tmp_path: Path,
+) -> None:
+    from apps.worker.production.orchestrator import (
+        _submission_paper_claim_audit_report,
+    )
+
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+    (paper_dir / "PAPER_CLAIM_AUDIT.json").write_text(
+        '{"passed": true, "checked_claims": 3, "blockers": ["unsupported claim"]}',
+        encoding="utf-8",
+    )
+
+    report = _submission_paper_claim_audit_report(paper_dir)
+
+    assert report["passed"] is False
+    assert report["blockers"] == ["unsupported claim"]
+
+
 def test_submission_adversarial_audit_report_missing_blocks(
     tmp_path: Path,
 ) -> None:

@@ -1575,11 +1575,11 @@ def _load_submission_json_report(
         blockers = ["blockers must be a list."]
 
     return {
-        "passed": bool(payload.get("passed")) and not blockers,
         "missing": False,
         "required_file": filename,
         **payload,
         "blockers": blockers,
+        "passed": bool(payload.get("passed")) and not blockers,
     }
 
 
