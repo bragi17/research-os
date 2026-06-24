@@ -26,6 +26,30 @@ from structlog import get_logger
 logger = get_logger(__name__)
 
 
+def _listify_idea_value(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if item is not None and str(item)]
+    if isinstance(value, (tuple, set)):
+        return [str(item) for item in value if item is not None and str(item)]
+    normalized = str(value)
+    return [normalized] if normalized else []
+
+
+def _normalize_idea_card_payload(idea_card: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(idea_card)
+    if "borrowed_methods" not in payload and payload.get("borrowed_method"):
+        payload["borrowed_methods"] = _listify_idea_value(
+            payload.get("borrowed_method")
+        )
+    if "source_domains" not in payload and payload.get("source_domain"):
+        payload["source_domains"] = _listify_idea_value(
+            payload.get("source_domain")
+        )
+    return payload
+
+
 class WorkerRunner:
     """
     Consumes research run jobs from Redis queue and executes LangGraph workflows.
@@ -367,14 +391,19 @@ class WorkerRunner:
             for idea_card in getattr(state, "idea_cards", []) or []:
                 if not isinstance(idea_card, dict):
                     continue
-                payload = dict(idea_card)
+                payload = _normalize_idea_card_payload(idea_card)
                 if not payload.get("title"):
                     continue
                 try:
                     await create_idea_card(run_id, payload)
                     saved_ideas += 1
                 except Exception as exc:
-                    logger.debug("persist_idea_card_failed", error=str(exc))
+                    logger.warning(
+                        "persist_idea_card_failed",
+                        run_id=str(run_id),
+                        title=str(payload.get("title", ""))[:120],
+                        error=str(exc),
+                    )
 
             # Save context bundle (comparison matrix, mindmap, etc.)
             bundle_data = state.context_bundle or {}

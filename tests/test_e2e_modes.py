@@ -462,6 +462,8 @@ async def test_divergent_run_persists_idea_cards(monkeypatch):
             "quality_verdict": "hold",
             "required_validation": ["Compare against verified prior art."],
             "closest_prior_work": [{"title": "Verifier Agents"}],
+            "borrowed_method": "structured retrieval audit",
+            "source_domain": "software verification",
         }
     ]
 
@@ -477,6 +479,10 @@ async def test_divergent_run_persists_idea_cards(monkeypatch):
                 "quality_verdict": "hold",
                 "required_validation": ["Compare against verified prior art."],
                 "closest_prior_work": [{"title": "Verifier Agents"}],
+                "borrowed_method": "structured retrieval audit",
+                "source_domain": "software verification",
+                "borrowed_methods": ["structured retrieval audit"],
+                "source_domains": ["software verification"],
             },
         )
     ]
