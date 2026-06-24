@@ -85,6 +85,25 @@ def test_dedupe_idea_cards_marks_later_duplicates_for_rejection():
     assert "Duplicate of idea" in deduped[1]["strongest_objection"]
 
 
+def test_dedupe_idea_cards_avoids_generated_key_natural_key_collisions():
+    cards = [
+        {"title": "Alpha", "problem_statement": "Beta"},
+        {"title": "Alpha!", "problem_statement": "Beta."},
+        {"title": "Alpha Beta Dup 2", "problem_statement": ""},
+    ]
+
+    deduped = divergent._dedupe_idea_cards(cards)
+    dedup_keys = [card["dedup_key"] for card in deduped]
+
+    assert len(set(dedup_keys)) == len(dedup_keys)
+    assert deduped[1]["dedup_key"] == "alpha-beta-dup-2"
+    assert deduped[2]["dedup_key"] != "alpha-beta-dup-2"
+    assert deduped[1]["novelty_verdict"] == "duplicate"
+    assert deduped[1]["quality_verdict"] == "reject"
+    assert deduped[2]["novelty_verdict"] == "unclear"
+    assert deduped[2]["quality_verdict"] == "hold"
+
+
 def test_dedupe_idea_cards_returns_copies_without_mutating_input():
     cards = [
         {"title": "Idea A", "problem_statement": "Problem"},

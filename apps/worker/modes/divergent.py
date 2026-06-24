@@ -72,10 +72,23 @@ def _duplicate_dedup_key(base_key: str, duplicate_number: int) -> str:
     return f"{base_key[:prefix_length].rstrip('-')}{suffix}"
 
 
+def _unique_dedup_key(base_key: str, assigned_keys: set[str]) -> str:
+    if base_key not in assigned_keys:
+        return base_key
+
+    duplicate_number = 2
+    while True:
+        candidate_key = _duplicate_dedup_key(base_key, duplicate_number)
+        if candidate_key not in assigned_keys:
+            return candidate_key
+        duplicate_number += 1
+
+
 def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return copied idea cards with duplicate cards marked for rejection."""
     seen: dict[str, dict[str, Any]] = {}
     seen_counts: dict[str, int] = {}
+    assigned_keys: set[str] = set()
     deduped_cards: list[dict[str, Any]] = []
 
     for card in cards:
@@ -84,6 +97,12 @@ def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         if dedup_key in seen:
             seen_counts[dedup_key] += 1
+            assigned_key = _duplicate_dedup_key(dedup_key, seen_counts[dedup_key])
+            while assigned_key in assigned_keys:
+                seen_counts[dedup_key] += 1
+                assigned_key = _duplicate_dedup_key(
+                    dedup_key, seen_counts[dedup_key]
+                )
             first_card = seen[dedup_key]
             original_idea = (
                 first_card.get("id")
@@ -91,22 +110,21 @@ def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 or first_card.get("dedup_key")
                 or "earlier idea"
             )
-            next_card["dedup_key"] = _duplicate_dedup_key(
-                dedup_key, seen_counts[dedup_key]
-            )
+            next_card["dedup_key"] = assigned_key
             next_card["duplicate_of_dedup_key"] = dedup_key
             next_card["novelty_verdict"] = "duplicate"
             next_card["quality_verdict"] = "reject"
             next_card["jury_status"] = "reviewed"
             next_card["strongest_objection"] = f"Duplicate of idea {original_idea}."
         else:
-            next_card["dedup_key"] = dedup_key
+            next_card["dedup_key"] = _unique_dedup_key(dedup_key, assigned_keys)
             next_card.setdefault("novelty_verdict", "unclear")
             next_card.setdefault("quality_verdict", "hold")
             next_card.setdefault("jury_status", "pending")
             seen[dedup_key] = next_card
             seen_counts[dedup_key] = 1
 
+        assigned_keys.add(next_card["dedup_key"])
         deduped_cards.append(next_card)
 
     return deduped_cards
