@@ -7,6 +7,7 @@ by borrowing methods from other domains.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any, Literal
@@ -32,28 +33,57 @@ logger = get_logger(__name__)
 # Re-export for runner
 DivergentState = ModeGraphState
 
+_DEDUP_KEY_MAX_LENGTH = 140
+_DEDUP_KEY_HASH_LENGTH = 8
 
-def _idea_dedup_key(card: dict[str, Any]) -> str:
-    """Build a stable duplicate key from an idea title and problem statement."""
+
+def _normalized_idea_key(card: dict[str, Any]) -> str:
     title = card.get("title") or ""
     problem_statement = card.get("problem_statement") or ""
     raw_key = f"{title} {problem_statement}".lower()
-    dedup_key = re.sub(r"[^a-z0-9]+", "-", raw_key).strip("-")
-    dedup_key = dedup_key[:140].strip("-")
-    return dedup_key or "untitled-idea"
+    normalized_key = re.sub(r"[^a-z0-9]+", "-", raw_key).strip("-")
+    return normalized_key or "untitled-idea"
+
+
+def _idea_dedup_key(card: dict[str, Any]) -> str:
+    """Build a stable duplicate key from an idea title and problem statement."""
+    normalized_key = _normalized_idea_key(card)
+    if len(normalized_key) <= _DEDUP_KEY_MAX_LENGTH:
+        return normalized_key
+
+    digest = hashlib.sha256(normalized_key.encode("utf-8")).hexdigest()[
+        :_DEDUP_KEY_HASH_LENGTH
+    ]
+    suffix = f"-{digest}"
+    prefix_length = _DEDUP_KEY_MAX_LENGTH - len(suffix)
+    return f"{normalized_key[:prefix_length].rstrip('-')}{suffix}"
+
+
+def _duplicate_dedup_key(base_key: str, duplicate_number: int) -> str:
+    suffix = f"-dup-{duplicate_number}"
+    if len(base_key) + len(suffix) <= _DEDUP_KEY_MAX_LENGTH:
+        return f"{base_key}{suffix}"
+
+    digest = hashlib.sha256(base_key.encode("utf-8")).hexdigest()[
+        :_DEDUP_KEY_HASH_LENGTH
+    ]
+    suffix = f"{suffix}-{digest}"
+    prefix_length = _DEDUP_KEY_MAX_LENGTH - len(suffix)
+    return f"{base_key[:prefix_length].rstrip('-')}{suffix}"
 
 
 def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return copied idea cards with duplicate cards marked for rejection."""
     seen: dict[str, dict[str, Any]] = {}
+    seen_counts: dict[str, int] = {}
     deduped_cards: list[dict[str, Any]] = []
 
     for card in cards:
         next_card = dict(card)
         dedup_key = _idea_dedup_key(next_card)
-        next_card["dedup_key"] = dedup_key
 
         if dedup_key in seen:
+            seen_counts[dedup_key] += 1
             first_card = seen[dedup_key]
             original_idea = (
                 first_card.get("id")
@@ -61,15 +91,21 @@ def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 or first_card.get("dedup_key")
                 or "earlier idea"
             )
+            next_card["dedup_key"] = _duplicate_dedup_key(
+                dedup_key, seen_counts[dedup_key]
+            )
+            next_card["duplicate_of_dedup_key"] = dedup_key
             next_card["novelty_verdict"] = "duplicate"
             next_card["quality_verdict"] = "reject"
             next_card["jury_status"] = "reviewed"
             next_card["strongest_objection"] = f"Duplicate of idea {original_idea}."
         else:
+            next_card["dedup_key"] = dedup_key
             next_card.setdefault("novelty_verdict", "unclear")
             next_card.setdefault("quality_verdict", "hold")
             next_card.setdefault("jury_status", "pending")
             seen[dedup_key] = next_card
+            seen_counts[dedup_key] = 1
 
         deduped_cards.append(next_card)
 
