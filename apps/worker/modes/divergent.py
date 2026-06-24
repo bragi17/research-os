@@ -111,7 +111,7 @@ def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 or "earlier idea"
             )
             next_card["dedup_key"] = assigned_key
-            next_card["duplicate_of_dedup_key"] = dedup_key
+            next_card["duplicate_of_dedup_key"] = first_card["dedup_key"]
             next_card["novelty_verdict"] = "duplicate"
             next_card["quality_verdict"] = "reject"
             next_card["jury_status"] = "reviewed"
