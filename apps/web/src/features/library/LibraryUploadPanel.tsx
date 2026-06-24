@@ -6,6 +6,7 @@ interface LibraryUploadPanelProps {
   uploading: boolean;
   uploadError: string;
   selectedFile: File | null;
+  targetPoolName: string;
   onTabChange: (tab: LibraryUploadTab) => void;
   onUploadIdChange: (value: string) => void;
   onFileChange: (file: File | null) => void;
@@ -19,6 +20,7 @@ export function LibraryUploadPanel({
   uploading,
   uploadError,
   selectedFile,
+  targetPoolName,
   onTabChange,
   onUploadIdChange,
   onFileChange,
@@ -40,6 +42,9 @@ export function LibraryUploadPanel({
         >
           Upload File
         </button>
+      </div>
+      <div className="mb-3 text-[11px] text-[var(--text-muted)]">
+        Target pool: <span className="font-medium text-[var(--text-secondary)]">{targetPoolName}</span>
       </div>
 
       {uploadTab === "arxiv" ? (

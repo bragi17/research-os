@@ -2,13 +2,21 @@
 
 import { useState, useEffect, useCallback } from "react";
 import {
+  copyLibraryPaperToPool,
+  createLibraryPool,
+  deleteLibraryPool,
+  getLibraryPoolDuplicates,
   listLibraryPapers,
+  listLibraryPools,
+  moveLibraryPaperToPool,
   searchLibrary,
   removeFromLibrary,
   analyzeLibraryPaper,
   getLibraryStats,
   uploadToLibrary,
+  type LibraryDuplicateCandidate,
   type LibraryPaper,
+  type LibraryPool,
 } from "@/lib/api";
 import { LibraryPaperCard } from "@/features/library/LibraryPaperCard";
 import { LibraryUploadPanel } from "@/features/library/LibraryUploadPanel";
@@ -28,12 +36,34 @@ export default function LibraryPage() {
   const [uploadError, setUploadError] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [reanalyzingId, setReanalyzingId] = useState<string | null>(null);
+  const [pools, setPools] = useState<LibraryPool[]>([]);
+  const [activePoolId, setActivePoolId] = useState<string | null>(null);
+  const [newPoolName, setNewPoolName] = useState("");
+  const [creatingPool, setCreatingPool] = useState(false);
+  const [deletePoolPapers, setDeletePoolPapers] = useState(false);
+  const [duplicateGroups, setDuplicateGroups] = useState<LibraryDuplicateCandidate[]>([]);
+
+  const fetchPools = useCallback(async () => {
+    try {
+      const result = await listLibraryPools();
+      setPools(result.items);
+      setActivePoolId((current) => {
+        if (current && result.items.some((pool) => pool.id === current)) return current;
+        return result.items.find((pool) => pool.kind === "default")?.id ?? result.items[0]?.id ?? null;
+      });
+    } catch {
+      /* silent */
+    }
+  }, []);
 
   const fetchPapers = useCallback(async (showSpinner = false) => {
     if (showSpinner) setLoading(true);
     try {
-      const params = activeField ? `field=${encodeURIComponent(activeField)}` : undefined;
-      const result = await listLibraryPapers(params);
+      const params = new URLSearchParams();
+      if (activeField) params.set("field", activeField);
+      if (activePoolId) params.set("pool_ids", activePoolId);
+      const query = params.toString();
+      const result = await listLibraryPapers(query || undefined);
       setPapers(result.items);
       setTotal(result.total);
     } catch {
@@ -41,7 +71,7 @@ export default function LibraryPage() {
     } finally {
       setLoading(false);
     }
-  }, [activeField]);
+  }, [activeField, activePoolId]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -52,9 +82,29 @@ export default function LibraryPage() {
   }, []);
 
   useEffect(() => {
+    fetchPools();
+  }, [fetchPools]);
+
+  useEffect(() => {
     fetchPapers(true);  // show spinner only on first load
     fetchStats();
   }, [fetchPapers, fetchStats]);
+
+  useEffect(() => {
+    if (!activePoolId) {
+      setDuplicateGroups([]);
+      return;
+    }
+    let cancelled = false;
+    getLibraryPoolDuplicates(activePoolId)
+      .then((result) => {
+        if (!cancelled) setDuplicateGroups(result.items);
+      })
+      .catch(() => {
+        if (!cancelled) setDuplicateGroups([]);
+      });
+    return () => { cancelled = true; };
+  }, [activePoolId, papers]);
 
   // Debounced search — only triggers when query changes, not on every render
   useEffect(() => {
@@ -66,7 +116,11 @@ export default function LibraryPage() {
     const timeout = setTimeout(async () => {
       setLoading(true);
       try {
-        const result = await searchLibrary(searchQuery.trim());
+        const result = await searchLibrary(
+          searchQuery.trim(),
+          20,
+          activePoolId ? [activePoolId] : [],
+        );
         setPapers(result.items);
         setTotal(result.total);
       } catch { /* silent */ }
@@ -74,7 +128,7 @@ export default function LibraryPage() {
     }, 300);
     return () => clearTimeout(timeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery]);
+  }, [searchQuery, activePoolId]);
 
   const handleRemove = async (id: string) => {
     setRemovingId(id);
@@ -96,10 +150,11 @@ export default function LibraryPage() {
     setUploading(true);
     setUploadError("");
     try {
-      await uploadToLibrary({ arxiv_id: id });
+      await uploadToLibrary({ arxiv_id: id, pool_ids: activePoolId ? [activePoolId] : [] });
       setUploadId("");
       setShowUpload(false);
       fetchPapers();
+      fetchPools();
       fetchStats();
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
@@ -115,6 +170,7 @@ export default function LibraryPage() {
     try {
       const formData = new FormData();
       formData.append("file", selectedFile);
+      if (activePoolId) formData.append("pool_ids", activePoolId);
       const res = await fetch("/api/v1/library/upload-file", {
         method: "POST",
         body: formData,
@@ -126,6 +182,7 @@ export default function LibraryPage() {
       setSelectedFile(null);
       setShowUpload(false);
       fetchPapers();
+      fetchPools();
       fetchStats();
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
@@ -146,8 +203,63 @@ export default function LibraryPage() {
     finally { setReanalyzingId(null); }
   };
 
+  const handleCreatePool = async () => {
+    const name = newPoolName.trim();
+    if (!name) return;
+    setCreatingPool(true);
+    try {
+      const created = await createLibraryPool({ name });
+      setNewPoolName("");
+      await fetchPools();
+      setActivePoolId(created.id);
+    } catch {
+      /* silent */
+    } finally {
+      setCreatingPool(false);
+    }
+  };
+
+  const handleDeletePool = async () => {
+    const pool = pools.find((item) => item.id === activePoolId);
+    if (!pool || pool.is_system) return;
+    const confirmed = window.confirm(
+      deletePoolPapers
+        ? `Delete "${pool.name}" and permanently delete ${pool.paper_count} paper(s) from the library?`
+        : `Delete "${pool.name}" and move papers with no other pool to Unassigned?`,
+    );
+    if (!confirmed) return;
+    try {
+      await deleteLibraryPool(pool.id, deletePoolPapers);
+      setDeletePoolPapers(false);
+      await fetchPools();
+      await fetchPapers();
+      await fetchStats();
+    } catch {
+      /* silent */
+    }
+  };
+
+  const handleCopyToPool = async (paperId: string, targetPoolId: string) => {
+    await copyLibraryPaperToPool(paperId, targetPoolId);
+    fetchPools();
+  };
+
+  const handleMoveToPool = async (paperId: string, targetPoolId: string) => {
+    if (!activePoolId) return;
+    await moveLibraryPaperToPool(paperId, activePoolId, targetPoolId);
+    fetchPapers();
+    fetchPools();
+  };
+
   // Collect unique fields for filter chips
   const fields = Array.from(new Set(papers.map((p) => p.field).filter(Boolean))) as string[];
+  const activePool = pools.find((pool) => pool.id === activePoolId) ?? null;
+  const duplicateReasonByPaper = new Map<string, string>();
+  duplicateGroups.forEach((group) => {
+    group.paper_ids.forEach((paperId) => {
+      duplicateReasonByPaper.set(paperId, group.reason);
+    });
+  });
 
   const filteredPapers = activeField
     ? papers.filter((p) => p.field === activeField)
@@ -187,6 +299,7 @@ export default function LibraryPage() {
           uploading={uploading}
           uploadError={uploadError}
           selectedFile={selectedFile}
+          targetPoolName={activePool?.name ?? "Default Library"}
           onTabChange={setUploadTab}
           onUploadIdChange={setUploadId}
           onFileChange={setSelectedFile}
@@ -194,6 +307,69 @@ export default function LibraryPage() {
           onFileUpload={handleFileUpload}
         />
       )}
+
+      {/* Pools */}
+      <div className="card-static p-4 mb-5 animate-fade-up delay-75">
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mr-1">
+            Knowledge Pools
+          </span>
+          {pools.map((pool) => (
+            <button
+              key={pool.id}
+              type="button"
+              onClick={() => setActivePoolId(pool.id)}
+              className={`px-3 py-1.5 rounded-full text-[11px] font-medium transition-all border ${
+                activePoolId === pool.id
+                  ? "bg-[var(--accent)] text-white border-[var(--accent)]"
+                  : "bg-white text-[var(--text-secondary)] border-[var(--border-subtle)] hover:border-[var(--accent)]"
+              }`}
+            >
+              {pool.name}
+              <span className="ml-1 opacity-70">{pool.paper_count}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            className="input-field text-[12px] py-1.5 max-w-[220px]"
+            placeholder="New pool name"
+            value={newPoolName}
+            onChange={(event) => setNewPoolName(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Enter") handleCreatePool(); }}
+          />
+          <button
+            type="button"
+            onClick={handleCreatePool}
+            disabled={creatingPool || !newPoolName.trim()}
+            className="btn-secondary text-[12px] px-3 py-1.5"
+          >
+            {creatingPool ? "Creating..." : "Create Pool"}
+          </button>
+
+          {activePool && !activePool.is_system && (
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                <input
+                  type="checkbox"
+                  checked={deletePoolPapers}
+                  onChange={(event) => setDeletePoolPapers(event.target.checked)}
+                />
+                Delete papers too
+              </label>
+              <button
+                type="button"
+                onClick={handleDeletePool}
+                className="btn-danger text-[12px] px-3 py-1.5"
+              >
+                Delete Pool
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Search */}
       <div className="mb-5 animate-fade-up delay-75">
@@ -300,10 +476,15 @@ export default function LibraryPage() {
             <LibraryPaperCard
               key={paper.id}
               paper={paper}
+              pools={pools}
+              activePoolId={activePoolId}
+              duplicateReason={duplicateReasonByPaper.get(paper.id)}
               removingId={removingId}
               reanalyzingId={reanalyzingId}
               onRemove={handleRemove}
               onReanalyze={handleReanalyze}
+              onCopyToPool={handleCopyToPool}
+              onMoveToPool={handleMoveToPool}
             />
           ))}
         </div>

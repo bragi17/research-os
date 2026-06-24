@@ -56,6 +56,7 @@ class CreateRunV2Request(BaseModel):
     mode: ResearchMode = Field(default=ResearchMode.INTAKE)
     keywords: list[str] = Field(default_factory=list)
     seed_papers: list[str] = Field(default_factory=list)
+    library_pool_ids: list[UUID] = Field(default_factory=list)
     budget: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
     parent_run_id: UUID | None = None
@@ -143,6 +144,7 @@ async def create_run_v2(
         "policy_json": {
             "keywords": request.keywords,
             "seed_papers": request.seed_papers,
+            "library_pool_ids": [str(pool_id) for pool_id in request.library_pool_ids],
             "constraints": request.constraints,
         },
         "progress_pct": 0,

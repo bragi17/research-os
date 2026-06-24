@@ -4,7 +4,15 @@ import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useState, useCallback, useRef, useEffect } from "react";
 import Link from "next/link";
-import { createRunV2, startRun, searchLibraryTitles, type RunMode, type LibraryPaper } from "@/lib/api";
+import {
+  createRunV2,
+  listLibraryPools,
+  startRun,
+  searchLibraryTitles,
+  type LibraryPaper,
+  type LibraryPool,
+  type RunMode,
+} from "@/lib/api";
 
 const MODES: { value: RunMode; label: string; desc: string; icon: string }[] = [
   { value: "atlas", label: "Atlas", desc: "Explore & map a research field", icon: "🗺" },
@@ -68,6 +76,8 @@ function NewResearchContent() {
   const [librarySearching, setLibrarySearching] = useState(false);
   const [selectedLibraryPapers, setSelectedLibraryPapers] = useState<LibraryPaper[]>([]);
   const libraryDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [libraryPools, setLibraryPools] = useState<LibraryPool[]>([]);
+  const [selectedPoolIds, setSelectedPoolIds] = useState<string[]>([]);
 
   // Mode-specific
   const [venueFilter, setVenueFilter] = useState("");
@@ -80,6 +90,12 @@ function NewResearchContent() {
     el.style.height = "auto";
     el.style.height = `${Math.max(72, Math.min(160, el.scrollHeight))}px`;
   }, [topic]);
+
+  useEffect(() => {
+    listLibraryPools()
+      .then((result) => setLibraryPools(result.items))
+      .catch(() => setLibraryPools([]));
+  }, []);
 
   const addKeyword = useCallback(() => {
     const trimmed = keywordInput.trim();
@@ -99,7 +115,11 @@ function NewResearchContent() {
     libraryDebounceRef.current = setTimeout(async () => {
       setLibrarySearching(true);
       try {
-        const result = await searchLibraryTitles(libraryQuery.trim());
+        const result = await searchLibraryTitles(
+          libraryQuery.trim(),
+          10,
+          selectedPoolIds,
+        );
         setLibraryResults(result.items);
       } catch {
         setLibraryResults([]);
@@ -110,7 +130,7 @@ function NewResearchContent() {
     return () => {
       if (libraryDebounceRef.current) clearTimeout(libraryDebounceRef.current);
     };
-  }, [libraryQuery]);
+  }, [libraryQuery, selectedPoolIds]);
 
   const addLibraryPaper = useCallback((paper: LibraryPaper) => {
     if (selectedLibraryPapers.some((p) => p.id === paper.id)) return;
@@ -121,6 +141,14 @@ function NewResearchContent() {
 
   const removeLibraryPaper = useCallback((paperId: string) => {
     setSelectedLibraryPapers((prev) => prev.filter((p) => p.id !== paperId));
+  }, []);
+
+  const togglePool = useCallback((poolId: string) => {
+    setSelectedPoolIds((prev) =>
+      prev.includes(poolId)
+        ? prev.filter((id) => id !== poolId)
+        : [...prev, poolId],
+    );
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -140,6 +168,7 @@ function NewResearchContent() {
         mode,
         keywords: kws,
         seed_papers: seeds,
+        library_pool_ids: selectedPoolIds,
         budget: { max_new_papers: maxPapers, max_fulltext_reads: maxReads },
       };
       if (mode === "frontier") {
@@ -214,6 +243,40 @@ function NewResearchContent() {
                 className="input-field resize-none text-[15px] leading-relaxed"
               />
             </div>
+
+            {/* Knowledge pools */}
+            {libraryPools.length > 0 && (
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-1">
+                  Knowledge Pools
+                </label>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {libraryPools.map((pool) => {
+                    const selected = selectedPoolIds.includes(pool.id);
+                    return (
+                      <button
+                        key={pool.id}
+                        type="button"
+                        onClick={() => togglePool(pool.id)}
+                        className={`px-3 py-2 rounded-lg text-left transition-all border min-w-[150px] ${
+                          selected
+                            ? "bg-[var(--accent-soft)] border-[var(--accent)] text-[var(--text-primary)]"
+                            : "bg-white border-[var(--border-subtle)] text-[var(--text-secondary)] hover:border-[var(--accent)]"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[12px] font-semibold truncate">{pool.name}</span>
+                          <span className="text-[11px] tabular-nums text-[var(--text-muted)]">{pool.paper_count}</span>
+                        </div>
+                        <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mt-0.5">
+                          {pool.kind}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Seed Papers - always visible */}
             <div>

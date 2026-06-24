@@ -68,6 +68,7 @@ async def enqueue_run(run_id: UUID, run_data: dict[str, Any]) -> bool:
             "mode": run_data.get("mode", "frontier"),
             "keywords": policy.get("keywords", []),
             "seed_paper_ids": policy.get("seed_papers", []),
+            "library_pool_ids": policy.get("library_pool_ids", []),
             "budget": run_data.get("budget_json", {}),
             "enqueued_at": datetime.utcnow().isoformat(),
         })

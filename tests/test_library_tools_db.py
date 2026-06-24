@@ -169,6 +169,21 @@ async def test_list_library_papers_applies_both_filters():
     assert "$2 = ANY(project_tags)" in call_sql
 
 
+@pytest.mark.asyncio
+async def test_list_library_papers_filters_by_pool_ids():
+    pool = _make_pool(fetch_return=[])
+    pool_id = uuid4()
+
+    with patch(POOL_PATH, AsyncMock(return_value=pool)):
+        from services.library.tools_db import list_library_papers
+        await list_library_papers(pool_ids=[pool_id])
+
+    call_sql = pool.fetch.call_args[0][0]
+    assert "library_pool_paper" in call_sql
+    assert "ANY" in call_sql
+    assert pool.fetch.call_args[0][1] == [pool_id]
+
+
 # ---------------------------------------------------------------------------
 # delete_library_paper
 # ---------------------------------------------------------------------------
@@ -304,6 +319,21 @@ async def test_search_library_vectors_with_field():
     assert "lp.field = $2" in call_sql
 
 
+@pytest.mark.asyncio
+async def test_search_library_vectors_filters_by_pool_ids():
+    pool = _make_pool(fetch_return=[])
+    pool_id = uuid4()
+
+    with patch(POOL_PATH, AsyncMock(return_value=pool)):
+        from services.library.tools_db import search_library_vectors
+        await search_library_vectors([0.1, 0.2], limit=5, pool_ids=[pool_id])
+
+    call_sql = pool.fetch.call_args[0][0]
+    assert "library_pool_paper" in call_sql
+    assert "ANY" in call_sql
+    assert pool.fetch.call_args[0][2] == [pool_id]
+
+
 # ---------------------------------------------------------------------------
 # search_library_text
 # ---------------------------------------------------------------------------
@@ -323,6 +353,20 @@ async def test_search_library_text_builds_ilike_query():
     # Verify pattern wrapping
     call_args = pool.fetch.call_args[0]
     assert call_args[1] == "%transformer%"
+
+
+@pytest.mark.asyncio
+async def test_search_library_text_filters_by_pool_ids():
+    pool = _make_pool(fetch_return=[])
+    pool_id = uuid4()
+
+    with patch(POOL_PATH, AsyncMock(return_value=pool)):
+        from services.library.tools_db import search_library_text
+        await search_library_text("transformer", pool_ids=[pool_id])
+
+    call_sql = pool.fetch.call_args[0][0]
+    assert "library_pool_paper" in call_sql
+    assert "ANY" in call_sql
 
 
 # ---------------------------------------------------------------------------

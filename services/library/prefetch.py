@@ -12,12 +12,16 @@ logger = get_logger(__name__)
 async def library_prefetch(
     topic: str,
     keywords: list[str],
+    pool_ids: list[str] | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     from services.library.tools_embedding import embed_paper_chunks, rerank_papers
     from services.library.tools_db import search_library_vectors, count_library_papers
 
-    paper_count = await count_library_papers()
+    if pool_ids == []:
+        return []
+
+    paper_count = await count_library_papers(pool_ids=pool_ids)
     if paper_count == 0:
         return []
 
@@ -31,7 +35,11 @@ async def library_prefetch(
     if not vectors:
         return []
 
-    candidates = await search_library_vectors(vectors[0], limit=limit * 3)
+    candidates = await search_library_vectors(
+        vectors[0],
+        limit=limit * 3,
+        pool_ids=pool_ids,
+    )
     if not candidates:
         return []
 

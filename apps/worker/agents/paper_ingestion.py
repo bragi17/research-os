@@ -241,6 +241,7 @@ class PaperIngestionPipeline:
         metadata: dict[str, Any] | None = None,
         source_run_id: str | None = None,
         project_tags: list[str] | None = None,
+        pool_ids: list[str] | None = None,
         is_manually_uploaded: bool = False,
     ) -> dict[str, Any]:
         """
@@ -253,6 +254,7 @@ class PaperIngestionPipeline:
             metadata: Additional metadata {authors, year, venue, ...}
             source_run_id: UUID of the research run (if from run results)
             project_tags: Project tag labels
+            pool_ids: Library pool UUIDs to attach the created paper to
             is_manually_uploaded: Whether this is a manual upload
         """
         metadata = metadata or {}
@@ -294,6 +296,7 @@ class PaperIngestionPipeline:
             embeddings=embeddings,
             source_run_id=source_run_id,
             project_tags=project_tags or [],
+            pool_ids=pool_ids or [],
             is_manually_uploaded=is_manually_uploaded,
             latex_source_path=None,  # TODO: store path if downloaded
         )
@@ -401,10 +404,11 @@ class PaperIngestionPipeline:
         self, *, title: str, arxiv_id: str | None, metadata: dict[str, Any],
         analysis: PaperLevelAnalysis, chunks: list[dict], chunk_tags: list[ChunkTag],
         embeddings: list[list[float]], source_run_id: str | None,
-        project_tags: list[str], is_manually_uploaded: bool,
+        project_tags: list[str], pool_ids: list[str], is_manually_uploaded: bool,
         latex_source_path: str | None,
     ) -> dict[str, Any]:
         """TOOL: Store paper + chunks to DB."""
+        from services.library.pools_db import assign_paper_to_pools
         from services.library.tools_db import insert_library_paper, insert_library_chunks
 
         # Determine status
@@ -456,6 +460,8 @@ class PaperIngestionPipeline:
 
         paper = await insert_library_paper(paper_data)
         paper_id = UUID(str(paper["id"]))
+        assigned_pool_ids = await assign_paper_to_pools(paper_id, pool_ids)
+        paper["pool_ids"] = assigned_pool_ids
 
         # Insert chunks with tags and embeddings
         if chunks:

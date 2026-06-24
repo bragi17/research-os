@@ -236,7 +236,25 @@ export interface LibraryPaper {
   citation_count: number;
   status: string;
   project_tags: string[];
+  pool_ids?: string[];
+  pool_names?: string[];
   created_at: string;
+}
+
+export interface LibraryPool {
+  id: string;
+  name: string;
+  description?: string | null;
+  kind: "default" | "unassigned" | "custom";
+  is_system: boolean;
+  paper_count: number;
+}
+
+export interface LibraryDuplicateCandidate {
+  paper_ids: string[];
+  reason: string;
+  confidence: "high" | "medium" | string;
+  score: number;
 }
 
 // Library API
@@ -258,14 +276,50 @@ export const analyzeLibraryPaper = (id: string) =>
     { method: "POST" },
   );
 
-export const searchLibrary = (q: string, limit = 20) =>
-  apiFetch<{ items: LibraryPaper[]; total: number }>(`/api/v1/library/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+export const searchLibrary = (q: string, limit = 20, poolIds: string[] = []) => {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  if (poolIds.length > 0) params.set("pool_ids", poolIds.join(","));
+  return apiFetch<{ items: LibraryPaper[]; total: number }>(`/api/v1/library/search?${params.toString()}`);
+};
 
-export const searchLibraryTitles = (q: string, limit = 10) =>
-  apiFetch<{ items: LibraryPaper[]; total: number }>(`/api/v1/library/search/titles?q=${encodeURIComponent(q)}&limit=${limit}`);
+export const searchLibraryTitles = (q: string, limit = 10, poolIds: string[] = []) => {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  if (poolIds.length > 0) params.set("pool_ids", poolIds.join(","));
+  return apiFetch<{ items: LibraryPaper[]; total: number }>(`/api/v1/library/search/titles?${params.toString()}`);
+};
 
 export const getLibraryStats = () =>
   apiFetch<{ papers: number; chunks: number }>("/api/v1/library/stats");
 
 export const uploadToLibrary = (data: Record<string, unknown>) =>
   apiFetch<LibraryPaper>("/api/v1/library/upload", { method: "POST", body: JSON.stringify(data) });
+
+export const listLibraryPools = () =>
+  apiFetch<{ items: LibraryPool[]; total: number }>("/api/v1/library/pools");
+
+export const createLibraryPool = (data: { name: string; description?: string }) =>
+  apiFetch<LibraryPool>("/api/v1/library/pools", { method: "POST", body: JSON.stringify(data) });
+
+export const updateLibraryPool = (id: string, data: { name?: string; description?: string }) =>
+  apiFetch<LibraryPool>(`/api/v1/library/pools/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+
+export const deleteLibraryPool = (id: string, deletePapers = false) =>
+  apiFetch<{ status: string; deleted_papers: number; moved_to_unassigned: number }>(
+    `/api/v1/library/pools/${id}?delete_papers=${deletePapers ? "true" : "false"}`,
+    { method: "DELETE" },
+  );
+
+export const copyLibraryPaperToPool = (paperId: string, targetPoolId: string) =>
+  apiFetch<{ status: string; paper_id: string }>(
+    `/api/v1/library/pools/${targetPoolId}/papers/${paperId}/copy`,
+    { method: "POST" },
+  );
+
+export const moveLibraryPaperToPool = (paperId: string, sourcePoolId: string, targetPoolId: string) =>
+  apiFetch<{ status: string; paper_id: string }>(
+    `/api/v1/library/pools/${sourcePoolId}/papers/${paperId}/move`,
+    { method: "POST", body: JSON.stringify({ target_pool_id: targetPoolId }) },
+  );
+
+export const getLibraryPoolDuplicates = (poolId: string) =>
+  apiFetch<{ items: LibraryDuplicateCandidate[]; total: number }>(`/api/v1/library/pools/${poolId}/duplicates`);

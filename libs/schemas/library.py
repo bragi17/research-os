@@ -77,6 +77,8 @@ class LibraryPaper(BaseModel):
     compiled_pdf_path: str | None = None
     project_tags: list[str] = Field(default_factory=list)
     is_manually_uploaded: bool = False
+    pool_ids: list[UUID] = Field(default_factory=list)
+    pool_names: list[str] = Field(default_factory=list)
 
 
 class LibraryChunk(BaseModel):
@@ -97,6 +99,7 @@ class LibraryPaperCreate(BaseModel):
     doi: str | None = None
     source_run_id: str | None = None
     project_tags: list[str] = Field(default_factory=list)
+    pool_ids: list[UUID] = Field(default_factory=list)
 
 
 class LibrarySearchQuery(BaseModel):
@@ -104,5 +107,32 @@ class LibrarySearchQuery(BaseModel):
     field: str | None = None
     sub_field: str | None = None
     project_tag: str | None = None
+    pool_ids: list[UUID] = Field(default_factory=list)
     limit: int = 20
     offset: int = 0
+
+
+class LibraryPool(BaseModel):
+    id: UUID | None = None
+    name: str
+    description: str | None = None
+    kind: str = "custom"
+    is_system: bool = False
+    paper_count: int = 0
+
+
+class LibraryPoolCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: str | None = None
+
+
+class LibraryPoolUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+
+
+class LibraryDuplicateCandidate(BaseModel):
+    paper_ids: list[UUID]
+    reason: str
+    confidence: str
+    score: float = 0.0

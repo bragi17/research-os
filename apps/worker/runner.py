@@ -132,6 +132,10 @@ class WorkerRunner:
             policy = run.get("policy_json", {})
             keywords = job.get("keywords", [])
             seed_paper_ids = job.get("seed_paper_ids", [])
+            library_pool_ids = job.get(
+                "library_pool_ids",
+                policy.get("library_pool_ids", []),
+            )
             context_bundle = job.get("context_bundle", {})
 
             # -----------------------------------------------------------------
@@ -157,7 +161,12 @@ class WorkerRunner:
             library_seeds = []
             try:
                 from services.library.prefetch import library_prefetch
-                library_seeds = await library_prefetch(topic, keywords, limit=10)
+                library_seeds = await library_prefetch(
+                    topic,
+                    keywords,
+                    pool_ids=library_pool_ids,
+                    limit=10,
+                )
                 if library_seeds:
                     from apps.worker.modes.base import emit_progress
                     await emit_progress(run_id, "library_prefetch", "matched",

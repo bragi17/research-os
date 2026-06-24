@@ -106,6 +106,7 @@ async def get_library_paper(paper_id: UUID) -> dict[str, Any] | None:
 async def list_library_papers(
     field: str | None = None,
     project_tag: str | None = None,
+    pool_ids: list[UUID] | list[str] | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -129,6 +130,20 @@ async def list_library_papers(
         values.append(project_tag)
         idx += 1
 
+    if pool_ids:
+        conditions.append(
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM library_pool_paper lpp
+                WHERE lpp.library_paper_id = library_paper.id
+                  AND lpp.pool_id = ANY(${idx}::uuid[])
+            )
+            """
+        )
+        values.append([UUID(str(pool_id)) for pool_id in pool_ids])
+        idx += 1
+
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
 
     values.append(limit)
@@ -148,10 +163,42 @@ async def list_library_papers(
     return [_record_to_dict(r) for r in rows]
 
 
-async def count_library_papers() -> int:
-    """Return total number of library_paper rows."""
+async def count_library_papers(
+    field: str | None = None,
+    project_tag: str | None = None,
+    pool_ids: list[UUID] | list[str] | None = None,
+) -> int:
+    """Return total number of library_paper rows with optional filters."""
     pool = await get_pool()
-    row = await pool.fetchrow("SELECT COUNT(*) AS cnt FROM library_paper")
+    conditions: list[str] = []
+    values: list[Any] = []
+    idx = 1
+
+    if field is not None:
+        conditions.append(f"field = ${idx}")
+        values.append(field)
+        idx += 1
+
+    if project_tag is not None:
+        conditions.append(f"${idx} = ANY(project_tags)")
+        values.append(project_tag)
+        idx += 1
+
+    if pool_ids:
+        conditions.append(
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM library_pool_paper lpp
+                WHERE lpp.library_paper_id = library_paper.id
+                  AND lpp.pool_id = ANY(${idx}::uuid[])
+            )
+            """
+        )
+        values.append([UUID(str(pool_id)) for pool_id in pool_ids])
+
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    row = await pool.fetchrow(f"SELECT COUNT(*) AS cnt FROM library_paper{where}", *values)
     return row["cnt"]
 
 
@@ -271,6 +318,7 @@ async def search_library_vectors(
     query_embedding: list[float],
     limit: int = 30,
     field: str | None = None,
+    pool_ids: list[UUID] | list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Cosine similarity search over library_chunk embeddings.
 
@@ -281,56 +329,55 @@ async def search_library_vectors(
 
     embedding_literal = "[" + ",".join(str(v) for v in query_embedding) + "]"
 
+    conditions: list[str] = []
+    values: list[Any] = [embedding_literal]
+    idx = 2
+
     if field is not None:
-        rows = await pool.fetch(
+        conditions.append(f"lp.field = ${idx}")
+        values.append(field)
+        idx += 1
+
+    if pool_ids:
+        conditions.append(
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM library_pool_paper lpp
+                WHERE lpp.library_paper_id = lp.id
+                  AND lpp.pool_id = ANY(${idx}::uuid[])
+            )
             """
-            SELECT
-                lc.id AS chunk_id,
-                lc.library_paper_id,
-                lc.section_type,
-                lc.paragraph_index,
-                lc.text,
-                lc.tags,
-                lc.claim_type,
-                lp.title,
-                lp.field,
-                lp.arxiv_id,
-                lp.year,
-                (lc.embedding <=> $1::vector) AS distance
-            FROM library_chunk lc
-            JOIN library_paper lp ON lp.id = lc.library_paper_id
-            WHERE lp.field = $2
-            ORDER BY lc.embedding <=> $1::vector
-            LIMIT $3
-            """,
-            embedding_literal,
-            field,
-            limit,
         )
-    else:
-        rows = await pool.fetch(
-            """
-            SELECT
-                lc.id AS chunk_id,
-                lc.library_paper_id,
-                lc.section_type,
-                lc.paragraph_index,
-                lc.text,
-                lc.tags,
-                lc.claim_type,
-                lp.title,
-                lp.field,
-                lp.arxiv_id,
-                lp.year,
-                (lc.embedding <=> $1::vector) AS distance
-            FROM library_chunk lc
-            JOIN library_paper lp ON lp.id = lc.library_paper_id
-            ORDER BY lc.embedding <=> $1::vector
-            LIMIT $2
-            """,
-            embedding_literal,
-            limit,
-        )
+        values.append([UUID(str(pool_id)) for pool_id in pool_ids])
+        idx += 1
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    values.append(limit)
+
+    rows = await pool.fetch(
+        f"""
+        SELECT
+            lc.id AS chunk_id,
+            lc.library_paper_id,
+            lc.section_type,
+            lc.paragraph_index,
+            lc.text,
+            lc.tags,
+            lc.claim_type,
+            lp.title,
+            lp.field,
+            lp.arxiv_id,
+            lp.year,
+            (lc.embedding <=> $1::vector) AS distance
+        FROM library_chunk lc
+        JOIN library_paper lp ON lp.id = lc.library_paper_id
+        {where}
+        ORDER BY lc.embedding <=> $1::vector
+        LIMIT ${idx}
+        """,
+        *values,
+    )
 
     return [_record_to_dict(r) for r in rows]
 
@@ -343,18 +390,35 @@ async def search_library_vectors(
 async def search_library_text(
     query: str,
     limit: int = 20,
+    pool_ids: list[UUID] | list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """ILIKE title search on library_paper."""
     pool = await get_pool()
     pattern = f"%{query}%"
+    values: list[Any] = [pattern]
+    conditions = ["title ILIKE $1"]
+    idx = 2
+    if pool_ids:
+        conditions.append(
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM library_pool_paper lpp
+                WHERE lpp.library_paper_id = library_paper.id
+                  AND lpp.pool_id = ANY(${idx}::uuid[])
+            )
+            """
+        )
+        values.append([UUID(str(pool_id)) for pool_id in pool_ids])
+        idx += 1
+    values.append(limit)
     rows = await pool.fetch(
-        """
+        f"""
         SELECT * FROM library_paper
-        WHERE title ILIKE $1
+        WHERE {' AND '.join(conditions)}
         ORDER BY created_at DESC
-        LIMIT $2
+        LIMIT ${idx}
         """,
-        pattern,
-        limit,
+        *values,
     )
     return [_record_to_dict(r) for r in rows]

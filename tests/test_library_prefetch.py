@@ -19,6 +19,22 @@ async def test_returns_empty_when_library_has_zero_papers():
 
 
 @pytest.mark.asyncio
+async def test_returns_empty_when_pool_selection_is_empty():
+    """An explicit empty pool selection disables library prefetch."""
+    with patch(f"{DB_MODULE}.count_library_papers", new_callable=AsyncMock) as mock_count:
+        from services.library.prefetch import library_prefetch
+
+        result = await library_prefetch(
+            "quantum computing",
+            ["qubit"],
+            pool_ids=[],
+        )
+
+    assert result == []
+    mock_count.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_returns_papers_with_relevance_score():
     """Returns papers with relevance_score when library has matches."""
     candidates = [
@@ -38,7 +54,12 @@ async def test_returns_papers_with_relevance_score():
         patch(f"{EMBED_MODULE}.rerank_papers", new_callable=AsyncMock, return_value=reranked),
     ):
         from services.library.prefetch import library_prefetch
-        result = await library_prefetch("deep learning", ["neural", "network"], limit=2)
+        result = await library_prefetch(
+            "deep learning",
+            ["neural", "network"],
+            pool_ids=["11111111-1111-1111-1111-111111111111"],
+            limit=2,
+        )
 
     assert len(result) == 2
     assert result[0]["paper_id"] == "p3"
@@ -46,6 +67,24 @@ async def test_returns_papers_with_relevance_score():
     assert result[0]["source"] == "library"
     assert result[1]["paper_id"] == "p1"
     assert result[1]["relevance_score"] == 0.80
+
+
+@pytest.mark.asyncio
+async def test_prefetch_passes_pool_ids_to_count_and_vector_search():
+    """Pool selections constrain both library count and vector retrieval."""
+    pool_ids = ["11111111-1111-1111-1111-111111111111"]
+    with (
+        patch(f"{DB_MODULE}.count_library_papers", new_callable=AsyncMock, return_value=1) as mock_count,
+        patch(f"{EMBED_MODULE}.embed_paper_chunks", new_callable=AsyncMock, return_value=[[0.1, 0.2]]),
+        patch(f"{DB_MODULE}.search_library_vectors", new_callable=AsyncMock, return_value=[]) as mock_search,
+    ):
+        from services.library.prefetch import library_prefetch
+
+        await library_prefetch("deep learning", ["neural"], pool_ids=pool_ids, limit=2)
+
+    mock_count.assert_awaited_once_with(pool_ids=pool_ids)
+    mock_search.assert_awaited_once_with([0.1, 0.2], limit=6, pool_ids=pool_ids)
+
 
 
 @pytest.mark.asyncio

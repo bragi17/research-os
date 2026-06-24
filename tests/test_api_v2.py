@@ -350,6 +350,22 @@ class TestCreateRunV2:
         data = r.json()
         assert data["mode"] == "atlas"
 
+    def test_create_run_stores_library_pool_selection(self, client: TestClient):
+        pool_id = str(uuid4())
+        r = client.post(
+            "/api/v1/runs/multimode",
+            json={
+                "title": "Pool Scoped Research",
+                "topic": "Large language models for code generation and analysis",
+                "mode": "frontier",
+                "library_pool_ids": [pool_id],
+            },
+        )
+
+        assert r.status_code == 201
+        run_id = r.json()["id"]
+        assert _mock_runs[run_id]["policy_json"]["library_pool_ids"] == [pool_id]
+
     def test_create_run_with_parent(self, client: TestClient):
         parent_id = str(uuid4())
         r = client.post(

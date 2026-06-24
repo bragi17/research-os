@@ -34,6 +34,8 @@ _mock_events: list[dict[str, Any]] = []
 # Library-specific mock state
 _mock_library_papers: dict[str, dict[str, Any]] = {}
 _mock_library_chunks: dict[str, list[dict[str, Any]]] = {}
+_mock_library_pools: dict[str, dict[str, Any]] = {}
+_mock_pool_memberships: dict[str, set[str]] = {}
 
 
 def _make_mock_run(run_data: dict[str, Any]) -> dict[str, Any]:
@@ -224,6 +226,7 @@ async def mock_get_library_paper(paper_id: UUID) -> dict[str, Any] | None:
 async def mock_list_library_papers(
     field: str | None = None,
     project_tag: str | None = None,
+    pool_ids: list[UUID] | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -232,6 +235,11 @@ async def mock_list_library_papers(
         papers = [p for p in papers if p.get("field") == field]
     if project_tag:
         papers = [p for p in papers if project_tag in p.get("project_tags", [])]
+    if pool_ids:
+        allowed = set()
+        for pool_id in pool_ids:
+            allowed.update(_mock_pool_memberships.get(str(pool_id), set()))
+        papers = [p for p in papers if str(p["id"]) in allowed]
     return papers[offset : offset + limit]
 
 
@@ -265,12 +273,15 @@ async def mock_search_library_vectors(
     query_embedding: list[float],
     limit: int = 30,
     field: str | None = None,
+    pool_ids: list[UUID] | None = None,
 ) -> list[dict[str, Any]]:
     return []
 
 
 async def mock_search_library_text(
-    query: str, limit: int = 20
+    query: str,
+    limit: int = 20,
+    pool_ids: list[UUID] | None = None,
 ) -> list[dict[str, Any]]:
     pattern = query.lower()
     results = [
@@ -281,8 +292,17 @@ async def mock_search_library_text(
     return results[:limit]
 
 
-async def mock_count_library_papers() -> int:
-    return len(_mock_library_papers)
+async def mock_count_library_papers(
+    field: str | None = None,
+    project_tag: str | None = None,
+    pool_ids: list[UUID] | None = None,
+) -> int:
+    return len(await mock_list_library_papers(
+        field=field,
+        project_tag=project_tag,
+        pool_ids=pool_ids,
+        limit=10_000,
+    ))
 
 
 async def mock_count_library_chunks() -> int:
@@ -290,6 +310,154 @@ async def mock_count_library_chunks() -> int:
     for chunks in _mock_library_chunks.values():
         total += len(chunks)
     return total
+
+
+def _ensure_system_pools() -> tuple[str, str]:
+    default = next(
+        (pid for pid, p in _mock_library_pools.items() if p["kind"] == "default"),
+        None,
+    )
+    unassigned = next(
+        (pid for pid, p in _mock_library_pools.items() if p["kind"] == "unassigned"),
+        None,
+    )
+    if default is None:
+        default = str(uuid4())
+        _mock_library_pools[default] = {
+            "id": default,
+            "name": "Default Library",
+            "description": "Default paper pool",
+            "kind": "default",
+            "is_system": True,
+            "paper_count": 0,
+        }
+    if unassigned is None:
+        unassigned = str(uuid4())
+        _mock_library_pools[unassigned] = {
+            "id": unassigned,
+            "name": "Unassigned",
+            "description": "Papers without another pool",
+            "kind": "unassigned",
+            "is_system": True,
+            "paper_count": 0,
+        }
+    return default, unassigned
+
+
+async def mock_list_library_pools() -> list[dict[str, Any]]:
+    _ensure_system_pools()
+    items: list[dict[str, Any]] = []
+    for pool_id, pool in _mock_library_pools.items():
+        items.append({
+            **pool,
+            "paper_count": len(_mock_pool_memberships.get(pool_id, set())),
+        })
+    return items
+
+
+async def mock_create_library_pool(
+    name: str,
+    description: str | None = None,
+    kind: str = "custom",
+) -> dict[str, Any]:
+    pool_id = str(uuid4())
+    pool = {
+        "id": pool_id,
+        "name": name,
+        "description": description,
+        "kind": kind,
+        "is_system": kind != "custom",
+        "paper_count": 0,
+    }
+    _mock_library_pools[pool_id] = pool
+    return pool
+
+
+async def mock_update_library_pool(
+    pool_id: UUID,
+    updates: dict[str, Any],
+) -> dict[str, Any] | None:
+    key = str(pool_id)
+    if key not in _mock_library_pools:
+        return None
+    _mock_library_pools[key] = {**_mock_library_pools[key], **updates}
+    return _mock_library_pools[key]
+
+
+async def mock_delete_library_pool(
+    pool_id: UUID,
+    delete_papers: bool = False,
+) -> dict[str, Any]:
+    key = str(pool_id)
+    if key not in _mock_library_pools:
+        return {"status": "missing"}
+    _, unassigned_id = _ensure_system_pools()
+    members = set(_mock_pool_memberships.get(key, set()))
+    if delete_papers:
+        for paper_id in members:
+            _mock_library_papers.pop(paper_id, None)
+        for papers in _mock_pool_memberships.values():
+            papers.difference_update(members)
+    else:
+        moved = 0
+        for paper_id in members:
+            other_memberships = [
+                pid for pid, paper_ids in _mock_pool_memberships.items()
+                if pid != key and paper_id in paper_ids
+            ]
+            if not other_memberships:
+                _mock_pool_memberships.setdefault(unassigned_id, set()).add(paper_id)
+                moved += 1
+        _mock_pool_memberships.pop(key, None)
+    _mock_library_pools.pop(key, None)
+    return {
+        "status": "deleted",
+        "pool_id": key,
+        "deleted_papers": len(members) if delete_papers else 0,
+        "moved_to_unassigned": 0 if delete_papers else moved,
+    }
+
+
+async def mock_assign_paper_to_pools(
+    paper_id: UUID,
+    pool_ids: list[UUID] | list[str] | None,
+) -> list[UUID]:
+    default_id, _ = _ensure_system_pools()
+    selected = [str(pid) for pid in (pool_ids or [default_id])]
+    for pool_id in selected:
+        _mock_pool_memberships.setdefault(pool_id, set()).add(str(paper_id))
+    return [UUID(pool_id) for pool_id in selected]
+
+
+async def mock_copy_library_paper(
+    paper_id: UUID,
+    target_pool_id: UUID,
+) -> dict[str, str]:
+    _mock_pool_memberships.setdefault(str(target_pool_id), set()).add(str(paper_id))
+    return {"status": "copied", "paper_id": str(paper_id)}
+
+
+async def mock_move_library_paper(
+    paper_id: UUID,
+    source_pool_id: UUID,
+    target_pool_id: UUID,
+) -> dict[str, str]:
+    _mock_pool_memberships.setdefault(str(target_pool_id), set()).add(str(paper_id))
+    _mock_pool_memberships.setdefault(str(source_pool_id), set()).discard(str(paper_id))
+    return {"status": "moved", "paper_id": str(paper_id)}
+
+
+async def mock_get_pool_duplicate_candidates(pool_id: UUID) -> list[dict[str, Any]]:
+    paper_ids = list(_mock_pool_memberships.get(str(pool_id), set()))
+    papers = [_mock_library_papers[pid] for pid in paper_ids if pid in _mock_library_papers]
+    if len(papers) < 2:
+        return []
+    return [{
+        "paper_ids": [str(papers[0]["id"]), str(papers[1]["id"])],
+        "reason": "same DOI",
+        "confidence": "high",
+        "score": 1.0,
+    }]
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +472,8 @@ def _reset_mock_state():
     _mock_events.clear()
     _mock_library_papers.clear()
     _mock_library_chunks.clear()
+    _mock_library_pools.clear()
+    _mock_pool_memberships.clear()
 
 
 @pytest.fixture()
@@ -384,6 +554,30 @@ def client():
         ),
         "services.library.tools_db.count_library_chunks": AsyncMock(
             side_effect=mock_count_library_chunks
+        ),
+        "services.library.pools_db.list_library_pools": AsyncMock(
+            side_effect=mock_list_library_pools
+        ),
+        "services.library.pools_db.create_library_pool": AsyncMock(
+            side_effect=mock_create_library_pool
+        ),
+        "services.library.pools_db.update_library_pool": AsyncMock(
+            side_effect=mock_update_library_pool
+        ),
+        "services.library.pools_db.delete_library_pool": AsyncMock(
+            side_effect=mock_delete_library_pool
+        ),
+        "services.library.pools_db.assign_paper_to_pools": AsyncMock(
+            side_effect=mock_assign_paper_to_pools
+        ),
+        "services.library.pools_db.copy_library_paper": AsyncMock(
+            side_effect=mock_copy_library_paper
+        ),
+        "services.library.pools_db.move_library_paper": AsyncMock(
+            side_effect=mock_move_library_paper
+        ),
+        "services.library.pools_db.get_pool_duplicate_candidates": AsyncMock(
+            side_effect=mock_get_pool_duplicate_candidates
         ),
     }
 
@@ -640,6 +834,7 @@ class TestAnalyzePaper:
                 },
                 "source_run_id": None,
                 "project_tags": ["agent"],
+                "pool_ids": [],
                 "is_manually_uploaded": False,
             }
         ]
@@ -779,3 +974,105 @@ class TestHybridSearch:
         data = r.json()
         assert "items" in data
         assert "total" in data
+
+
+# ===================================================================
+# Library Pools
+# ===================================================================
+
+
+class TestLibraryPools:
+    """Test first-class Paper Library pool endpoints."""
+
+    def test_list_pools_includes_system_pools(self, client: TestClient):
+        r = client.get("/api/v1/library/pools")
+
+        assert r.status_code == 200
+        data = r.json()
+        names = {item["name"] for item in data["items"]}
+        assert {"Default Library", "Unassigned"} <= names
+
+    def test_create_pool_returns_custom_pool(self, client: TestClient):
+        r = client.post(
+            "/api/v1/library/pools",
+            json={"name": "3D Geometry", "description": "3D papers"},
+        )
+
+        assert r.status_code == 201
+        data = r.json()
+        assert data["name"] == "3D Geometry"
+        assert data["kind"] == "custom"
+
+    def test_copy_paper_to_pool(self, client: TestClient):
+        paper_r = client.post("/api/v1/library/papers", json={"title": "Copy Me"})
+        pool_r = client.post("/api/v1/library/pools", json={"name": "Target"})
+
+        r = client.post(
+            f"/api/v1/library/pools/{pool_r.json()['id']}/papers/{paper_r.json()['id']}/copy"
+        )
+
+        assert r.status_code == 200
+        assert r.json()["status"] == "copied"
+
+    def test_move_paper_between_pools(self, client: TestClient):
+        paper_r = client.post("/api/v1/library/papers", json={"title": "Move Me"})
+        source_r = client.post("/api/v1/library/pools", json={"name": "Source"})
+        target_r = client.post("/api/v1/library/pools", json={"name": "Target"})
+
+        r = client.post(
+            f"/api/v1/library/pools/{source_r.json()['id']}/papers/{paper_r.json()['id']}/move",
+            json={"target_pool_id": target_r.json()["id"]},
+        )
+
+        assert r.status_code == 200
+        assert r.json()["status"] == "moved"
+
+    def test_delete_pool_without_deleting_papers_reports_unassigned_move(
+        self,
+        client: TestClient,
+    ):
+        paper_r = client.post("/api/v1/library/papers", json={"title": "Keep Me"})
+        pool_r = client.post("/api/v1/library/pools", json={"name": "Temporary"})
+        for members in _mock_pool_memberships.values():
+            members.discard(paper_r.json()["id"])
+        _mock_pool_memberships.setdefault(pool_r.json()["id"], set()).add(paper_r.json()["id"])
+
+        r = client.delete(
+            f"/api/v1/library/pools/{pool_r.json()['id']}?delete_papers=false"
+        )
+
+        assert r.status_code == 200
+        assert r.json()["moved_to_unassigned"] == 1
+        assert paper_r.json()["id"] in _mock_library_papers
+
+    def test_delete_pool_with_delete_papers_removes_papers(self, client: TestClient):
+        paper_r = client.post("/api/v1/library/papers", json={"title": "Delete Me"})
+        pool_r = client.post("/api/v1/library/pools", json={"name": "Temporary"})
+        _mock_pool_memberships.setdefault(pool_r.json()["id"], set()).add(paper_r.json()["id"])
+
+        r = client.delete(
+            f"/api/v1/library/pools/{pool_r.json()['id']}?delete_papers=true"
+        )
+
+        assert r.status_code == 200
+        assert r.json()["deleted_papers"] == 1
+        assert paper_r.json()["id"] not in _mock_library_papers
+
+    def test_pool_duplicates_endpoint_returns_candidates(self, client: TestClient):
+        first = client.post(
+            "/api/v1/library/papers",
+            json={"title": "Paper A", "doi": "10.1/test"},
+        ).json()
+        second = client.post(
+            "/api/v1/library/papers",
+            json={"title": "Paper A Extended", "doi": "10.1/test"},
+        ).json()
+        pool = client.post("/api/v1/library/pools", json={"name": "Duplicates"}).json()
+        _mock_pool_memberships.setdefault(pool["id"], set()).update({first["id"], second["id"]})
+
+        r = client.get(f"/api/v1/library/pools/{pool['id']}/duplicates")
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 1
+        assert data["items"][0]["confidence"] == "high"

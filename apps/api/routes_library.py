@@ -11,6 +11,17 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
 from structlog import get_logger
 
+from libs.schemas.library import LibraryPoolCreate, LibraryPoolUpdate
+from services.library.pools_db import (
+    copy_library_paper,
+    create_library_pool,
+    delete_library_pool as delete_pool_record,
+    get_pool_duplicate_candidates,
+    list_library_pools,
+    move_library_paper,
+    remove_paper_from_pool,
+    update_library_pool,
+)
 from services.library.tools_db import (
     insert_library_paper,
     get_library_paper,
@@ -29,6 +40,114 @@ router = APIRouter(prefix="/api/v1/library", tags=["library"])
 NO_ARXIV_DETAIL = (
     "Cannot re-analyze: no arXiv ID found. Try adding the paper again with an arXiv ID."
 )
+
+
+def _parse_pool_ids(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+# GET /pools — list knowledge-base pools
+@router.get("/pools")
+async def list_pools() -> dict[str, Any]:
+    try:
+        items = await list_library_pools()
+        return {"items": items, "total": len(items)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# POST /pools — create knowledge-base pool
+@router.post("/pools", status_code=201)
+async def create_pool(body: LibraryPoolCreate) -> dict[str, Any]:
+    try:
+        return await create_library_pool(
+            body.name,
+            description=body.description,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# PATCH /pools/{pool_id}
+@router.patch("/pools/{pool_id}")
+async def patch_pool(pool_id: UUID, body: LibraryPoolUpdate) -> dict[str, Any]:
+    try:
+        result = await update_library_pool(
+            pool_id,
+            body.model_dump(exclude_unset=True),
+        )
+        if result is None:
+            raise HTTPException(status_code=404, detail="Pool not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# DELETE /pools/{pool_id}
+@router.delete("/pools/{pool_id}")
+async def delete_pool(
+    pool_id: UUID,
+    delete_papers: bool = Query(False),
+) -> dict[str, Any]:
+    try:
+        result = await delete_pool_record(pool_id, delete_papers=delete_papers)
+        if result.get("status") == "missing":
+            raise HTTPException(status_code=404, detail="Pool not found")
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# POST /pools/{pool_id}/papers/{paper_id}/copy
+@router.post("/pools/{pool_id}/papers/{paper_id}/copy")
+async def copy_paper_to_pool(pool_id: UUID, paper_id: UUID) -> dict[str, str]:
+    paper = await get_library_paper(paper_id)
+    if paper is None:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return await copy_library_paper(paper_id, pool_id)
+
+
+# POST /pools/{pool_id}/papers/{paper_id}/move
+@router.post("/pools/{pool_id}/papers/{paper_id}/move")
+async def move_paper_between_pools(
+    pool_id: UUID,
+    paper_id: UUID,
+    body: dict[str, Any],
+) -> dict[str, str]:
+    paper = await get_library_paper(paper_id)
+    if paper is None:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    target_pool_id = body.get("target_pool_id")
+    if not target_pool_id:
+        raise HTTPException(status_code=400, detail="target_pool_id is required")
+    return await move_library_paper(paper_id, pool_id, UUID(str(target_pool_id)))
+
+
+# DELETE /pools/{pool_id}/papers/{paper_id}
+@router.delete("/pools/{pool_id}/papers/{paper_id}")
+async def remove_paper_membership(pool_id: UUID, paper_id: UUID) -> dict[str, str]:
+    paper = await get_library_paper(paper_id)
+    if paper is None:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return await remove_paper_from_pool(paper_id, pool_id)
+
+
+# GET /pools/{pool_id}/duplicates
+@router.get("/pools/{pool_id}/duplicates")
+async def pool_duplicates(pool_id: UUID) -> dict[str, Any]:
+    try:
+        items = await get_pool_duplicate_candidates(pool_id)
+        return {"items": items, "total": len(items)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # POST /papers — add paper to library (full ingestion pipeline)
@@ -51,6 +170,7 @@ async def add_paper(body: dict[str, Any]) -> dict[str, Any]:
             },
             source_run_id=body.get("source_run_id"),
             project_tags=body.get("project_tags", []),
+            pool_ids=body.get("pool_ids", []),
         )
     except HTTPException:
         raise
@@ -64,14 +184,24 @@ async def add_paper(body: dict[str, Any]) -> dict[str, Any]:
 async def list_papers(
     field: str | None = Query(None),
     project_tag: str | None = Query(None),
+    pool_ids: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     try:
+        parsed_pool_ids = _parse_pool_ids(pool_ids)
         papers = await list_library_papers(
-            field=field, project_tag=project_tag, limit=limit, offset=offset
+            field=field,
+            project_tag=project_tag,
+            pool_ids=parsed_pool_ids,
+            limit=limit,
+            offset=offset,
         )
-        total = await count_library_papers()
+        total = await count_library_papers(
+            field=field,
+            project_tag=project_tag,
+            pool_ids=parsed_pool_ids,
+        )
         return {"items": papers, "total": total}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -187,6 +317,7 @@ async def _reingest_library_paper(
         },
         source_run_id=paper.get("source_run_id"),
         project_tags=paper.get("project_tags", []),
+        pool_ids=paper.get("pool_ids", []),
         is_manually_uploaded=paper.get("is_manually_uploaded", False),
     )
 
@@ -196,21 +327,30 @@ async def _reingest_library_paper(
 async def search_papers(
     q: str = Query(..., min_length=2),
     field: str | None = Query(None),
+    pool_ids: str | None = Query(None),
     limit: int = Query(20, ge=1, le=100),
 ) -> dict[str, Any]:
     try:
         from services.library.tools_embedding import embed_paper_chunks, rerank_papers
 
+        parsed_pool_ids = _parse_pool_ids(pool_ids)
         # Vector search
         vectors = await embed_paper_chunks([q])
         candidates: list[dict[str, Any]] = []
         if vectors:
             candidates = await search_library_vectors(
-                vectors[0], limit=limit * 3, field=field
+                vectors[0],
+                limit=limit * 3,
+                field=field,
+                pool_ids=parsed_pool_ids,
             )
 
         # Also do text search and merge
-        text_results = await search_library_text(q, limit=limit)
+        text_results = await search_library_text(
+            q,
+            limit=limit,
+            pool_ids=parsed_pool_ids,
+        )
         seen_ids = {str(c["id"]) for c in candidates}
         for tr in text_results:
             if str(tr["id"]) not in seen_ids:
@@ -234,7 +374,11 @@ async def search_papers(
     except Exception as exc:
         logger.error("library.search_failed", error=str(exc))
         # Fallback to text-only search
-        text_results = await search_library_text(q, limit=limit)
+        text_results = await search_library_text(
+            q,
+            limit=limit,
+            pool_ids=_parse_pool_ids(pool_ids),
+        )
         return {"items": text_results, "total": len(text_results)}
 
 
@@ -242,9 +386,14 @@ async def search_papers(
 @router.get("/search/titles")
 async def search_titles(
     q: str = Query(..., min_length=1),
+    pool_ids: str | None = Query(None),
     limit: int = Query(10, ge=1, le=50),
 ) -> dict[str, Any]:
-    results = await search_library_text(q, limit=limit)
+    results = await search_library_text(
+        q,
+        limit=limit,
+        pool_ids=_parse_pool_ids(pool_ids),
+    )
     return {"items": results, "total": len(results)}
 
 
@@ -271,6 +420,7 @@ async def upload_paper(body: dict[str, Any]) -> dict[str, Any]:
             title=body.get("title", ""),
             metadata={"authors": body.get("authors", []), "year": body.get("year")},
             project_tags=body.get("project_tags", []),
+            pool_ids=body.get("pool_ids", []),
             is_manually_uploaded=True,
         )
     except HTTPException:
@@ -286,6 +436,7 @@ async def upload_file(
     file: UploadFile = File(...),
     title: str = Form(""),
     project_tags: str = Form(""),
+    pool_ids: str = Form(""),
 ) -> dict[str, Any]:
     """Upload LaTeX source archive with full deep analysis + RAG indexing."""
     from services.library.tools_storage import ensure_library_dirs, UPLOADS_DIR
@@ -342,6 +493,7 @@ async def upload_file(
             latex_text=latex_content,
             title=title.strip() or "",
             project_tags=tags_list,
+            pool_ids=_parse_pool_ids(pool_ids),
             is_manually_uploaded=True,
         )
 

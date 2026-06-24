@@ -1,27 +1,43 @@
 import Link from "next/link";
+import { AlertTriangle, Copy, MoveRight } from "lucide-react";
 
-import type { LibraryPaper } from "@/lib/api";
+import type { LibraryPaper, LibraryPool } from "@/lib/api";
 import { STATUS_STYLES } from "./status";
+import { useState } from "react";
 
 interface LibraryPaperCardProps {
   paper: LibraryPaper;
+  pools: LibraryPool[];
+  activePoolId: string | null;
+  duplicateReason?: string;
   removingId: string | null;
   reanalyzingId: string | null;
   onRemove: (id: string) => void;
   onReanalyze: (id: string) => void;
+  onCopyToPool: (paperId: string, targetPoolId: string) => void;
+  onMoveToPool: (paperId: string, targetPoolId: string) => void;
 }
 
 export function LibraryPaperCard({
   paper,
+  pools,
+  activePoolId,
+  duplicateReason,
   removingId,
   reanalyzingId,
   onRemove,
   onReanalyze,
+  onCopyToPool,
+  onMoveToPool,
 }: LibraryPaperCardProps) {
+  const [targetPoolId, setTargetPoolId] = useState("");
   const statusStyle = STATUS_STYLES[paper.status] ?? STATUS_STYLES.pending;
+  const targetPools = pools.filter((pool) => pool.id !== activePoolId);
 
   return (
-    <div className="card-static p-5">
+    <div
+      className={`card-static p-5 ${duplicateReason ? "border-[var(--accent-red)]/40 bg-[var(--accent-red-soft)]/30" : ""}`}
+    >
       <div className="flex items-start justify-between gap-4 mb-2">
         <h3
           className="text-[15px] font-medium text-[var(--text-primary)] leading-snug flex-1 line-clamp-2"
@@ -39,6 +55,13 @@ export function LibraryPaperCard({
           {paper.status}
         </span>
       </div>
+
+      {duplicateReason && (
+        <div className="mb-3 flex items-center gap-2 text-[11px] font-medium text-[var(--accent-red)]">
+          <AlertTriangle size={13} />
+          <span>Possible duplicate: {duplicateReason}</span>
+        </div>
+      )}
 
       <div className="flex items-center gap-2 text-[12px] text-[var(--text-muted)] mb-3">
         {paper.venue && <span className="font-medium">{paper.venue}</span>}
@@ -89,7 +112,7 @@ export function LibraryPaperCard({
         </div>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Link
           href={`/library/papers/${paper.id}`}
           className="btn-secondary text-[12px] px-3 py-1.5"
@@ -113,6 +136,41 @@ export function LibraryPaperCard({
           {removingId === paper.id ? "Removing..." : "Remove"}
         </button>
       </div>
+
+      {activePoolId && targetPools.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--border-subtle)] pt-3">
+          <select
+            value={targetPoolId}
+            onChange={(event) => setTargetPoolId(event.target.value)}
+            className="input-field text-[12px] py-1.5 min-w-[160px] flex-1"
+          >
+            <option value="">Target pool</option>
+            {targetPools.map((pool) => (
+              <option key={pool.id} value={pool.id}>{pool.name}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={!targetPoolId}
+            onClick={() => targetPoolId && onCopyToPool(paper.id, targetPoolId)}
+            className="btn-secondary text-[12px] px-3 py-1.5"
+            title="Copy to selected pool"
+          >
+            <Copy size={13} />
+            Copy
+          </button>
+          <button
+            type="button"
+            disabled={!targetPoolId}
+            onClick={() => targetPoolId && onMoveToPool(paper.id, targetPoolId)}
+            className="btn-secondary text-[12px] px-3 py-1.5"
+            title="Move to selected pool"
+          >
+            <MoveRight size={13} />
+            Move
+          </button>
+        </div>
+      )}
     </div>
   );
 }

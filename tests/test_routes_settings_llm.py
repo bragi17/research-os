@@ -59,8 +59,8 @@ def test_get_models_exposes_deepseek_llm_settings_without_openai_or_secret(
     env_path.write_text(
         "\n".join(
             [
-                "OPENAI_API_KEY=test-secret-key",
-                "OPENAI_MODEL_DEFAULT=gpt-4",
+                "LEGACY_LLM_API_KEY=test-secret-key",
+                "LEGACY_LLM_MODEL=legacy-model",
                 "DASHSCOPE_API_KEY=dashscope-secret",
                 "DASHSCOPE_EMBEDDING_MODEL=text-embedding-v4",
             ]
@@ -118,8 +118,8 @@ def test_get_models_exposes_deepseek_llm_settings_without_openai_or_secret(
     }
     assert "api_key" not in llm_category["profile"]
     assert "plain-secret-value" not in response_text
-    assert "OPENAI_API_KEY" not in response_text
-    assert "OPENAI_MODEL_DEFAULT" not in response_text
+    assert "LEGACY_LLM_API_KEY" not in response_text
+    assert "LEGACY_LLM_MODEL" not in response_text
 
 
 def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
