@@ -86,10 +86,10 @@ VALID_ACTIONS = frozenset({
 
 
 async def _get_redis():
-    """Return the Redis connection from the main module, or None."""
+    """Return the API Redis connection, or None."""
     try:
-        from apps.api.main import _redis
-        return _redis
+        from apps.api.redis_queue import get_redis
+        return get_redis()
     except Exception:
         return None
 
