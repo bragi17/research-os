@@ -1823,6 +1823,77 @@ def test_divergent_graph_routes_prior_art_through_novelty_jury():
 
 
 @pytest.mark.asyncio
+async def test_idea_composition_includes_failed_idea_memory(monkeypatch):
+    captured: dict[str, str] = {}
+
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_load_failed_idea_memory(project_id, limit=20):
+        return [
+            {
+                "title": "Reviewer-Guided Retrieval",
+                "summary_text": "Covered by verified prior art.",
+                "payload_json": {
+                    "strongest_objection": (
+                        "Closest prior work already implements the mechanism."
+                    ),
+                    "closest_prior_work": [{"title": "Verifier Agents"}],
+                },
+            }
+        ]
+
+    async def fake_generate_llm_json(system_prompt, user_content, gateway, tier):
+        captured["system_prompt"] = system_prompt
+        captured["user_content"] = user_content
+        return (
+            {
+                "ideas": [
+                    {
+                        "title": "Audit-Gated Citation Planning",
+                        "problem_statement": (
+                            "Citations are not audited before manuscript submission."
+                        ),
+                    }
+                ]
+            },
+            0.01,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(
+        "apps.worker.modes.divergent.load_failed_idea_memory",
+        fake_load_failed_idea_memory,
+    )
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        project_id=uuid4(),
+        run_id=uuid4(),
+        topic="research agents",
+        mode="divergent",
+        pain_points=[
+            {
+                "title": "Citation audit gap",
+                "description": "Weak citation checks.",
+            }
+        ],
+        context_bundle={},
+    )
+
+    await divergent.idea_composition(state)
+
+    assert "Do not recreate failed_idea_memory entries" in captured["system_prompt"]
+    assert "Reviewer-Guided Retrieval" in captured["user_content"]
+    assert (
+        "Closest prior work already implements the mechanism."
+        in captured["user_content"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_idea_portfolio_excludes_rejected_jury_cards(monkeypatch):
     async def fake_emit_progress(*args, **kwargs):
         return None
