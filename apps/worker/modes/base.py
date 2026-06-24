@@ -347,6 +347,47 @@ async def search_academic_sources(
     return new_candidates, executed, errors, id_to_title
 
 
+async def verify_paper_candidates_for_run(
+    run_id: UUID | str,
+    candidate_ids: list[str],
+    title_map: dict[str, str] | None = None,
+    source: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Verify paper candidates and persist verification records when possible."""
+    from apps.api.database import upsert_paper_verification
+    from services.paper_verification import PaperVerifier, candidate_from_id
+
+    title_map = title_map or {}
+    verifier = PaperVerifier(
+        s2_api_key=os.getenv("S2_API_KEY"),
+        crossref_email=os.getenv("CROSSREF_EMAIL"),
+        openalex_email=os.getenv("OPENALEX_EMAIL"),
+    )
+    records: dict[str, dict[str, Any]] = {}
+    try:
+        for candidate_id in candidate_ids:
+            candidate = candidate_from_id(
+                candidate_id,
+                title=title_map.get(candidate_id),
+                source=source,
+            )
+            record = await verifier.verify(candidate)
+            payload = record.model_dump(mode="json")
+            payload["source_run_id"] = UUID(str(run_id))
+            records[candidate_id] = payload
+            try:
+                await upsert_paper_verification(payload)
+            except Exception as exc:
+                logger.debug(
+                    "paper_verification.persist_failed",
+                    candidate_id=candidate_id,
+                    error=str(exc),
+                )
+    finally:
+        await verifier.close()
+    return records
+
+
 async def tool_resolve_metadata(pid: str) -> tuple[Any | None, list[str]]:
     """TOOL: Resolve paper metadata via ScholarFusionService. No LLM."""
     errors: list[str] = []

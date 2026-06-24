@@ -22,6 +22,7 @@ from apps.worker.modes.base import (
     emit_progress,
     generate_llm_json,
     search_academic_sources,
+    verify_paper_candidates_for_run,
 )
 from libs.prompts.templates import PromptName, get_system_prompt
 
@@ -491,13 +492,20 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     # Search S2 + OpenAlex for similar papers
     existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
     prior_art_papers: list[str] = []
+    prior_art_verification: dict[str, dict[str, Any]] = {}
     if search_queries:
-        found, _executed, search_errors, _t = await search_academic_sources(
+        found, _executed, search_errors, title_map = await search_academic_sources(
             topic=state.topic,
             queries=search_queries[:10],
             existing_titles=existing_titles,
         )
         prior_art_papers = found
+        prior_art_verification = await verify_paper_candidates_for_run(
+            state.run_id,
+            prior_art_papers,
+            title_map=title_map,
+            source="prior_art",
+        )
         errors.extend(search_errors)
 
     # Use VERIFIER prompt from templates.py to assess novelty
@@ -509,6 +517,8 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         f"{json.dumps(state.idea_cards[:10], default=str)}\n\n"
         f"## Prior Art Papers Found (IDs)\n"
         f"{json.dumps(prior_art_papers[:20], default=str)}\n\n"
+        f"## Verified Prior Art Records\n"
+        f"{json.dumps(prior_art_verification, default=str)[:8000]}\n\n"
         f"For EACH idea card, assess whether substantially similar work "
         f"already exists. Output MUST be valid JSON: an array of objects with:\n"
         f"- idea_title: str\n"
@@ -551,6 +561,11 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         updated_cards.append(updated_card)
 
     updates["idea_cards"] = updated_cards
+    updated_bundle = dict(state.context_bundle)
+    paper_verification = dict(updated_bundle.get("paper_verification", {}))
+    paper_verification.update(prior_art_verification)
+    updated_bundle["paper_verification"] = paper_verification
+    updates["context_bundle"] = updated_bundle
     updates["current_cost_usd"] = cost
     updates["errors"] = errors
     updates["messages"] = [

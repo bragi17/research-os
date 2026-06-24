@@ -29,6 +29,7 @@ from apps.worker.modes.base import (
     rerank_search_results,
     resolve_and_read_paper,
     search_academic_sources,
+    verify_paper_candidates_for_run,
 )
 from libs.adapters.semantic_scholar import SemanticScholarAdapter
 from libs.prompts.templates import (
@@ -411,13 +412,21 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
         )
 
     all_new = library_ids + new_candidates + chain_candidates
+    verification_map = await verify_paper_candidates_for_run(
+        state.run_id,
+        all_new,
+        title_map=title_map,
+    )
     total_discovered = state.papers_discovered + len(all_new)
 
     # Save title_map to context_bundle for scope_pruning rerank
     ctx = dict(state.context_bundle) if state.context_bundle else {}
-    existing_title_map = ctx.get("title_map", {})
+    existing_title_map = dict(ctx.get("title_map", {}))
     existing_title_map.update(title_map)
     ctx["title_map"] = existing_title_map
+    paper_verification = dict(ctx.get("paper_verification", {}))
+    paper_verification.update(verification_map)
+    ctx["paper_verification"] = paper_verification
     updates["context_bundle"] = ctx
 
     updates["candidate_paper_ids"] = list(state.candidate_paper_ids) + all_new
