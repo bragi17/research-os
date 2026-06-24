@@ -328,6 +328,41 @@ class ExplodingLocalExecutor:
         raise RuntimeError("process launcher failed")
 
 
+def test_submission_paper_claim_audit_report_reads_file(tmp_path: Path) -> None:
+    from apps.worker.production.orchestrator import (
+        _submission_paper_claim_audit_report,
+    )
+
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+    (paper_dir / "PAPER_CLAIM_AUDIT.json").write_text(
+        '{"passed": true, "checked_claims": 3, "blockers": []}',
+        encoding="utf-8",
+    )
+
+    report = _submission_paper_claim_audit_report(paper_dir)
+
+    assert report["passed"] is True
+    assert report["checked_claims"] == 3
+
+
+def test_submission_adversarial_audit_report_missing_blocks(
+    tmp_path: Path,
+) -> None:
+    from apps.worker.production.orchestrator import (
+        _submission_adversarial_audit_report,
+    )
+
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+
+    report = _submission_adversarial_audit_report(paper_dir)
+
+    assert report["passed"] is False
+    assert report["missing"] is True
+    assert report["required_file"] == "KILL_ARGUMENT.json"
+
+
 def _set_workspace_base(monkeypatch: pytest.MonkeyPatch, path: Path) -> Path:
     base = path / "trusted-workspaces"
     base.mkdir()

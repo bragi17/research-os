@@ -1444,6 +1444,80 @@ def _submission_anonymity_report(
     }
 
 
+def _load_submission_json_report(
+    paper_dir: Path | None,
+    filename: str,
+    *,
+    report_name: str,
+) -> dict[str, Any]:
+    if paper_dir is None:
+        return {
+            "passed": False,
+            "missing": True,
+            "required_file": filename,
+            "blockers": [
+                f"{report_name} cannot run because paper_dir is unavailable."
+            ],
+        }
+
+    report_path = paper_dir / filename
+    if not report_path.exists():
+        return {
+            "passed": False,
+            "missing": True,
+            "required_file": filename,
+            "blockers": [
+                f"{filename} is required before submission can be ready."
+            ],
+        }
+
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {
+            "passed": False,
+            "missing": False,
+            "required_file": filename,
+            "blockers": [f"{filename} is not valid JSON: {exc.msg}"],
+        }
+
+    if not isinstance(payload, dict):
+        return {
+            "passed": False,
+            "missing": False,
+            "required_file": filename,
+            "blockers": [f"{filename} must contain a JSON object."],
+        }
+
+    blockers = payload.get("blockers", [])
+    if not isinstance(blockers, list):
+        blockers = ["blockers must be a list."]
+
+    return {
+        "passed": bool(payload.get("passed")) and not blockers,
+        "missing": False,
+        "required_file": filename,
+        **payload,
+        "blockers": blockers,
+    }
+
+
+def _submission_paper_claim_audit_report(paper_dir: Path | None) -> dict[str, Any]:
+    return _load_submission_json_report(
+        paper_dir,
+        "PAPER_CLAIM_AUDIT.json",
+        report_name="paper-claim audit",
+    )
+
+
+def _submission_adversarial_audit_report(paper_dir: Path | None) -> dict[str, Any]:
+    return _load_submission_json_report(
+        paper_dir,
+        "KILL_ARGUMENT.json",
+        report_name="adversarial audit",
+    )
+
+
 def _submission_citation_report(
     submission: dict[str, Any],
     claims: list[dict[str, Any]],
