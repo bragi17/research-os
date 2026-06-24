@@ -63,6 +63,7 @@ async def enqueue_run(run_id: UUID, run_data: dict[str, Any]) -> bool:
             policy = json.loads(policy)
         task = json.dumps({
             "run_id": str(run_id),
+            "project_id": str(run_data["project_id"]) if run_data.get("project_id") else None,
             "topic": run_data.get("topic", ""),
             "goal_type": run_data.get("goal_type", ""),
             "mode": run_data.get("mode", "frontier"),

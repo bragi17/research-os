@@ -27,6 +27,7 @@ from apps.worker.modes.base import (
     verify_paper_candidates_for_run,
 )
 from libs.prompts.templates import PromptName, get_system_prompt
+from services.research_memory import load_failed_idea_memory
 
 logger = get_logger(__name__)
 
@@ -493,6 +494,64 @@ def _build_novelty_jury_payload(
     }
 
 
+def _failed_idea_memory_prompt_items(
+    failed_idea_memory: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in failed_idea_memory[:20]:
+        payload = item.get("payload_json")
+        if not isinstance(payload, dict):
+            payload = {}
+        closest_prior_work = payload.get("closest_prior_work", [])
+        if not isinstance(closest_prior_work, list):
+            closest_prior_work = []
+        items.append(
+            {
+                "title": _verifier_value(item.get("title")),
+                "summary_text": _verifier_value(item.get("summary_text")),
+                "strongest_objection": _verifier_value(
+                    payload.get("strongest_objection")
+                ),
+                "closest_prior_work": [
+                    _verifier_closest_prior_work(work)
+                    for work in closest_prior_work[:_VERIFIER_RECORD_MAX_ITEMS]
+                    if isinstance(work, dict)
+                ],
+            }
+        )
+    return _limit_failed_idea_memory_payload(items)
+
+
+def _limit_failed_idea_memory_payload(
+    payload: list[dict[str, Any]],
+    max_chars: int = _VERIFIER_PAYLOAD_MAX_CHARS,
+) -> list[dict[str, Any]]:
+    for record_limit in (_VERIFIER_RECORD_MAX_ITEMS, 3, 1, 0):
+        candidate = [
+            {
+                **item,
+                "closest_prior_work": item.get("closest_prior_work", [])[
+                    :record_limit
+                ],
+            }
+            for item in payload
+        ]
+        if len(json.dumps(candidate, default=str)) <= max_chars:
+            return candidate
+
+    compact_payload: list[dict[str, Any]] = []
+    for item in payload:
+        compact_item = {
+            "title": item.get("title"),
+            "summary_text": item.get("summary_text"),
+            "strongest_objection": item.get("strongest_objection"),
+            "closest_prior_work": [],
+        }
+        if not _append_within_limit(compact_payload, compact_item, max_chars):
+            break
+    return compact_payload
+
+
 # ---------------------------------------------------------------------------
 # Divergent-specific system prompts
 # ---------------------------------------------------------------------------
@@ -881,6 +940,18 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
     pain_points = state.pain_points or state.context_bundle.get(
         "pain_point_package", {}
     ).get("pain_points", [])
+    failed_idea_memory: list[dict[str, Any]] = []
+    try:
+        failed_idea_memory = await load_failed_idea_memory(
+            state.project_id,
+            limit=20,
+        )
+    except Exception as exc:
+        logger.warning(
+            "failed_idea_memory.load_failed",
+            run_id=str(state.run_id),
+            error=str(exc),
+        )
 
     # Use INNOVATION_GENERATION prompt from templates.py as the base system prompt
     innovation_system = get_system_prompt(PromptName.INNOVATION_GENERATION)
@@ -900,9 +971,12 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
         f"- required_experiments: [str] (experiments needed to validate)\n"
         f"- novelty_score: float (0-1)\n"
         f"- feasibility_score: float (0-1)\n\n"
+        f"Do not recreate failed_idea_memory entries unless the new mechanism "
+        f"directly resolves the recorded strongest_objection.\n\n"
         f"Output MUST be a JSON array of idea card objects."
     )
 
+    failed_memory_payload = _failed_idea_memory_prompt_items(failed_idea_memory)
     user_content = (
         f"Research topic: {state.topic}\n\n"
         f"## Pain Points (with problem signatures)\n"
@@ -911,6 +985,8 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
         f"{json.dumps(signatures[:10], default=str)}\n\n"
         f"## Viable Transfer Candidates\n"
         f"{json.dumps(transfers[:10], default=str)}\n\n"
+        f"## Failed Idea Memory\n"
+        f"{json.dumps(failed_memory_payload, default=str)}\n\n"
         f"Generate idea cards that combine pain points with transferable methods.\n"
     )
 
@@ -935,7 +1011,11 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
         card.setdefault("novelty_score", 0.5)
         card.setdefault("feasibility_score", 0.5)
 
+    updated_bundle = dict(state.context_bundle)
+    updated_bundle["failed_idea_memory"] = failed_idea_memory
+
     updates["idea_cards"] = _dedupe_idea_cards(idea_cards)
+    updates["context_bundle"] = updated_bundle
     updates["current_cost_usd"] = cost
     updates["errors"] = errors
     updates["messages"] = [

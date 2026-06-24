@@ -25,6 +25,7 @@ from apps.api.database import (
     create_event,
     create_run as db_create_run,
     get_context_bundle,
+    get_project as db_get_project,
     get_reading_path,
     get_run as db_get_run,
     list_figures_by_run,
@@ -59,6 +60,7 @@ class CreateRunV2Request(BaseModel):
     library_pool_ids: list[UUID] = Field(default_factory=list)
     budget: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
+    project_id: UUID | None = None
     parent_run_id: UUID | None = None
     context_bundle_id: UUID | None = None
 
@@ -119,6 +121,28 @@ async def _require_run(run_id: UUID) -> dict[str, Any]:
     return run
 
 
+def _same_id(left: Any, right: Any) -> bool:
+    return str(left) == str(right)
+
+
+async def _require_project_access(
+    project_id: UUID | None,
+    user: dict[str, Any],
+) -> None:
+    if project_id is None:
+        return
+    try:
+        project = await db_get_project(project_id)
+    except Exception as exc:
+        logger.error("get_project_failed", project_id=str(project_id), error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to retrieve project")
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    owner_user_id = project.get("owner_user_id")
+    if owner_user_id is None or not _same_id(owner_user_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+
 # ---------------------------------------------------------------------------
 # 1. POST /api/v2/runs  -- create run WITH mode
 # ---------------------------------------------------------------------------
@@ -130,6 +154,8 @@ async def create_run_v2(
     user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Create a new research run with an explicit research mode."""
+    await _require_project_access(request.project_id, user)
+
     run_id = uuid4()
     now = datetime.utcnow()
 
@@ -155,6 +181,7 @@ async def create_run_v2(
         "updated_at": now,
         "workspace_id": user["workspace_id"],
         "created_by": user["id"],
+        "project_id": request.project_id,
         # v2 multi-mode columns
         "mode": request.mode.value,
         "parent_run_id": request.parent_run_id,
@@ -190,6 +217,7 @@ async def create_run_v2(
     result.setdefault("mode", request.mode.value)
     result.setdefault("parent_run_id", request.parent_run_id)
     result.setdefault("context_bundle_id", request.context_bundle_id)
+    result.setdefault("project_id", request.project_id)
     result.setdefault("current_stage", "init")
     return result
 
@@ -207,6 +235,7 @@ async def spawn_run(
 ) -> dict[str, Any]:
     """Spawn a child run from an existing parent run."""
     parent = await _require_run(run_id)
+    await _require_project_access(parent.get("project_id"), user)
 
     child_id = uuid4()
     now = datetime.utcnow()
@@ -228,6 +257,7 @@ async def spawn_run(
         "updated_at": now,
         "workspace_id": user["workspace_id"],
         "created_by": user["id"],
+        "project_id": parent.get("project_id"),
         # v2 multi-mode columns
         "mode": request.target_mode.value,
         "parent_run_id": run_id,

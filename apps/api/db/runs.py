@@ -18,13 +18,15 @@ async def create_run(run_data: dict[str, Any]) -> dict[str, Any]:
             goal_type, autonomy_mode, budget_json, policy_json,
             current_step, progress_pct, started_at, completed_at,
             created_at, updated_at,
-            mode, parent_run_id, context_bundle_id, current_stage
+            mode, parent_run_id, context_bundle_id, current_stage,
+            project_id
         ) VALUES (
             $1, $2, $3, $4, $5, $6,
             $7, $8, $9, $10,
             $11, $12, $13, $14,
             $15, $16,
-            $17, $18, $19, $20
+            $17, $18, $19, $20,
+            $21
         )
         RETURNING *
         """,
@@ -48,6 +50,7 @@ async def create_run(run_data: dict[str, Any]) -> dict[str, Any]:
         run_data.get("parent_run_id"),
         run_data.get("context_bundle_id"),
         run_data.get("current_stage"),
+        run_data.get("project_id"),
     )
     return db_pool.record_to_dict(row)
 

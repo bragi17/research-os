@@ -23,6 +23,8 @@ load_dotenv()
 
 from structlog import get_logger
 
+from services.research_memory import persist_run_memory
+
 logger = get_logger(__name__)
 
 
@@ -429,6 +431,15 @@ class WorkerRunner:
                 except Exception as exc:
                     logger.debug("persist_bundle_failed", error=str(exc))
 
+            try:
+                await persist_run_memory(state)
+            except Exception as exc:
+                logger.warning(
+                    "research_memory.persist_failed",
+                    run_id=str(run_id),
+                    error=str(exc),
+                )
+
             logger.info("worker.results_persisted", run_id=str(run_id),
                         pain_points=len(state.pain_points or []),
                         idea_cards=saved_ideas,
@@ -459,6 +470,7 @@ class WorkerRunner:
         # Build common initial state
         initial_state = ModeGraphState(
             run_id=run_id,
+            project_id=run_record.get("project_id"),
             thread_id=str(run_id),
             mode=mode,
             topic=topic,
