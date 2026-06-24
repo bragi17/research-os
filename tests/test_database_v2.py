@@ -1,5 +1,5 @@
 """
-Tests for database_v2.py — mock-based (no real DB required).
+Tests for v2 database CRUD helpers — mock-based (no real DB required).
 
 Uses unittest.mock.AsyncMock to simulate asyncpg pool behaviour and verifies
 that each CRUD function issues the correct SQL against the correct table with
@@ -54,7 +54,7 @@ def mock_pool():
 @pytest.fixture(autouse=True)
 def _patch_get_pool(mock_pool):
     """Patch get_pool so every test uses the mock pool."""
-    with patch("apps.api.database.get_pool", return_value=mock_pool):
+    with patch("apps.api.db.pool.get_pool", return_value=mock_pool):
         yield
 
 
