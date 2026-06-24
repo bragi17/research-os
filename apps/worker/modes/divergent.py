@@ -42,6 +42,41 @@ _VERIFIER_RECORD_MAX_ITEMS = 5
 _VERIFIER_CARD_MAX_ITEMS = 10
 _NOVELTY_VERDICTS = {"novel", "incremental", "duplicate", "unclear"}
 _QUALITY_VERDICTS = {"pursue", "hold", "reject"}
+_NOVELTY_JURY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "ideas": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "dedup_key": {"type": "string"},
+                    "novelty_verdict": {
+                        "type": "string",
+                        "enum": ["novel", "incremental", "duplicate", "unclear"],
+                    },
+                    "quality_verdict": {
+                        "type": "string",
+                        "enum": ["pursue", "hold", "reject"],
+                    },
+                    "strongest_objection": {"type": "string"},
+                    "required_validation": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": [
+                    "dedup_key",
+                    "novelty_verdict",
+                    "quality_verdict",
+                    "strongest_objection",
+                    "required_validation",
+                ],
+            },
+        },
+    },
+    "required": ["ideas"],
+}
 _VERIFIER_CARD_FIELDS = (
     "id",
     "title",
@@ -552,6 +587,9 @@ against only the verified prior-art records attached to that idea.
 For EACH idea, decide whether the proposed mechanism is meaningfully distinct \
 from the verified prior art and testable as a research contribution.
 
+Do not reward wording changes, agent orchestration language, or broad \
+repackaging.
+
 Use quality_verdict="pursue" only when the idea has a meaningfully distinct, \
 testable mechanism of transfer. Use quality_verdict="reject" for duplicate \
 ideas, ideas directly covered by verified prior art, or ideas whose mechanism \
@@ -559,9 +597,8 @@ is not distinguishable from the attached prior-art records. Use \
 quality_verdict="hold" only when the distinction may exist but requires a \
 specific validation step before pursuit.
 
-Output MUST be valid JSON as either:
-- {"ideas": [{dedup_key: str, novelty_verdict: str, quality_verdict: "pursue" | "hold" | "reject", strongest_objection: str, required_validation: [str]}]}
-- or a raw array of those idea verdict objects.
+Return strict JSON with a top-level ideas array:
+{"ideas": [{dedup_key: str, novelty_verdict: str, quality_verdict: "pursue" | "hold" | "reject", strongest_objection: str, required_validation: [str]}]}
 
 Do NOT fabricate prior art. Ground every objection in the provided \
 closest_prior_work and prior_art_details for that same dedup_key.
@@ -1099,27 +1136,31 @@ async def novelty_jury(state: ModeGraphState) -> dict[str, Any]:
         return updates
 
     gateway = get_gateway()
-    payload = _build_novelty_jury_payload(state.topic, reviewable_cards)
-    user_content = (
-        f"Research topic: {state.topic}\n\n"
-        f"## Grounded Novelty Jury Payload\n"
-        f"{json.dumps(payload, default=str)}\n\n"
-        f"Return one verdict per reviewable idea using the input dedup_key. "
-        f"Judge each idea only against its own closest_prior_work and "
-        f"prior_art_details."
-    )
-
-    result, delta, errs = await generate_llm_json(
-        _NOVELTY_JURY_SYSTEM, user_content, gateway, ModelTier.HIGH
-    )
-    cost += delta
-    errors.extend(errs)
-
     verdicts: list[dict[str, Any]] = []
-    if isinstance(result, list):
-        verdicts = result
-    elif isinstance(result, dict) and isinstance(result.get("ideas"), list):
-        verdicts = result["ideas"]
+    for offset in range(0, len(reviewable_cards), _VERIFIER_CARD_MAX_ITEMS):
+        batch = reviewable_cards[offset: offset + _VERIFIER_CARD_MAX_ITEMS]
+        payload = _build_novelty_jury_payload(state.topic, batch)
+        user_content = (
+            f"Research topic: {state.topic}\n\n"
+            f"## Grounded Novelty Jury Payload\n"
+            f"{json.dumps(payload, default=str)}\n\n"
+            f"Return one verdict per reviewable idea using the input dedup_key. "
+            f"Judge each idea only against its own closest_prior_work and "
+            f"prior_art_details."
+        )
+
+        result, delta, errs = await generate_llm_json(
+            _NOVELTY_JURY_SYSTEM,
+            user_content,
+            gateway,
+            ModelTier.HIGH,
+            schema=_NOVELTY_JURY_SCHEMA,
+        )
+        cost += delta
+        errors.extend(errs)
+
+        if isinstance(result, dict) and isinstance(result.get("ideas"), list):
+            verdicts.extend(result["ideas"])
 
     verdict_map = {
         str(verdict.get("dedup_key")): verdict
@@ -1190,7 +1231,7 @@ async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
     # Only assess ideas that survived novelty jury review.
     viable_ideas = [
         c for c in state.idea_cards
-        if c.get("quality_verdict", "hold") in {"pursue", "hold"}
+        if c.get("quality_verdict") in {"pursue", "hold"}
     ]
 
     user_content = (
@@ -1310,8 +1351,12 @@ async def idea_portfolio(state: ModeGraphState) -> dict[str, Any]:
     gateway = get_gateway()
 
     # Compute composite scores locally
+    portfolio_candidates = [
+        card for card in state.idea_cards
+        if card.get("quality_verdict") in {"pursue", "hold"}
+    ]
     scored_cards: list[dict[str, Any]] = []
-    for card in state.idea_cards:
+    for card in portfolio_candidates:
         evidence = _compute_evidence_score(card)
         composite = _compute_composite_score(card)
         scored_card = {

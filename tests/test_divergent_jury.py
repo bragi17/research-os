@@ -1062,11 +1062,22 @@ async def test_novelty_jury_updates_cards_from_grounded_verdict(monkeypatch):
         progress_events.append((run_id_arg, stage, status, message))
 
     async def fake_generate_llm_json(*args, **kwargs):
-        assert kwargs == {}
+        assert kwargs["schema"]["required"] == ["ideas"]
+        assert kwargs["schema"]["properties"]["ideas"]["type"] == "array"
+        item_schema = kwargs["schema"]["properties"]["ideas"]["items"]
+        assert item_schema["required"] == [
+            "dedup_key",
+            "novelty_verdict",
+            "quality_verdict",
+            "strongest_objection",
+            "required_validation",
+        ]
         system_prompt, user_content, gateway_arg, tier = args
         assert system_prompt == divergent._NOVELTY_JURY_SYSTEM
         assert gateway_arg is gateway
         assert tier == divergent.ModelTier.HIGH
+        assert "Do not reward wording changes" in system_prompt
+        assert "Return strict JSON with a top-level ideas array" in system_prompt
 
         match = re.search(
             r"## Grounded Novelty Jury Payload\n(.*?)\n\nReturn",
@@ -1192,15 +1203,17 @@ async def test_novelty_jury_preserves_rejects_and_excludes_them(monkeypatch):
         payload = divergent.json.loads(match.group(1))
         reviewed_keys.extend(item["dedup_key"] for item in payload["ideas"])
         return (
-            [
-                {
-                    "dedup_key": "reviewable-idea",
-                    "novelty_verdict": "duplicate",
-                    "quality_verdict": "reject",
-                    "strongest_objection": "Already covered by verified prior art.",
-                    "required_validation": ["None."],
-                }
-            ],
+            {
+                "ideas": [
+                    {
+                        "dedup_key": "reviewable-idea",
+                        "novelty_verdict": "duplicate",
+                        "quality_verdict": "reject",
+                        "strongest_objection": "Already covered by verified prior art.",
+                        "required_validation": ["None."],
+                    }
+                ]
+            },
             0.01,
             [],
         )
@@ -1298,7 +1311,14 @@ async def test_novelty_jury_sanitizes_payload_and_uses_stable_legacy_keys(
     async def fake_emit_progress(*args, **kwargs):
         return None
 
-    async def fake_generate_llm_json(system_prompt, user_content, gateway, tier):
+    async def fake_generate_llm_json(
+        system_prompt,
+        user_content,
+        gateway,
+        tier,
+        schema=None,
+    ):
+        assert schema is not None
         match = re.search(
             r"## Grounded Novelty Jury Payload\n(.*?)\n\nReturn",
             user_content,
@@ -1379,6 +1399,75 @@ async def test_novelty_jury_sanitizes_payload_and_uses_stable_legacy_keys(
     assert updates["idea_cards"][1]["quality_verdict"] == "hold"
     assert updates["idea_cards"][0]["strongest_objection"] == "Needs alpha control."
     assert updates["idea_cards"][1]["strongest_objection"] == "Needs beta control."
+
+
+@pytest.mark.asyncio
+async def test_novelty_jury_reviews_all_cards_in_bounded_batches(monkeypatch):
+    batches: list[list[str]] = []
+
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_generate_llm_json(
+        system_prompt,
+        user_content,
+        gateway,
+        tier,
+        schema=None,
+    ):
+        assert schema is not None
+        match = re.search(
+            r"## Grounded Novelty Jury Payload\n(.*?)\n\nReturn",
+            user_content,
+            re.S,
+        )
+        assert match is not None
+        payload = divergent.json.loads(match.group(1))
+        keys = [item["dedup_key"] for item in payload["ideas"]]
+        assert len(keys) <= divergent._VERIFIER_CARD_MAX_ITEMS
+        batches.append(keys)
+        return (
+            {
+                "ideas": [
+                    {
+                        "dedup_key": key,
+                        "novelty_verdict": "incremental",
+                        "quality_verdict": "hold",
+                        "strongest_objection": f"Objection for {key}",
+                        "required_validation": [f"Validate {key}"],
+                    }
+                    for key in keys
+                ]
+            },
+            0.01,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=uuid4(),
+        topic="target task",
+        idea_cards=[
+            {
+                "id": f"idea-{idx}",
+                "dedup_key": f"idea-{idx}",
+                "title": f"Idea {idx}",
+                "quality_verdict": "hold",
+            }
+            for idx in range(divergent._VERIFIER_CARD_MAX_ITEMS + 2)
+        ],
+    )
+
+    updates = await divergent.novelty_jury(state)
+
+    reviewed_keys = [key for batch in batches for key in batch]
+    assert reviewed_keys == [f"idea-{idx}" for idx in range(12)]
+    assert len(batches) == 2
+    assert all(card["jury_status"] == "reviewed" for card in updates["idea_cards"])
+    assert updates["idea_cards"][-1]["strongest_objection"] == "Objection for idea-11"
 
 
 @pytest.mark.asyncio
@@ -1484,7 +1573,7 @@ async def test_feasibility_review_filters_by_quality_verdict(monkeypatch):
     async def fake_generate_llm_json(system_prompt, user_content, gateway, tier):
         assert "Pursue Prior Art Idea" in user_content
         assert "Hold Idea" in user_content
-        assert "Missing Quality Idea" in user_content
+        assert "Missing Quality Idea" not in user_content
         assert "Rejected Clean Idea" not in user_content
         reviewed_titles.extend(
             title
@@ -1506,11 +1595,6 @@ async def test_feasibility_review_filters_by_quality_verdict(monkeypatch):
                 {
                     "idea_title": "Hold Idea",
                     "overall_feasibility": 0.6,
-                    "data_available": True,
-                },
-                {
-                    "idea_title": "Missing Quality Idea",
-                    "overall_feasibility": 0.7,
                     "data_available": True,
                 },
             ],
@@ -1557,12 +1641,11 @@ async def test_feasibility_review_filters_by_quality_verdict(monkeypatch):
     assert reviewed_titles == [
         "Pursue Prior Art Idea",
         "Hold Idea",
-        "Missing Quality Idea",
     ]
     assert updates["idea_cards"][0]["feasibility_score"] == 0.8
     assert updates["idea_cards"][1]["feasibility_score"] == 0.6
     assert updates["idea_cards"][2]["feasibility_score"] == 0.1
-    assert updates["idea_cards"][3]["feasibility_score"] == 0.7
+    assert updates["idea_cards"][3]["feasibility_score"] == 0.1
 
 
 def test_divergent_graph_routes_prior_art_through_novelty_jury():
@@ -1572,3 +1655,52 @@ def test_divergent_graph_routes_prior_art_through_novelty_jury():
     assert ("prior_art_check", "novelty_jury") in workflow.edges
     assert ("novelty_jury", "feasibility_review") in workflow.edges
     assert ("prior_art_check", "feasibility_review") not in workflow.edges
+
+
+@pytest.mark.asyncio
+async def test_idea_portfolio_excludes_rejected_jury_cards(monkeypatch):
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_generate_llm_json(system_prompt, user_content, gateway, tier):
+        assert "Viable Idea" in user_content
+        assert "Rejected Duplicate" not in user_content
+        return (
+            {
+                "portfolio_summary": "One viable idea remains.",
+                "recommended_next_steps": ["Run validation."],
+            },
+            0.02,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=uuid4(),
+        topic="target task",
+        idea_cards=[
+            {
+                "title": "Rejected Duplicate",
+                "quality_verdict": "reject",
+                "novelty_verdict": "duplicate",
+                "novelty_score": 1.0,
+                "feasibility_score": 1.0,
+            },
+            {
+                "title": "Viable Idea",
+                "quality_verdict": "hold",
+                "novelty_verdict": "incremental",
+                "novelty_score": 0.4,
+                "feasibility_score": 0.4,
+            },
+        ],
+    )
+
+    updates = await divergent.idea_portfolio(state)
+
+    assert [card["title"] for card in updates["idea_cards"]] == ["Viable Idea"]
+    assert "Viable Idea" in updates["report_markdown"]
+    assert "Rejected Duplicate" not in updates["report_markdown"]
