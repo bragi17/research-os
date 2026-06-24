@@ -89,6 +89,11 @@ from apps.api.db.results import (
     update_idea_card,
     upsert_paper_verification,
 )
+from apps.api.db.research_memory import (
+    create_research_memory_edge,
+    list_research_memory_items,
+    upsert_research_memory_item,
+)
 from apps.api.db.runs import (
     count_runs,
     count_runs_by_status,
@@ -130,6 +135,7 @@ __all__ = [
     "create_project",
     "create_project_query_pack",
     "create_reading_path",
+    "create_research_memory_edge",
     "create_remote_host",
     "create_run",
     "create_submission_package",
@@ -172,6 +178,7 @@ __all__ = [
     "list_project_query_packs",
     "list_projects",
     "list_remote_hosts",
+    "list_research_memory_items",
     "list_runs",
     "list_submission_packages",
     "list_terminal_sessions",
@@ -188,4 +195,5 @@ __all__ = [
     "update_run",
     "update_terminal_session",
     "upsert_paper_verification",
+    "upsert_research_memory_item",
 ]
