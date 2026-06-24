@@ -84,8 +84,10 @@ from apps.api.db.results import (
     list_hypotheses,
     list_idea_cards,
     list_pain_points,
+    list_paper_verifications,
     list_papers_by_run,
     update_idea_card,
+    upsert_paper_verification,
 )
 from apps.api.db.runs import (
     count_runs,
@@ -165,6 +167,7 @@ __all__ = [
     "list_idea_cards",
     "list_manuscript_packages",
     "list_pain_points",
+    "list_paper_verifications",
     "list_papers_by_run",
     "list_project_query_packs",
     "list_projects",
@@ -184,4 +187,5 @@ __all__ = [
     "update_idea_card",
     "update_run",
     "update_terminal_session",
+    "upsert_paper_verification",
 ]

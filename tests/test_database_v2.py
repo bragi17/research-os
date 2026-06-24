@@ -539,3 +539,47 @@ class TestGetReadingPath:
 
         result = await get_reading_path(RUN_ID)
         assert result is None
+
+
+class TestPaperVerification:
+    @pytest.mark.asyncio
+    async def test_upserts_verification_record(self, mock_pool):
+        fake = _make_record({
+            "id": uuid4(),
+            "source_run_id": RUN_ID,
+            "candidate_key": "s2:abc",
+            "candidate_id": "abc",
+            "verification_status": "verified",
+            "verification_method": "semantic_scholar",
+        })
+        mock_pool.fetchrow.return_value = fake
+
+        from apps.api.database import upsert_paper_verification
+
+        result = await upsert_paper_verification({
+            "source_run_id": RUN_ID,
+            "candidate_key": "s2:abc",
+            "candidate_id": "abc",
+            "verification_status": "verified",
+            "verification_method": "semantic_scholar",
+        })
+
+        sql = mock_pool.fetchrow.call_args.args[0]
+        assert "INSERT INTO paper_verification" in sql
+        assert "ON CONFLICT" in sql
+        assert result["candidate_key"] == "s2:abc"
+
+    @pytest.mark.asyncio
+    async def test_lists_verification_records_for_run(self, mock_pool):
+        mock_pool.fetch.return_value = [
+            _make_record({"candidate_key": "s2:abc", "verification_status": "verified"}),
+        ]
+
+        from apps.api.database import list_paper_verifications
+
+        result = await list_paper_verifications(RUN_ID)
+
+        sql = mock_pool.fetch.call_args.args[0]
+        assert "FROM paper_verification" in sql
+        assert "source_run_id = $1" in sql
+        assert result[0]["verification_status"] == "verified"

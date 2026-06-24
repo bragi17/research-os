@@ -24,6 +24,77 @@ async def list_hypotheses(run_id: UUID) -> list[dict[str, Any]]:
     return [db_pool.record_to_dict(row) for row in rows]
 
 
+async def upsert_paper_verification(data: dict[str, Any]) -> dict[str, Any]:
+    """Insert or update one paper verification record."""
+    pool = await db_pool.get_pool()
+    raw_json = orjson.loads(orjson.dumps(data.get("raw_json", {})))
+    row = await pool.fetchrow(
+        """
+        INSERT INTO paper_verification (
+            source_run_id, candidate_key, candidate_id, source, input_title,
+            canonical_title, canonical_doi, canonical_arxiv_id,
+            canonical_s2_id, canonical_openalex_id, verification_status,
+            verification_method, verification_reason, raw_json, verified_at
+        ) VALUES (
+            $1, $2, $3, $4, $5,
+            $6, $7, $8,
+            $9, $10, $11,
+            $12, $13, $14, $15
+        )
+        ON CONFLICT (
+            (COALESCE(source_run_id, '00000000-0000-0000-0000-000000000000'::uuid)),
+            candidate_key
+        )
+        DO UPDATE SET
+            candidate_id = EXCLUDED.candidate_id,
+            source = EXCLUDED.source,
+            input_title = EXCLUDED.input_title,
+            canonical_title = EXCLUDED.canonical_title,
+            canonical_doi = EXCLUDED.canonical_doi,
+            canonical_arxiv_id = EXCLUDED.canonical_arxiv_id,
+            canonical_s2_id = EXCLUDED.canonical_s2_id,
+            canonical_openalex_id = EXCLUDED.canonical_openalex_id,
+            verification_status = EXCLUDED.verification_status,
+            verification_method = EXCLUDED.verification_method,
+            verification_reason = EXCLUDED.verification_reason,
+            raw_json = EXCLUDED.raw_json,
+            verified_at = EXCLUDED.verified_at,
+            updated_at = NOW()
+        RETURNING *
+        """,
+        data.get("source_run_id"),
+        data["candidate_key"],
+        data.get("candidate_id"),
+        data.get("source"),
+        data.get("input_title"),
+        data.get("canonical_title"),
+        data.get("canonical_doi"),
+        data.get("canonical_arxiv_id"),
+        data.get("canonical_s2_id"),
+        data.get("canonical_openalex_id"),
+        data.get("verification_status", "verify_pending"),
+        data.get("verification_method", "none"),
+        data.get("verification_reason"),
+        raw_json,
+        data.get("verified_at"),
+    )
+    return db_pool.record_to_dict(row)
+
+
+async def list_paper_verifications(run_id: UUID) -> list[dict[str, Any]]:
+    """Return paper verification records for one run."""
+    pool = await db_pool.get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT * FROM paper_verification
+        WHERE source_run_id = $1
+        ORDER BY created_at ASC
+        """,
+        run_id,
+    )
+    return [db_pool.record_to_dict(row) for row in rows]
+
+
 async def list_papers_by_run(
     run_id: UUID,
     limit: int = 50,
