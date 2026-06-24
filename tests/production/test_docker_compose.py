@@ -11,6 +11,7 @@ def test_docker_compose_runs_production_scheduler_service() -> None:
         "../../scripts/migration/009_paper_verification.sql:/docker-entrypoint-initdb.d/009_paper_verification.sql",
         "../../scripts/migration/010_idea_jury_fields.sql:/docker-entrypoint-initdb.d/010_idea_jury_fields.sql",
         "../../scripts/migration/011_research_memory.sql:/docker-entrypoint-initdb.d/011_research_memory.sql",
+        "../../scripts/migration/012_submission_audit_gates.sql:/docker-entrypoint-initdb.d/012_submission_audit_gates.sql",
     ]
 
     assert "production-scheduler:" in compose
