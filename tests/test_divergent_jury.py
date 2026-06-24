@@ -1011,3 +1011,41 @@ def test_build_prior_art_verifier_payload_sanitizes_closest_prior_work():
             "title": "Closest Work",
         }
     ]
+
+
+def test_limit_verifier_payload_bounds_untrusted_fallback_keys():
+    payload = [
+        {
+            "idea_card": {"dedup_key": "x" * 9000},
+            "dedup_key": "x" * 9000,
+            "prior_art_details": [],
+            "closest_prior_work": [],
+        }
+    ]
+
+    limited = divergent._limit_verifier_payload(payload)
+    rendered = divergent.json.dumps(limited, default=str)
+
+    assert divergent.json.loads(rendered) == limited
+    assert len(rendered) <= divergent._VERIFIER_PAYLOAD_MAX_CHARS
+    assert len(limited[0]["dedup_key"]) <= 140
+    assert len(limited[0]["idea_card"]["dedup_key"]) <= 140
+
+
+def test_build_prior_art_verifier_payload_bounds_many_cards():
+    cards = [
+        {
+            "id": f"idea-{idx}",
+            "title": f"Many Card Idea {idx}",
+            "problem_statement": f"Problem {idx}",
+            "dedup_key": f"many-card-{idx}",
+        }
+        for idx in range(100)
+    ]
+
+    payload = divergent._build_prior_art_verifier_payload(cards, {})
+    rendered = divergent.json.dumps(payload, default=str)
+
+    assert divergent.json.loads(rendered) == payload
+    assert len(rendered) <= divergent._VERIFIER_PAYLOAD_MAX_CHARS
+    assert len(payload) <= divergent._VERIFIER_CARD_MAX_ITEMS

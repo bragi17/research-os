@@ -39,6 +39,7 @@ _VERIFIER_PAYLOAD_MAX_CHARS = 7600
 _VERIFIER_TEXT_MAX_LENGTH = 240
 _VERIFIER_LIST_MAX_ITEMS = 3
 _VERIFIER_RECORD_MAX_ITEMS = 5
+_VERIFIER_CARD_MAX_ITEMS = 10
 _VERIFIER_CARD_FIELDS = (
     "id",
     "title",
@@ -305,6 +306,23 @@ def _verifier_closest_prior_work(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _verifier_payload_key(value: Any) -> str:
+    raw_key = str(value or "unknown-idea")
+    return _bounded_dedup_key(_normalized_idea_key({"title": raw_key}))
+
+
+def _append_within_limit(
+    items: list[dict[str, Any]],
+    item: dict[str, Any],
+    max_chars: int,
+) -> bool:
+    candidate = [*items, item]
+    if len(json.dumps(candidate, default=str)) > max_chars:
+        return False
+    items.append(item)
+    return True
+
+
 def _limit_verifier_payload(
     payload: list[dict[str, Any]],
     max_chars: int = _VERIFIER_PAYLOAD_MAX_CHARS,
@@ -324,14 +342,17 @@ def _limit_verifier_payload(
     compact_payload = []
     for item in payload:
         card = item.get("idea_card", {})
+        dedup_key = _verifier_payload_key(
+            item.get("dedup_key") or card.get("dedup_key")
+        )
         compact_payload.append(
             {
                 "idea_card": {
-                    "dedup_key": card.get("dedup_key"),
+                    "dedup_key": dedup_key,
                     "id": card.get("id"),
                     "title": card.get("title"),
                 },
-                "dedup_key": item.get("dedup_key"),
+                "dedup_key": dedup_key,
                 "prior_art_details": [],
                 "closest_prior_work": [],
             }
@@ -342,10 +363,10 @@ def _limit_verifier_payload(
     minimal_payload = [
         {
             "idea_card": {
-                "dedup_key": item.get("dedup_key"),
+                "dedup_key": _verifier_payload_key(item.get("dedup_key")),
                 "title": item.get("idea_card", {}).get("title"),
             },
-            "dedup_key": item.get("dedup_key"),
+            "dedup_key": _verifier_payload_key(item.get("dedup_key")),
             "prior_art_details": [],
             "closest_prior_work": [],
         }
@@ -354,22 +375,25 @@ def _limit_verifier_payload(
     if len(json.dumps(minimal_payload, default=str)) <= max_chars:
         return minimal_payload
 
-    return [
-        {
-            "idea_card": {"dedup_key": item.get("dedup_key")},
-            "dedup_key": item.get("dedup_key"),
+    bounded_payload: list[dict[str, Any]] = []
+    for item in payload:
+        dedup_key = _verifier_payload_key(item.get("dedup_key"))
+        next_item = {
+            "idea_card": {"dedup_key": dedup_key},
+            "dedup_key": dedup_key,
             "prior_art_details": [],
             "closest_prior_work": [],
         }
-        for item in payload
-    ]
+        if not _append_within_limit(bounded_payload, next_item, max_chars):
+            break
+    return bounded_payload
 
 
 def _build_prior_art_verifier_payload(
     cards: list[dict[str, Any]],
     prior_art_records_by_key: dict[str, list[Any]],
 ) -> list[dict[str, Any]]:
-    keyed_cards = _cards_with_stable_dedup_keys(cards)
+    keyed_cards = _cards_with_stable_dedup_keys(cards[:_VERIFIER_CARD_MAX_ITEMS])
     attached_cards = _attach_prior_art_details(keyed_cards, prior_art_records_by_key)
     payload: list[dict[str, Any]] = []
 
