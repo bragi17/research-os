@@ -1277,8 +1277,12 @@ async def feasibility_review(state: ModeGraphState) -> dict[str, Any]:
     assess_map = {a.get("idea_title", ""): a for a in assessments}
     updated_cards: list[dict[str, Any]] = []
     for card in state.idea_cards:
+        if not _passed_novelty_jury(card):
+            updated_cards.append(dict(card))
+            continue
+
         title = card.get("title", "")
-        assessment = assess_map.get(title, {}) if _passed_novelty_jury(card) else {}
+        assessment = assess_map.get(title, {})
         updated_card = {
             **card,
             "feasibility_score": assessment.get(

@@ -1804,6 +1804,13 @@ async def test_feasibility_review_does_not_update_rejected_duplicate_titles(monk
 
     assert updates["idea_cards"][0]["feasibility_score"] == 0.9
     assert updates["idea_cards"][1]["feasibility_score"] == 0.2
+    assert "data_available" not in updates["idea_cards"][1]
+    assert "compute_reasonable" not in updates["idea_cards"][1]
+    assert "experiment_designable" not in updates["idea_cards"][1]
+    assert "estimated_weeks" not in updates["idea_cards"][1]
+    assert "critical_risks" not in updates["idea_cards"][1]
+    assert "go_no_go" not in updates["idea_cards"][1]
+    assert "recommended_first_experiment" not in updates["idea_cards"][1]
 
 
 def test_divergent_graph_routes_prior_art_through_novelty_jury():
