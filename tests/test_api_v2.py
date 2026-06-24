@@ -34,6 +34,8 @@ _mock_idea_cards: dict[str, list[dict[str, Any]]] = {}
 _mock_figures: dict[str, list[dict[str, Any]]] = {}
 _mock_reading_paths: dict[str, dict[str, Any]] = {}
 _mock_context_bundles: dict[str, dict[str, Any]] = {}
+_mock_projects: dict[str, dict[str, Any]] = {}
+DEFAULT_USER_ID = UUID("00000000-0000-0000-0000-000000000000")
 
 
 def _make_mock_run(run_data: dict[str, Any]) -> dict[str, Any]:
@@ -206,6 +208,10 @@ async def mock_get_context_bundle(bundle_id: UUID) -> dict[str, Any] | None:
     return _mock_context_bundles.get(str(bundle_id))
 
 
+async def mock_get_project(project_id: UUID) -> dict[str, Any] | None:
+    return _mock_projects.get(str(project_id))
+
+
 async def mock_create_context_bundle(data: dict[str, Any]) -> dict[str, Any]:
     bundle_id = uuid4()
     bundle = {"id": bundle_id, **data}
@@ -228,6 +234,7 @@ def _reset_mock_state():
     _mock_figures.clear()
     _mock_reading_paths.clear()
     _mock_context_bundles.clear()
+    _mock_projects.clear()
 
 
 @pytest.fixture()
@@ -273,6 +280,7 @@ def client():
         "apps.api.database.get_context_bundle": AsyncMock(
             side_effect=mock_get_context_bundle
         ),
+        "apps.api.database.get_project": AsyncMock(side_effect=mock_get_project),
         "apps.api.database.create_context_bundle": AsyncMock(
             side_effect=mock_create_context_bundle
         ),
@@ -338,6 +346,10 @@ class TestCreateRunV2:
 
     def test_create_run_with_project_id(self, client: TestClient):
         project_id = str(uuid4())
+        _mock_projects[project_id] = {
+            "id": UUID(project_id),
+            "owner_user_id": DEFAULT_USER_ID,
+        }
         r = client.post(
             "/api/v1/runs/multimode",
             json={
@@ -352,6 +364,40 @@ class TestCreateRunV2:
         data = r.json()
         assert data["project_id"] == project_id
         assert _mock_runs[data["id"]]["project_id"] == UUID(project_id)
+
+    def test_create_run_rejects_unknown_project_id(self, client: TestClient):
+        r = client.post(
+            "/api/v1/runs/multimode",
+            json={
+                "title": "Unknown Project Run",
+                "topic": "Reinforcement learning for robotic manipulation",
+                "mode": "frontier",
+                "project_id": str(uuid4()),
+            },
+        )
+
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Project not found"
+
+    def test_create_run_rejects_unowned_project_id(self, client: TestClient):
+        project_id = str(uuid4())
+        _mock_projects[project_id] = {
+            "id": UUID(project_id),
+            "owner_user_id": uuid4(),
+        }
+
+        r = client.post(
+            "/api/v1/runs/multimode",
+            json={
+                "title": "Unowned Project Run",
+                "topic": "Reinforcement learning for robotic manipulation",
+                "mode": "frontier",
+                "project_id": project_id,
+            },
+        )
+
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Project access denied"
 
     def test_create_run_with_atlas_mode(self, client: TestClient):
         r = client.post(
@@ -489,6 +535,33 @@ class TestSpawnRun:
         data = r.json()
         assert "Multi-agent coordination" in data["topic"]
 
+    def test_spawn_rejects_parent_from_unowned_project(self, client: TestClient):
+        project_id = uuid4()
+        parent_id = str(uuid4())
+        _mock_projects[str(project_id)] = {
+            "id": project_id,
+            "owner_user_id": uuid4(),
+        }
+        _mock_runs[parent_id] = _make_mock_run(
+            {
+                "id": UUID(parent_id),
+                "title": "Foreign Project Parent",
+                "topic": "Multi-agent coordination with shared memory",
+                "project_id": project_id,
+            }
+        )
+
+        r = client.post(
+            f"/api/v1/runs/{parent_id}/spawn",
+            json={
+                "target_mode": "frontier",
+                "context_bundle_id": str(uuid4()),
+            },
+        )
+
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Project access denied"
+
     def test_spawn_nonexistent_parent(self, client: TestClient):
         r = client.post(
             f"/api/v1/runs/{uuid4()}/spawn",
@@ -515,6 +588,62 @@ class TestSpawnRun:
         ]
         assert len(found) == 1
         assert found[0]["payload"]["target_mode"] == "divergent"
+
+
+class TestCreateRunV1ProjectAccess:
+    def test_create_run_with_project_id_requires_owned_project(
+        self,
+        client: TestClient,
+    ):
+        project_id = str(uuid4())
+        _mock_projects[project_id] = {
+            "id": UUID(project_id),
+            "owner_user_id": DEFAULT_USER_ID,
+        }
+
+        r = client.post(
+            "/api/v1/runs",
+            json={
+                "title": "Project Run",
+                "topic": "Multi-agent coordination with shared memory",
+                "project_id": project_id,
+            },
+        )
+
+        assert r.status_code == 201
+        assert r.json()["project_id"] == project_id
+
+    def test_create_run_rejects_unknown_project_id(self, client: TestClient):
+        r = client.post(
+            "/api/v1/runs",
+            json={
+                "title": "Unknown Project Run",
+                "topic": "Multi-agent coordination with shared memory",
+                "project_id": str(uuid4()),
+            },
+        )
+
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Project not found"
+
+    def test_create_run_rejects_unowned_project_id(self, client: TestClient):
+        project_id = str(uuid4())
+        _mock_projects[project_id] = {
+            "id": UUID(project_id),
+            "owner_user_id": uuid4(),
+        }
+
+        r = client.post(
+            "/api/v1/runs",
+            json={
+                "title": "Unowned Project Run",
+                "topic": "Multi-agent coordination with shared memory",
+                "project_id": project_id,
+            },
+        )
+
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Project access denied"
 
 
 # ===================================================================

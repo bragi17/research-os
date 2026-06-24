@@ -140,7 +140,17 @@ async def test_create_memory_edge_rejects_cross_project_items(mock_pool):
 
 
 @pytest.mark.asyncio
-async def test_memory_payload_must_be_json_object(mock_pool):
+@pytest.mark.parametrize(
+    "payload_json",
+    [
+        ["not", "an", "object"],
+        [],
+        False,
+        0,
+        "",
+    ],
+)
+async def test_memory_payload_must_be_json_object(mock_pool, payload_json):
     from apps.api.database import upsert_research_memory_item
 
     with pytest.raises(ValueError, match="payload_json must be a JSON object"):
@@ -150,7 +160,7 @@ async def test_memory_payload_must_be_json_object(mock_pool):
                 "source_run_id": RUN_ID,
                 "item_type": "failed_idea",
                 "stable_key": "bad-payload",
-                "payload_json": ["not", "an", "object"],
+                "payload_json": payload_json,
             }
         )
 

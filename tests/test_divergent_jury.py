@@ -1922,6 +1922,54 @@ def test_failed_idea_memory_prompt_items_are_bounded():
     assert len(rendered) < 1500
 
 
+def test_failed_idea_memory_prompt_items_tolerate_malformed_payload():
+    prompt_items = divergent._failed_idea_memory_prompt_items(
+        [
+            {
+                "title": "Malformed memory",
+                "summary_text": "Should not crash composition.",
+                "payload_json": {"closest_prior_work": None},
+            },
+            {
+                "title": "Object closest prior work",
+                "payload_json": {"closest_prior_work": {"title": "Not a list"}},
+            },
+            {
+                "title": "Scalar payload",
+                "payload_json": "not-an-object",
+            },
+        ]
+    )
+
+    rendered = divergent.json.dumps(prompt_items, default=str)
+    assert divergent.json.loads(rendered) == prompt_items
+    assert [item["closest_prior_work"] for item in prompt_items] == [[], [], []]
+
+
+def test_failed_idea_memory_prompt_items_total_size_is_bounded():
+    long_text = "x" * 1000
+    prompt_items = divergent._failed_idea_memory_prompt_items(
+        [
+            {
+                "title": f"Failed Idea {idx} {long_text}",
+                "summary_text": long_text,
+                "payload_json": {
+                    "strongest_objection": long_text,
+                    "closest_prior_work": [
+                        {"title": f"Prior Work {idx}-{work_idx} {long_text}"}
+                        for work_idx in range(20)
+                    ],
+                },
+            }
+            for idx in range(20)
+        ]
+    )
+
+    rendered = divergent.json.dumps(prompt_items, default=str)
+    assert divergent.json.loads(rendered) == prompt_items
+    assert len(rendered) <= divergent._VERIFIER_PAYLOAD_MAX_CHARS
+
+
 @pytest.mark.asyncio
 async def test_idea_portfolio_excludes_rejected_jury_cards(monkeypatch):
     async def fake_emit_progress(*args, **kwargs):

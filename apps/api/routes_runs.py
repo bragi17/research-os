@@ -23,12 +23,36 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
 
 
+def _same_id(left: Any, right: Any) -> bool:
+    return str(left) == str(right)
+
+
+async def _require_project_access(
+    project_id: UUID | None,
+    user: dict[str, Any],
+) -> None:
+    if project_id is None:
+        return
+    try:
+        project = await db.get_project(project_id)
+    except Exception as exc:
+        logger.error("get_project_failed", project_id=str(project_id), error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to retrieve project")
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    owner_user_id = project.get("owner_user_id")
+    if owner_user_id is None or not _same_id(owner_user_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+
 @router.post("", response_model=RunResponse, status_code=201)
 async def create_run(
     request: CreateRunRequest,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Create a new research run."""
+    await _require_project_access(request.project_id, user)
+
     run_id = uuid4()
     now = datetime.utcnow()
 

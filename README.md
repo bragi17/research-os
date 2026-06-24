@@ -116,10 +116,18 @@ cp .env.example .env
 ```bash
 # Create database and run migrations
 psql -U postgres -c "CREATE DATABASE research_os;"
-psql -U postgres -d research_os -f scripts/migration/001_init_schema.sql
-psql -U postgres -d research_os -f scripts/migration/002_add_users.sql
-psql -U postgres -d research_os -f scripts/migration/003_v2_multimode.sql
-psql -U postgres -d research_os -f scripts/migration/004_add_trace_id.sql
+for migration in scripts/migration/*.sql; do
+  psql -U postgres -d research_os -f "$migration"
+done
+```
+
+Docker Compose mounts migrations into `docker-entrypoint-initdb.d` for fresh
+PostgreSQL volumes only. For an existing Docker volume, apply any newly added
+migration explicitly, for example:
+
+```bash
+docker compose -f infra/docker/docker-compose.yml exec -T postgres \
+  psql -U ros_user -d research_os < scripts/migration/011_research_memory.sql
 ```
 
 ### 3. Install Dependencies

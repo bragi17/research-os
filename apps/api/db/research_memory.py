@@ -11,7 +11,8 @@ from apps.api.db import pool as db_pool
 
 
 def _jsonb_object(value: Any) -> dict[str, Any]:
-    normalized = orjson.loads(orjson.dumps(value or {}))
+    raw_value = {} if value is None else value
+    normalized = orjson.loads(orjson.dumps(raw_value))
     if not isinstance(normalized, dict):
         raise ValueError("payload_json must be a JSON object")
     return normalized

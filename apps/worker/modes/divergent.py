@@ -499,7 +499,12 @@ def _failed_idea_memory_prompt_items(
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for item in failed_idea_memory[:20]:
-        payload = item.get("payload_json") or {}
+        payload = item.get("payload_json")
+        if not isinstance(payload, dict):
+            payload = {}
+        closest_prior_work = payload.get("closest_prior_work", [])
+        if not isinstance(closest_prior_work, list):
+            closest_prior_work = []
         items.append(
             {
                 "title": _verifier_value(item.get("title")),
@@ -509,14 +514,42 @@ def _failed_idea_memory_prompt_items(
                 ),
                 "closest_prior_work": [
                     _verifier_closest_prior_work(work)
-                    for work in payload.get("closest_prior_work", [])[
-                        :_VERIFIER_RECORD_MAX_ITEMS
-                    ]
+                    for work in closest_prior_work[:_VERIFIER_RECORD_MAX_ITEMS]
                     if isinstance(work, dict)
                 ],
             }
         )
-    return items
+    return _limit_failed_idea_memory_payload(items)
+
+
+def _limit_failed_idea_memory_payload(
+    payload: list[dict[str, Any]],
+    max_chars: int = _VERIFIER_PAYLOAD_MAX_CHARS,
+) -> list[dict[str, Any]]:
+    for record_limit in (_VERIFIER_RECORD_MAX_ITEMS, 3, 1, 0):
+        candidate = [
+            {
+                **item,
+                "closest_prior_work": item.get("closest_prior_work", [])[
+                    :record_limit
+                ],
+            }
+            for item in payload
+        ]
+        if len(json.dumps(candidate, default=str)) <= max_chars:
+            return candidate
+
+    compact_payload: list[dict[str, Any]] = []
+    for item in payload:
+        compact_item = {
+            "title": item.get("title"),
+            "summary_text": item.get("summary_text"),
+            "strongest_objection": item.get("strongest_objection"),
+            "closest_prior_work": [],
+        }
+        if not _append_within_limit(compact_payload, compact_item, max_chars):
+            break
+    return compact_payload
 
 
 # ---------------------------------------------------------------------------
