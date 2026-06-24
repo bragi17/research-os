@@ -40,3 +40,5 @@ research_os_docs/
 
 # Local indexing/tool output
 .codegraph/
+.worktrees/
+docs/superpowers/

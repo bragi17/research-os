@@ -8,12 +8,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from structlog import get_logger
 
-from apps.api.database import close_pool, init_pool
+import apps.api.database as database
 from apps.api.redis_queue import close_redis, init_redis
 from apps.api.routes_auth import router as auth_router
 from apps.api.routes_events import router as events_router
 from apps.api.routes_files import router as files_router
 from apps.api.routes_library import router as library_router
+from apps.api.routes_production import router as production_router
 from apps.api.routes_queue import router as queue_router
 from apps.api.routes_results import router as results_router
 from apps.api.routes_runs import router as runs_router
@@ -30,13 +31,13 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     logger.info("research_os_starting", version="0.1.0")
-    await init_pool()
+    await database.init_pool()
     logger.info("database_pool_initialized")
     await init_redis()
     yield
     logger.info("research_os_shutting_down")
     await close_redis()
-    await close_pool()
+    await database.close_pool()
     logger.info("database_pool_closed")
 
 
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(queue_router)
     app.include_router(v2_router)
     app.include_router(library_router)
+    app.include_router(production_router)
     app.include_router(settings_router)
 
     return app
