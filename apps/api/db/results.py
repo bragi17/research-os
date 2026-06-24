@@ -374,13 +374,19 @@ async def update_idea_card(
     updates: dict[str, Any],
 ) -> dict[str, Any] | None:
     """UPDATE specific columns on an idea_card and return the updated row."""
+    if not updates:
+        return await _get_idea_card(idea_id)
+
+    invalid_fields = set(updates) - IDEA_CARD_UPDATE_FIELDS
+    if invalid_fields:
+        raise ValueError(
+            f"Invalid idea_card update fields: {sorted(invalid_fields)}",
+        )
+
     filtered_updates = [
         (field, updates[field])
         for field in updates
-        if field in IDEA_CARD_UPDATE_FIELDS
     ]
-    if not filtered_updates:
-        return await _get_idea_card(idea_id)
 
     set_parts: list[str] = []
     values: list[Any] = []

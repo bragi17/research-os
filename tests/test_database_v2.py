@@ -296,6 +296,13 @@ class TestIdeaCardJuryFields:
         sql = mock_pool.fetchrow.call_args[0][0]
         assert "dedup_key" in sql
         assert "novelty_verdict" in sql
+        params = mock_pool.fetchrow.call_args.args[1:]
+        assert params[3] == []
+        assert params[10] == "pending"
+        assert params[13] == "candidate"
+        assert params[14] == "adaptive-retrieval-judge"
+        assert params[15] == "incremental"
+        assert params[17] == [{"title": "Prior Agent"}]
         assert result["quality_verdict"] == "hold"
 
     @pytest.mark.asyncio
@@ -322,42 +329,34 @@ class TestIdeaCardJuryFields:
         assert result["quality_verdict"] == "reject"
 
     @pytest.mark.asyncio
-    async def test_update_idea_card_ignores_unknown_fields(self, mock_pool):
-        mock_pool.fetchrow.return_value = _make_record({
-            "id": IDEA_ID,
-            "title": "Allowed",
-        })
-
+    async def test_update_idea_card_rejects_mixed_unknown_fields(self, mock_pool):
         from apps.api.database import update_idea_card
 
-        result = await update_idea_card(
-            IDEA_ID,
-            {
-                "title": "Allowed",
-                "unknown_column": "blocked",
-            },
-        )
+        with pytest.raises(
+            ValueError,
+            match="Invalid idea_card update fields: \\['unknown_column'\\]",
+        ):
+            await update_idea_card(
+                IDEA_ID,
+                {
+                    "title": "Allowed",
+                    "unknown_column": "blocked",
+                },
+            )
 
-        sql = mock_pool.fetchrow.call_args[0][0]
-        assert "title = $1" in sql
-        assert "unknown_column" not in sql
-        assert result["title"] == "Allowed"
+        mock_pool.fetchrow.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_update_idea_card_with_only_unknown_fields_returns_current(self, mock_pool):
-        mock_pool.fetchrow.return_value = _make_record({
-            "id": IDEA_ID,
-            "title": "Current",
-        })
-
+    async def test_update_idea_card_rejects_only_unknown_fields(self, mock_pool):
         from apps.api.database import update_idea_card
 
-        result = await update_idea_card(IDEA_ID, {"unknown_column": "blocked"})
+        with pytest.raises(
+            ValueError,
+            match="Invalid idea_card update fields: \\['unknown_column'\\]",
+        ):
+            await update_idea_card(IDEA_ID, {"unknown_column": "blocked"})
 
-        sql = mock_pool.fetchrow.call_args[0][0]
-        assert "SELECT" in sql
-        assert "unknown_column" not in sql
-        assert result["title"] == "Current"
+        mock_pool.fetchrow.assert_not_awaited()
 
 
 # ===================================================================
