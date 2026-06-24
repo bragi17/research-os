@@ -130,37 +130,57 @@ def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped_cards
 
 
+def _verification_record_to_dict(record: Any) -> dict[str, Any]:
+    if isinstance(record, dict):
+        return dict(record)
+    if hasattr(record, "model_dump"):
+        return record.model_dump(mode="json")
+    if hasattr(record, "dict"):
+        return record.dict()
+    return {}
+
+
+def _is_verified_record(record: dict[str, Any]) -> bool:
+    status = record.get("verification_status")
+    return getattr(status, "value", status) == "verified"
+
+
+def _prior_art_summary(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": record.get("canonical_title")
+        or record.get("title")
+        or record.get("input_title"),
+        "doi": record.get("canonical_doi") or record.get("doi"),
+        "arxiv_id": record.get("canonical_arxiv_id") or record.get("arxiv_id"),
+        "candidate_id": record.get("candidate_id"),
+        "candidate_key": record.get("candidate_key"),
+        "s2_id": record.get("canonical_s2_id") or record.get("s2_id"),
+        "openalex_id": record.get("canonical_openalex_id")
+        or record.get("openalex_id"),
+        "input_title": record.get("input_title"),
+    }
+
+
 def _attach_prior_art_details(
     cards: list[dict[str, Any]],
-    prior_art_records_by_key: dict[str, list[dict[str, Any]]],
+    prior_art_records_by_key: dict[str, list[Any]],
 ) -> list[dict[str, Any]]:
     """Return copied cards with verified prior-art records attached."""
     updated_cards: list[dict[str, Any]] = []
 
     for card in cards:
         dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
-        records = prior_art_records_by_key.get(dedup_key, [])
+        records = [
+            _verification_record_to_dict(record)
+            for record in prior_art_records_by_key.get(dedup_key, [])
+        ]
         verified_records = [
             record
             for record in records
-            if getattr(
-                record.get("verification_status"),
-                "value",
-                record.get("verification_status"),
-            )
-            == "verified"
+            if _is_verified_record(record)
         ]
         closest_prior_work = [
-            {
-                "title": record.get("canonical_title")
-                or record.get("title")
-                or record.get("input_title"),
-                "doi": record.get("doi") or record.get("canonical_doi"),
-                "arxiv_id": record.get("arxiv_id")
-                or record.get("canonical_arxiv_id"),
-                "candidate_key": record.get("candidate_key"),
-            }
-            for record in verified_records[:5]
+            _prior_art_summary(record) for record in verified_records[:5]
         ]
 
         updated_cards.append(
@@ -172,6 +192,30 @@ def _attach_prior_art_details(
         )
 
     return updated_cards
+
+
+def _build_prior_art_verifier_payload(
+    cards: list[dict[str, Any]],
+    prior_art_records_by_key: dict[str, list[Any]],
+) -> list[dict[str, Any]]:
+    attached_cards = _attach_prior_art_details(cards, prior_art_records_by_key)
+    payload: list[dict[str, Any]] = []
+
+    for card in attached_cards:
+        idea_card = {
+            key: value
+            for key, value in card.items()
+            if key not in {"prior_art_details", "closest_prior_work"}
+        }
+        payload.append(
+            {
+                "idea_card": idea_card,
+                "prior_art_details": card.get("prior_art_details", []),
+                "closest_prior_work": card.get("closest_prior_work", []),
+            }
+        )
+
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -639,8 +683,6 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
 
     # Search S2 + OpenAlex for similar papers
     existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
-    prior_art_papers: list[str] = []
-    seen_prior_art_papers: set[str] = set()
     prior_art_verification: dict[str, dict[str, Any]] = {}
     prior_art_records_by_key: dict[str, list[dict[str, Any]]] = {}
     for job in search_jobs:
@@ -651,35 +693,38 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         )
         errors.extend(search_errors)
 
-        for candidate_id in found:
-            if candidate_id not in seen_prior_art_papers:
-                prior_art_papers.append(candidate_id)
-                seen_prior_art_papers.add(candidate_id)
-
         card_verification = await verify_paper_candidates_for_run(
             state.run_id,
             found,
             title_map=title_map,
             source="prior_art",
         )
+        normalized_verification = {
+            candidate_id: _verification_record_to_dict(record)
+            for candidate_id, record in card_verification.items()
+        }
         prior_art_records_by_key[job["dedup_key"]] = list(
-            card_verification.values()
+            normalized_verification.values()
         )
-        prior_art_verification.update(card_verification)
+        prior_art_verification.update(normalized_verification)
 
     # Use VERIFIER prompt from templates.py to assess novelty
     verifier_system = get_system_prompt(PromptName.VERIFIER)
+    verifier_payload = _build_prior_art_verifier_payload(
+        state.idea_cards[:10],
+        prior_art_records_by_key,
+    )
 
     user_content = (
         f"Research topic: {state.topic}\n\n"
-        f"## Idea Cards to Verify\n"
-        f"{json.dumps(state.idea_cards[:10], default=str)}\n\n"
-        f"## Prior Art Papers Found (IDs)\n"
-        f"{json.dumps(prior_art_papers[:20], default=str)}\n\n"
         f"## Verified Prior Art Records\n"
-        f"{json.dumps(prior_art_verification, default=str)[:8000]}\n\n"
+        f"Records are nested with the idea card they belong to. Do not use "
+        f"records from one idea to judge another idea.\n\n"
+        f"## Idea Cards With Per-Card Prior Art\n"
+        f"{json.dumps(verifier_payload, default=str)[:8000]}\n\n"
         f"For EACH idea card, assess whether substantially similar work "
-        f"already exists. Output MUST be valid JSON: an array of objects with:\n"
+        f"already exists using only that idea card's prior_art_details and "
+        f"closest_prior_work. Output MUST be valid JSON: an array of objects with:\n"
         f"- idea_title: str\n"
         f"- verdict: \"reject\" | \"hold\" | \"finalize\" | \"continue_search\"\n"
         f"- prior_art_found: bool\n"
@@ -711,9 +756,10 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
             **card,
             "prior_art_check_status": "high_risk" if prior_art_found else "checked",
             "prior_art_found": prior_art_found,
-            "similar_works": check.get(
+            "similar_works": card.get("similar_works", []),
+            "prior_art_similar_works": check.get(
                 "similar_works",
-                card.get("similar_works", []),
+                card.get("prior_art_similar_works", []),
             ),
             "novelty_score": check.get(
                 "adjusted_novelty_score",

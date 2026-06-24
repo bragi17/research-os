@@ -7,6 +7,10 @@ import pytest
 
 from apps.worker.modes import divergent
 from apps.worker.modes.base import ModeGraphState
+from libs.schemas.paper_verification import (
+    PaperVerificationRecord,
+    PaperVerificationStatus,
+)
 
 
 def test_idea_dedup_key_uses_title_and_problem_statement():
@@ -182,7 +186,11 @@ def test_attach_prior_art_details_keeps_only_verified_records():
             "title": "Canonical Verified Work",
             "doi": "10.1234/example",
             "arxiv_id": "2401.00001",
+            "candidate_id": "s2-verified",
             "candidate_key": "s2-verified-key",
+            "s2_id": None,
+            "openalex_id": None,
+            "input_title": None,
         }
     ]
     assert updated_cards[1]["prior_art_details"] == [fallback_verified_record]
@@ -191,7 +199,77 @@ def test_attach_prior_art_details_keeps_only_verified_records():
             "title": "Fallback Work",
             "doi": None,
             "arxiv_id": None,
+            "candidate_id": "s2-fallback",
             "candidate_key": None,
+            "s2_id": None,
+            "openalex_id": None,
+            "input_title": None,
+        }
+    ]
+
+
+def test_attach_prior_art_details_accepts_paper_verification_records():
+    record = PaperVerificationRecord(
+        candidate_key="s2:s2-record",
+        candidate_id="s2-record",
+        input_title="Input Record Title",
+        canonical_title="Canonical Record Title",
+        canonical_doi="10.5555/canonical",
+        canonical_arxiv_id="2501.00001",
+        canonical_s2_id="S2-CANONICAL",
+        canonical_openalex_id="OA-CANONICAL",
+        verification_status=PaperVerificationStatus.VERIFIED,
+    )
+    unverified_record = PaperVerificationRecord(
+        candidate_key="s2:s2-unverified",
+        candidate_id="s2-unverified",
+        canonical_title="Unverified Record",
+        verification_status=PaperVerificationStatus.UNVERIFIED,
+    )
+
+    updated_cards = divergent._attach_prior_art_details(
+        [
+            {
+                "title": "Idea Record",
+                "problem_statement": "Problem",
+                "dedup_key": "idea-record",
+            }
+        ],
+        {"idea-record": [record, unverified_record]},
+    )
+
+    assert updated_cards[0]["prior_art_details"] == [
+        {
+            "id": None,
+            "source_run_id": None,
+            "candidate_key": "s2:s2-record",
+            "candidate_id": "s2-record",
+            "source": None,
+            "input_title": "Input Record Title",
+            "canonical_title": "Canonical Record Title",
+            "canonical_doi": "10.5555/canonical",
+            "canonical_arxiv_id": "2501.00001",
+            "canonical_s2_id": "S2-CANONICAL",
+            "canonical_openalex_id": "OA-CANONICAL",
+            "verification_status": "verified",
+            "verification_method": "none",
+            "verification_reason": None,
+            "raw_json": {},
+            "verified_at": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    assert updated_cards[0]["closest_prior_work"] == [
+        {
+            "title": "Canonical Record Title",
+            "doi": "10.5555/canonical",
+            "arxiv_id": "2501.00001",
+            "candidate_id": "s2-record",
+            "candidate_key": "s2:s2-record",
+            "s2_id": "S2-CANONICAL",
+            "openalex_id": "OA-CANONICAL",
+            "input_title": "Input Record Title",
         }
     ]
 
@@ -326,7 +404,11 @@ async def test_prior_art_check_keeps_verification_records_per_idea(monkeypatch):
             "title": "Alpha Prior Work",
             "doi": None,
             "arxiv_id": None,
+            "candidate_id": "s2-alpha",
             "candidate_key": "s2:s2-alpha",
+            "s2_id": None,
+            "openalex_id": None,
+            "input_title": None,
         }
     ]
     assert updates["idea_cards"][1]["closest_prior_work"] == [
@@ -334,10 +416,158 @@ async def test_prior_art_check_keeps_verification_records_per_idea(monkeypatch):
             "title": "Beta Prior Work",
             "doi": None,
             "arxiv_id": None,
+            "candidate_id": "s2-beta",
             "candidate_key": "s2:s2-beta",
+            "s2_id": None,
+            "openalex_id": None,
+            "input_title": None,
         }
     ]
     assert set(updates["context_bundle"]["paper_verification"]) == {
         "s2-alpha",
         "s2-beta",
     }
+
+
+@pytest.mark.asyncio
+async def test_prior_art_check_uses_per_card_payload_and_preserves_similar_works(
+    monkeypatch,
+):
+    run_id = uuid4()
+    seen_payload: list[list[dict[str, object]]] = []
+
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_search_academic_sources(**kwargs):
+        query_text = kwargs["queries"][0]["query"]
+        if "Idea Alpha" in query_text:
+            return (
+                ["s2-alpha"],
+                [query_text],
+                [],
+                {"s2-alpha": "Alpha Prior Work"},
+            )
+        return [], [query_text], [], {}
+
+    async def fake_verify_paper_candidates_for_run(
+        run_id_arg,
+        candidate_ids,
+        title_map=None,
+        source=None,
+    ):
+        assert run_id_arg == run_id
+        assert source == "prior_art"
+        if not candidate_ids:
+            return {}
+        return {
+            "s2-alpha": {
+                "candidate_id": "s2-alpha",
+                "candidate_key": "s2:s2-alpha",
+                "canonical_title": "Alpha Prior Work",
+                "verification_status": "verified",
+                "source": "prior_art",
+            }
+        }
+
+    async def fake_generate_llm_json(
+        system_prompt,
+        user_content,
+        gateway,
+        tier,
+        schema=None,
+    ):
+        match = re.search(
+            r"## Idea Cards With Per-Card Prior Art\n(.*?)\n\nFor EACH idea card",
+            user_content,
+            re.S,
+        )
+        assert match is not None
+        payload = divergent.json.loads(match.group(1))
+        seen_payload.append(payload)
+
+        alpha_payload = next(
+            item for item in payload if item["idea_card"]["title"] == "Idea Alpha"
+        )
+        beta_payload = next(
+            item for item in payload if item["idea_card"]["title"] == "Idea Beta"
+        )
+        assert [r["candidate_id"] for r in alpha_payload["prior_art_details"]] == [
+            "s2-alpha"
+        ]
+        assert beta_payload["prior_art_details"] == []
+        assert "Alpha Prior Work" not in divergent.json.dumps(beta_payload)
+
+        return (
+            [
+                {
+                    "idea_title": "Idea Alpha",
+                    "prior_art_found": True,
+                    "similar_works": [{"title": "LLM Alpha Work"}],
+                    "adjusted_novelty_score": 0.1,
+                },
+                {
+                    "idea_title": "Idea Beta",
+                    "prior_art_found": False,
+                    "similar_works": [{"title": "LLM Beta Work"}],
+                    "adjusted_novelty_score": 0.7,
+                },
+            ],
+            0.01,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(
+        divergent,
+        "search_academic_sources",
+        fake_search_academic_sources,
+    )
+    monkeypatch.setattr(
+        divergent,
+        "verify_paper_candidates_for_run",
+        fake_verify_paper_candidates_for_run,
+    )
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=run_id,
+        topic="target task",
+        idea_cards=[
+            {
+                "id": "idea-0",
+                "title": "Idea Alpha",
+                "borrowed_method": "alpha method",
+                "dedup_key": "idea-alpha",
+                "prior_art_check_status": "pending",
+                "novelty_score": 0.8,
+                "similar_works": [{"title": "Existing Alpha Work"}],
+            },
+            {
+                "id": "idea-1",
+                "title": "Idea Beta",
+                "borrowed_method": "beta method",
+                "dedup_key": "idea-beta",
+                "prior_art_check_status": "pending",
+                "novelty_score": 0.8,
+                "similar_works": [{"title": "Existing Beta Work"}],
+            },
+        ],
+    )
+
+    updates = await divergent.prior_art_check(state)
+
+    assert len(seen_payload) == 1
+    assert updates["idea_cards"][0]["similar_works"] == [
+        {"title": "Existing Alpha Work"}
+    ]
+    assert updates["idea_cards"][1]["similar_works"] == [
+        {"title": "Existing Beta Work"}
+    ]
+    assert updates["idea_cards"][0]["prior_art_similar_works"] == [
+        {"title": "LLM Alpha Work"}
+    ]
+    assert updates["idea_cards"][1]["prior_art_similar_works"] == [
+        {"title": "LLM Beta Work"}
+    ]
