@@ -30,9 +30,20 @@ export function LibraryPaperCard({
   onCopyToPool,
   onMoveToPool,
 }: LibraryPaperCardProps) {
-  const [targetPoolId, setTargetPoolId] = useState("");
+  const [transferAction, setTransferAction] = useState<"copy" | "move" | null>(null);
   const statusStyle = STATUS_STYLES[paper.status] ?? STATUS_STYLES.pending;
   const targetPools = pools.filter((pool) => pool.id !== activePoolId);
+  const transferLabel = transferAction === "copy" ? "Copy to" : "Move to";
+
+  function handleTransfer(targetPoolId: string) {
+    if (transferAction === "copy") {
+      onCopyToPool(paper.id, targetPoolId);
+    }
+    if (transferAction === "move") {
+      onMoveToPool(paper.id, targetPoolId);
+    }
+    setTransferAction(null);
+  }
 
   return (
     <div
@@ -135,40 +146,49 @@ export function LibraryPaperCard({
         >
           {removingId === paper.id ? "Removing..." : "Remove"}
         </button>
+        {activePoolId && targetPools.length > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={() => setTransferAction((current) => current === "copy" ? null : "copy")}
+              className={`btn-secondary text-[12px] px-3 py-1.5 ${
+                transferAction === "copy" ? "border-[var(--accent)] bg-[var(--accent-soft)]" : ""
+              }`}
+              title="Copy to another pool"
+            >
+              <Copy size={13} />
+              Copy
+            </button>
+            <button
+              type="button"
+              onClick={() => setTransferAction((current) => current === "move" ? null : "move")}
+              className={`btn-secondary text-[12px] px-3 py-1.5 ${
+                transferAction === "move" ? "border-[var(--accent)] bg-[var(--accent-soft)]" : ""
+              }`}
+              title="Move to another pool"
+            >
+              <MoveRight size={13} />
+              Move
+            </button>
+          </>
+        )}
       </div>
 
-      {activePoolId && targetPools.length > 0 && (
+      {transferAction && targetPools.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--border-subtle)] pt-3">
-          <select
-            value={targetPoolId}
-            onChange={(event) => setTargetPoolId(event.target.value)}
-            className="input-field text-[12px] py-1.5 min-w-[160px] flex-1"
-          >
-            <option value="">Target pool</option>
-            {targetPools.map((pool) => (
-              <option key={pool.id} value={pool.id}>{pool.name}</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            disabled={!targetPoolId}
-            onClick={() => targetPoolId && onCopyToPool(paper.id, targetPoolId)}
-            className="btn-secondary text-[12px] px-3 py-1.5"
-            title="Copy to selected pool"
-          >
-            <Copy size={13} />
-            Copy
-          </button>
-          <button
-            type="button"
-            disabled={!targetPoolId}
-            onClick={() => targetPoolId && onMoveToPool(paper.id, targetPoolId)}
-            className="btn-secondary text-[12px] px-3 py-1.5"
-            title="Move to selected pool"
-          >
-            <MoveRight size={13} />
-            Move
-          </button>
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            {transferLabel}
+          </span>
+          {targetPools.map((pool) => (
+            <button
+              key={pool.id}
+              type="button"
+              onClick={() => handleTransfer(pool.id)}
+              className="btn-secondary text-[12px] px-3 py-1.5"
+            >
+              {pool.name}
+            </button>
+          ))}
         </div>
       )}
     </div>
