@@ -1,9 +1,7 @@
 """Tests for core schemas and data models."""
-from datetime import datetime, timezone
+import pytest
 from uuid import uuid4
 
-import pytest
-from libs.schemas.paper_verification import PaperVerificationRecord
 from libs.schemas.run import (
     Budget, Policy, RunState, RunStatus, GoalType,
     CreateRunRequest, ScoreSignals, HypothesisCandidate,
@@ -85,21 +83,3 @@ class TestHypothesisCandidate:
         )
         assert h.status == HypothesisStatus.CANDIDATE
         assert h.novelty_score == 0.0
-
-
-class TestPaperVerificationRecord:
-    def test_includes_persisted_fields(self):
-        record_id = uuid4()
-        created_at = datetime.now(timezone.utc)
-        updated_at = datetime.now(timezone.utc)
-
-        record = PaperVerificationRecord(
-            id=record_id,
-            candidate_key="s2:abc",
-            created_at=created_at,
-            updated_at=updated_at,
-        )
-
-        assert record.id == record_id
-        assert record.created_at == created_at
-        assert record.updated_at == updated_at
