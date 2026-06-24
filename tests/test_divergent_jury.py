@@ -290,6 +290,31 @@ def test_attach_prior_art_details_preserves_existing_when_key_absent():
     assert card["prior_art_details"] == [{"candidate_id": "existing"}]
 
 
+def test_attach_prior_art_details_preserves_existing_when_no_verified_records():
+    card = {
+        "title": "Idea With Existing Details",
+        "problem_statement": "Problem",
+        "dedup_key": "idea-existing",
+        "prior_art_details": [{"candidate_id": "existing"}],
+        "closest_prior_work": [{"title": "Existing Work"}],
+    }
+
+    updated_cards = divergent._attach_prior_art_details(
+        [card],
+        {
+            "idea-existing": [
+                {
+                    "candidate_id": "s2-unverified",
+                    "verification_status": "unverified",
+                }
+            ]
+        },
+    )
+
+    assert updated_cards[0]["prior_art_details"] == [{"candidate_id": "existing"}]
+    assert updated_cards[0]["closest_prior_work"] == [{"title": "Existing Work"}]
+
+
 @pytest.mark.asyncio
 async def test_prior_art_check_keeps_verification_records_per_idea(monkeypatch):
     run_id = uuid4()
@@ -693,9 +718,173 @@ async def test_prior_art_check_matches_duplicate_titles_by_dedup_key(monkeypatch
     assert updates["idea_cards"][1]["novelty_score"] == 0.8
 
 
+@pytest.mark.asyncio
+async def test_prior_art_check_uses_computed_keys_for_legacy_cards(monkeypatch):
+    run_id = uuid4()
+    seen_payload: list[list[dict[str, object]]] = []
+
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_search_academic_sources(**kwargs):
+        return [], [kwargs["queries"][0]["query"]], [], {}
+
+    async def fake_verify_paper_candidates_for_run(*args, **kwargs):
+        return {}
+
+    async def fake_generate_llm_json(system_prompt, user_content, gateway, tier):
+        match = re.search(
+            r"## Idea Cards With Per-Card Prior Art\n(.*?)\n\nFor EACH idea card",
+            user_content,
+            re.S,
+        )
+        assert match is not None
+        payload = divergent.json.loads(match.group(1))
+        seen_payload.append(payload)
+
+        alpha_key = payload[0]["dedup_key"]
+        beta_key = payload[1]["dedup_key"]
+        assert alpha_key
+        assert beta_key
+        assert alpha_key != beta_key
+        assert payload[0]["idea_card"]["dedup_key"] == alpha_key
+        assert payload[1]["idea_card"]["dedup_key"] == beta_key
+
+        return (
+            [
+                {
+                    "dedup_key": alpha_key,
+                    "idea_title": "Same Title",
+                    "prior_art_found": True,
+                    "adjusted_novelty_score": 0.2,
+                },
+                {
+                    "dedup_key": beta_key,
+                    "idea_title": "Same Title",
+                    "prior_art_found": False,
+                    "adjusted_novelty_score": 0.9,
+                },
+            ],
+            0.01,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(
+        divergent,
+        "search_academic_sources",
+        fake_search_academic_sources,
+    )
+    monkeypatch.setattr(
+        divergent,
+        "verify_paper_candidates_for_run",
+        fake_verify_paper_candidates_for_run,
+    )
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=run_id,
+        topic="target task",
+        idea_cards=[
+            {
+                "id": "idea-0",
+                "title": "Same Title",
+                "problem_statement": "Alpha problem",
+                "borrowed_method": "alpha method",
+                "novelty_score": 0.5,
+            },
+            {
+                "id": "idea-1",
+                "title": "Same Title",
+                "problem_statement": "Beta problem",
+                "borrowed_method": "beta method",
+                "novelty_score": 0.5,
+            },
+        ],
+    )
+
+    updates = await divergent.prior_art_check(state)
+
+    assert len(seen_payload) == 1
+    assert updates["idea_cards"][0]["dedup_key"] == seen_payload[0][0]["dedup_key"]
+    assert updates["idea_cards"][1]["dedup_key"] == seen_payload[0][1]["dedup_key"]
+    assert updates["idea_cards"][0]["prior_art_found"] is True
+    assert updates["idea_cards"][1]["prior_art_found"] is False
+
+
+@pytest.mark.asyncio
+async def test_prior_art_check_does_not_title_fallback_duplicate_titles(monkeypatch):
+    run_id = uuid4()
+
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_search_academic_sources(**kwargs):
+        return [], [kwargs["queries"][0]["query"]], [], {}
+
+    async def fake_verify_paper_candidates_for_run(*args, **kwargs):
+        return {}
+
+    async def fake_generate_llm_json(*args, **kwargs):
+        return (
+            [
+                {
+                    "idea_title": "Same Title",
+                    "prior_art_found": True,
+                    "adjusted_novelty_score": 0.1,
+                }
+            ],
+            0.01,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(
+        divergent,
+        "search_academic_sources",
+        fake_search_academic_sources,
+    )
+    monkeypatch.setattr(
+        divergent,
+        "verify_paper_candidates_for_run",
+        fake_verify_paper_candidates_for_run,
+    )
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=run_id,
+        topic="target task",
+        idea_cards=[
+            {
+                "id": "idea-0",
+                "title": "Same Title",
+                "problem_statement": "Alpha problem",
+                "borrowed_method": "alpha method",
+                "novelty_score": 0.5,
+            },
+            {
+                "id": "idea-1",
+                "title": "Same Title",
+                "problem_statement": "Beta problem",
+                "borrowed_method": "beta method",
+                "novelty_score": 0.5,
+            },
+        ],
+    )
+
+    updates = await divergent.prior_art_check(state)
+
+    assert updates["idea_cards"][0]["prior_art_found"] is False
+    assert updates["idea_cards"][1]["prior_art_found"] is False
+    assert updates["idea_cards"][0]["novelty_score"] == 0.5
+    assert updates["idea_cards"][1]["novelty_score"] == 0.5
+
+
 def test_build_prior_art_verifier_payload_is_bounded_valid_json_without_raw_json():
     records_by_key = {
-        "idea-large": [
+        "large-idea-problem": [
             {
                 "candidate_id": f"s2-{idx}",
                 "candidate_key": f"s2:s2-{idx}",
@@ -714,7 +903,8 @@ def test_build_prior_art_verifier_payload_is_bounded_valid_json_without_raw_json
                 "id": "idea-0",
                 "title": "Large Idea",
                 "problem_statement": "Problem",
-                "dedup_key": "idea-large",
+                "raw_json": {"abstract": "y" * 2000},
+                "notes": "z" * 9000,
             }
         ],
         records_by_key,
@@ -724,4 +914,7 @@ def test_build_prior_art_verifier_payload_is_bounded_valid_json_without_raw_json
     assert divergent.json.loads(rendered) == payload
     assert len(rendered) < 8000
     assert "raw_json" not in rendered
+    assert "notes" not in rendered
+    assert payload[0]["dedup_key"] == "large-idea-problem"
+    assert payload[0]["idea_card"]["dedup_key"] == "large-idea-problem"
     assert len(payload[0]["prior_art_details"]) == 5

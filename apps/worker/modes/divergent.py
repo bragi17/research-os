@@ -35,6 +35,26 @@ DivergentState = ModeGraphState
 
 _DEDUP_KEY_MAX_LENGTH = 140
 _DEDUP_KEY_HASH_LENGTH = 8
+_VERIFIER_PAYLOAD_MAX_CHARS = 7600
+_VERIFIER_TEXT_MAX_LENGTH = 240
+_VERIFIER_LIST_MAX_ITEMS = 3
+_VERIFIER_RECORD_MAX_ITEMS = 5
+_VERIFIER_CARD_FIELDS = (
+    "id",
+    "title",
+    "problem_statement",
+    "borrowed_method",
+    "source_domain",
+    "mechanism_of_transfer",
+    "expected_benefit",
+    "risks",
+    "required_experiments",
+    "novelty_score",
+    "feasibility_score",
+    "novelty_verdict",
+    "quality_verdict",
+    "prior_art_check_status",
+)
 
 
 def _normalized_idea_key(card: dict[str, Any]) -> str:
@@ -130,6 +150,26 @@ def _dedupe_idea_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped_cards
 
 
+def _stable_card_dedup_keys(cards: list[dict[str, Any]]) -> list[str]:
+    assigned_keys: set[str] = set()
+    keys: list[str] = []
+
+    for card in cards:
+        base_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        dedup_key = _unique_dedup_key(base_key, assigned_keys)
+        assigned_keys.add(dedup_key)
+        keys.append(dedup_key)
+
+    return keys
+
+
+def _cards_with_stable_dedup_keys(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {**card, "dedup_key": dedup_key}
+        for card, dedup_key in zip(cards, _stable_card_dedup_keys(cards))
+    ]
+
+
 def _verification_record_to_dict(record: Any) -> dict[str, Any]:
     if isinstance(record, dict):
         return dict(record)
@@ -183,6 +223,13 @@ def _attach_prior_art_details(
             for record in records
             if _is_verified_record(record)
         ]
+        if not verified_records:
+            next_card = dict(card)
+            next_card.setdefault("prior_art_details", [])
+            next_card.setdefault("closest_prior_work", [])
+            updated_cards.append(next_card)
+            continue
+
         closest_prior_work = [
             _prior_art_summary(record) for record in verified_records[:5]
         ]
@@ -198,38 +245,103 @@ def _attach_prior_art_details(
     return updated_cards
 
 
+def _verifier_value(value: Any) -> Any:
+    if isinstance(value, str):
+        if len(value) <= _VERIFIER_TEXT_MAX_LENGTH:
+            return value
+        return f"{value[: _VERIFIER_TEXT_MAX_LENGTH - 3].rstrip()}..."
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_verifier_value(item) for item in value[:_VERIFIER_LIST_MAX_ITEMS]]
+    return str(value)[:_VERIFIER_TEXT_MAX_LENGTH]
+
+
+def _verifier_idea_card(card: dict[str, Any], dedup_key: str) -> dict[str, Any]:
+    idea_card = {"dedup_key": dedup_key}
+    for field in _VERIFIER_CARD_FIELDS:
+        if field in card:
+            idea_card[field] = _verifier_value(card[field])
+    return idea_card
+
+
+def _verifier_prior_art_detail(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **{
+            key: _verifier_value(value)
+            for key, value in _prior_art_summary(record).items()
+            if value is not None
+        },
+        "verification_status": record.get("verification_status"),
+        "verification_method": record.get("verification_method"),
+        "verification_reason": _verifier_value(record.get("verification_reason")),
+    }
+
+
+def _limit_verifier_payload(
+    payload: list[dict[str, Any]],
+    max_chars: int = _VERIFIER_PAYLOAD_MAX_CHARS,
+) -> list[dict[str, Any]]:
+    for record_limit in (_VERIFIER_RECORD_MAX_ITEMS, 3, 1, 0):
+        candidate = [
+            {
+                **item,
+                "prior_art_details": item.get("prior_art_details", [])[:record_limit],
+                "closest_prior_work": item.get("closest_prior_work", [])[:record_limit],
+            }
+            for item in payload
+        ]
+        if len(json.dumps(candidate, default=str)) <= max_chars:
+            return candidate
+
+    compact_payload = []
+    for item in payload:
+        card = item.get("idea_card", {})
+        compact_payload.append(
+            {
+                "idea_card": {
+                    "dedup_key": card.get("dedup_key"),
+                    "id": card.get("id"),
+                    "title": card.get("title"),
+                },
+                "dedup_key": item.get("dedup_key"),
+                "prior_art_details": [],
+                "closest_prior_work": [],
+            }
+        )
+    return compact_payload
+
+
 def _build_prior_art_verifier_payload(
     cards: list[dict[str, Any]],
     prior_art_records_by_key: dict[str, list[Any]],
 ) -> list[dict[str, Any]]:
-    attached_cards = _attach_prior_art_details(cards, prior_art_records_by_key)
+    keyed_cards = _cards_with_stable_dedup_keys(cards)
+    attached_cards = _attach_prior_art_details(keyed_cards, prior_art_records_by_key)
     payload: list[dict[str, Any]] = []
 
     for card in attached_cards:
-        idea_card = {
-            key: value
-            for key, value in card.items()
-            if key not in {"prior_art_details", "closest_prior_work"}
-        }
+        dedup_key = str(card["dedup_key"])
+        idea_card = _verifier_idea_card(card, dedup_key)
+        verified_records = [
+            _verification_record_to_dict(record)
+            for record in card.get("prior_art_details", [])
+            if _is_verified_record(_verification_record_to_dict(record))
+        ]
         prior_art_details = [
-            {
-                **_prior_art_summary(record),
-                "verification_status": record.get("verification_status"),
-                "verification_method": record.get("verification_method"),
-                "verification_reason": record.get("verification_reason"),
-            }
-            for record in card.get("prior_art_details", [])[:5]
+            _verifier_prior_art_detail(record)
+            for record in verified_records[:_VERIFIER_RECORD_MAX_ITEMS]
         ]
         payload.append(
             {
                 "idea_card": idea_card,
-                "dedup_key": card.get("dedup_key"),
+                "dedup_key": dedup_key,
                 "prior_art_details": prior_art_details,
                 "closest_prior_work": card.get("closest_prior_work", []),
             }
         )
 
-    return payload
+    return _limit_verifier_payload(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -675,10 +787,11 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     cost = state.current_cost_usd
 
     gateway = get_gateway()
+    keyed_idea_cards = _cards_with_stable_dedup_keys(state.idea_cards)
 
     # Build search jobs from idea card titles and borrowed methods.
     search_jobs: list[dict[str, Any]] = []
-    for card in state.idea_cards[:10]:
+    for card in keyed_idea_cards[:10]:
         title = card.get("title", "")
         method = card.get("borrowed_method", "")
         query_text = f"{title} {method}".strip()
@@ -725,9 +838,10 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     # Use VERIFIER prompt from templates.py to assess novelty
     verifier_system = get_system_prompt(PromptName.VERIFIER)
     verifier_payload = _build_prior_art_verifier_payload(
-        state.idea_cards[:10],
+        keyed_idea_cards[:10],
         prior_art_records_by_key,
     )
+    verifier_payload_json = json.dumps(verifier_payload, default=str)
 
     user_content = (
         f"Research topic: {state.topic}\n\n"
@@ -735,7 +849,7 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         f"Records are nested with the idea card they belong to. Do not use "
         f"records from one idea to judge another idea.\n\n"
         f"## Idea Cards With Per-Card Prior Art\n"
-        f"{json.dumps(verifier_payload, default=str)[:8000]}\n\n"
+        f"{verifier_payload_json}\n\n"
         f"For EACH idea card, assess whether substantially similar work "
         f"already exists using only that idea card's prior_art_details and "
         f"closest_prior_work. Output MUST be valid JSON: an array of objects with:\n"
@@ -766,9 +880,23 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         for c in checks
         if c.get("dedup_key")
     }
-    title_check_map = {c.get("idea_title", ""): c for c in checks}
+    title_buckets: dict[str, list[dict[str, Any]]] = {}
+    for check in checks:
+        title = check.get("idea_title", "")
+        if title:
+            title_buckets.setdefault(title, []).append(check)
+    card_title_counts: dict[str, int] = {}
+    for card in keyed_idea_cards:
+        title = card.get("title", "")
+        if title:
+            card_title_counts[title] = card_title_counts.get(title, 0) + 1
+    title_check_map = {
+        title: title_checks[0]
+        for title, title_checks in title_buckets.items()
+        if len(title_checks) == 1 and card_title_counts.get(title) == 1
+    }
     updated_cards: list[dict[str, Any]] = []
-    for card in state.idea_cards:
+    for card in keyed_idea_cards:
         dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
         check = check_map.get(
             dedup_key,
