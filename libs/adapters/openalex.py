@@ -10,13 +10,16 @@ import asyncio
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, Field
 from structlog import get_logger
+
+from libs.schemas.literature import LiteratureErrorKind, LiteratureSource
+from services.literature_errors import SourceRequestError, retry_after_seconds
 
 logger = get_logger(__name__)
 
@@ -126,9 +129,13 @@ class OpenAlexConfig:
     """Configuration for OpenAlex API."""
 
     email: str | None = None  # For polite pool access
+    api_key: str | None = None
     base_url: str = OPENALEX_API_BASE
-    requests_per_second: float = 10.0  # Polite pool rate
+    requests_per_second: float = 2.0
     max_results_per_query: int = 200
+    retry_attempts: int = 3
+    retry_base_delay: float = 1.0
+    retry_max_delay: float = 60.0
 
 
 class OpenAlexAdapter:
@@ -146,9 +153,17 @@ class OpenAlexAdapter:
     def __init__(
         self,
         email: str | None = None,
+        api_key: str | None = None,
         config: OpenAlexConfig | None = None,
     ):
-        self.config = config or OpenAlexConfig(email=email)
+        if config is None:
+            self.config = OpenAlexConfig(email=email, api_key=api_key)
+        else:
+            self.config = replace(
+                config,
+                email=email if email is not None else config.email,
+                api_key=api_key if api_key is not None else config.api_key,
+            )
         self._client: httpx.AsyncClient | None = None
         self._last_request_time: float = 0
         self._cache: dict[str, tuple[Any, float]] = {}
@@ -157,6 +172,8 @@ class OpenAlexAdapter:
         """Get or create HTTP client."""
         if self._client is None:
             headers = {"User-Agent": f"ResearchOS/0.1.0 (mailto:{self.config.email or 'anonymous'})"}
+            if self.config.api_key:
+                headers["api-key"] = self.config.api_key
             self._client = httpx.AsyncClient(
                 base_url=self.config.base_url,
                 headers=headers,
@@ -189,18 +206,82 @@ class OpenAlexAdapter:
             if cached and time.time() - cached[1] < 86400:  # 24 hour cache
                 return cached[0]
 
-        await self._rate_limit()
-
         client = await self._get_client()
-        response = await client.get(endpoint, params=params)
+        attempts = max(1, self.config.retry_attempts)
+        last_error: Exception | None = None
 
-        if response.status_code == 200:
-            data = response.json()
-            if use_cache:
-                self._cache[cache_key] = (data, time.time())
-            return data
+        for attempt in range(attempts):
+            await self._rate_limit()
+            final_attempt = attempt == attempts - 1
 
-        raise ValueError(f"OpenAlex API error: {response.status_code}")
+            try:
+                response = await client.get(endpoint, params=params)
+            except (httpx.TimeoutException, httpx.RequestError) as e:
+                last_error = e
+                if final_attempt:
+                    raise SourceRequestError(
+                        source=LiteratureSource.OPENALEX,
+                        kind=LiteratureErrorKind.TRANSIENT_ERROR,
+                        message=f"OpenAlex request failed: {e}",
+                    ) from e
+                logger.warning("openalex_request_error", attempt=attempt, error=str(e))
+                await asyncio.sleep(self._retry_delay(attempt))
+                continue
+
+            if response.status_code == 200:
+                data = response.json()
+                if use_cache:
+                    self._cache[cache_key] = (data, time.time())
+                return data
+
+            if response.status_code == 429:
+                parsed_retry_after = retry_after_seconds(
+                    response.headers.get("Retry-After")
+                )
+                if final_attempt:
+                    raise SourceRequestError(
+                        source=LiteratureSource.OPENALEX,
+                        kind=LiteratureErrorKind.RATE_LIMITED,
+                        message="OpenAlex rate limit exceeded",
+                        status_code=response.status_code,
+                        retry_after_seconds=parsed_retry_after,
+                    )
+                delay = (
+                    parsed_retry_after
+                    if parsed_retry_after is not None
+                    else self._retry_delay(attempt)
+                )
+                logger.warning("openalex_rate_limited", attempt=attempt, delay=delay)
+                await asyncio.sleep(delay)
+                continue
+
+            if response.status_code >= 500:
+                if final_attempt:
+                    raise SourceRequestError(
+                        source=LiteratureSource.OPENALEX,
+                        kind=LiteratureErrorKind.TRANSIENT_ERROR,
+                        message=f"OpenAlex transient error: {response.status_code}",
+                        status_code=response.status_code,
+                    )
+                delay = self._retry_delay(attempt)
+                logger.warning(
+                    "openalex_server_error",
+                    status=response.status_code,
+                    attempt=attempt,
+                    delay=delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            raise ValueError(f"OpenAlex API error: {response.status_code}")
+
+        raise RuntimeError(f"Failed after {attempts} attempts: {last_error}")
+
+    def _retry_delay(self, attempt: int) -> float:
+        return min(
+            self.config.retry_base_delay * (2**attempt),
+            self.config.retry_max_delay,
+        )
 
     async def search_works(
         self,
