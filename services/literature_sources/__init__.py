@@ -1,0 +1,1 @@
+"""Literature source adapter package."""
