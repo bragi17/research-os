@@ -8,6 +8,7 @@ function calling (works with proxies that don't support response_format).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -36,6 +37,7 @@ from services.llm_settings import (
 logger = get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+ProfileKey = tuple[str, str, str, str, str]
 
 
 class LLMGateway:
@@ -56,13 +58,11 @@ class LLMGateway:
     ):
         self.models = models or DEFAULT_MODELS
 
-        # AsyncOpenAI client for raw chat calls, built from the active profile.
-        self._client_profile_key: tuple[str, str, str, str, str] | None = None
-        self._client: AsyncOpenAI | None = None
+        # AsyncOpenAI clients for raw chat calls, built per active profile.
+        self._clients: dict[ProfileKey, AsyncOpenAI] = {}
 
-        # LangChain ChatOpenAI instances (lazy-init per tier)
-        self._langchain_profile_key: tuple[str, str, str, str, str] | None = None
-        self._langchain_models: dict[str, ChatOpenAI] = {}
+        # LangChain ChatOpenAI instances (lazy-init per profile + tier)
+        self._langchain_models: dict[tuple[ProfileKey, str], ChatOpenAI] = {}
 
         # Cost / token tracking
         self._total_cost_usd = 0.0
@@ -72,7 +72,7 @@ class LLMGateway:
         # Simple response cache
         self._cache: dict[str, tuple[Any, float]] = {}
 
-    def _profile_key(self, profile: LLMProfile) -> tuple[str, str, str, str, str]:
+    def _profile_key(self, profile: LLMProfile) -> ProfileKey:
         return (
             profile.workspace_id,
             profile.provider,
@@ -93,7 +93,9 @@ class LLMGateway:
         return profile
 
     async def _close_client(self, client: AsyncOpenAI) -> None:
-        close = getattr(client, "aclose", None) or getattr(client, "close", None)
+        close = getattr(client, "aclose", None)
+        if not callable(close):
+            close = getattr(client, "close", None)
         if not callable(close):
             return
         result = close()
@@ -103,17 +105,22 @@ class LLMGateway:
     async def _get_client(self) -> tuple[AsyncOpenAI, LLMProfile]:
         profile = await self._get_profile()
         profile_key = self._profile_key(profile)
-        if self._client is None or self._client_profile_key != profile_key:
-            if self._client is not None:
-                await self._close_client(self._client)
-            self._client = AsyncOpenAI(
+        client = self._clients.get(profile_key)
+        if client is None:
+            client = AsyncOpenAI(
                 api_key=profile.api_key,
                 base_url=profile.base_url,
             )
-            self._client_profile_key = profile_key
-            self._langchain_models.clear()
-            self._cache.clear()
-        return self._client, profile
+            self._clients[profile_key] = client
+        return client, profile
+
+    async def aclose(self) -> None:
+        clients = list(self._clients.values())
+        self._clients.clear()
+        self._langchain_models.clear()
+        self._cache.clear()
+        for client in clients:
+            await self._close_client(client)
 
     def _get_langchain_model(
         self,
@@ -123,11 +130,8 @@ class LLMGateway:
         """Get or create a LangChain ChatOpenAI for the given tier."""
         model_config = self.models[tier]
         profile_key = self._profile_key(profile)
-        if self._langchain_profile_key != profile_key:
-            self._langchain_models.clear()
-            self._langchain_profile_key = profile_key
 
-        key = str(model_config.max_tokens)
+        key = (profile_key, str(model_config.max_tokens))
         if key not in self._langchain_models:
             self._langchain_models[key] = ChatOpenAI(
                 model=profile.model,
@@ -508,7 +512,25 @@ _gateway: LLMGateway | None = None
 def reset_gateway() -> None:
     """Reset the singleton LLMGateway."""
     global _gateway
+    gateway = _gateway
     _gateway = None
+    if gateway is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(gateway.aclose())
+    else:
+        loop.create_task(gateway.aclose())
+
+
+async def reset_gateway_async() -> None:
+    """Reset the singleton LLMGateway and close owned clients."""
+    global _gateway
+    gateway = _gateway
+    _gateway = None
+    if gateway is not None:
+        await gateway.aclose()
 
 
 def get_gateway() -> LLMGateway:
