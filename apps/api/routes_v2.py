@@ -33,6 +33,7 @@ from apps.api.database import (
     list_pain_points,
     update_run as db_update_run,
 )
+from apps.worker.production.workspaces import run_workspace_record
 from libs.schemas.multimode import ResearchMode, SpawnRunRequest
 
 logger = get_logger(__name__)
@@ -52,6 +53,7 @@ router = APIRouter(prefix="/api/v1", tags=["v1-multimode"])
 class CreateRunV2Request(BaseModel):
     """Request body for creating a v2 mode-aware run."""
 
+    run_id: UUID | None = None
     title: str = Field(..., min_length=3)
     topic: str = Field(..., min_length=10)
     mode: ResearchMode = Field(default=ResearchMode.INTAKE)
@@ -60,6 +62,7 @@ class CreateRunV2Request(BaseModel):
     library_pool_ids: list[UUID] = Field(default_factory=list)
     budget: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
+    experiment_workspace: str | None = Field(default=None, max_length=1000)
     project_id: UUID | None = None
     parent_run_id: UUID | None = None
     context_bundle_id: UUID | None = None
@@ -156,8 +159,16 @@ async def create_run_v2(
     """Create a new research run with an explicit research mode."""
     await _require_project_access(request.project_id, user)
 
-    run_id = uuid4()
+    run_id = request.run_id or uuid4()
     now = datetime.utcnow()
+    try:
+        experiment_workspace = run_workspace_record(
+            run_id=run_id,
+            title=request.title,
+            configured=request.experiment_workspace,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     run_data: dict[str, Any] = {
         "id": run_id,
@@ -172,6 +183,7 @@ async def create_run_v2(
             "seed_papers": request.seed_papers,
             "library_pool_ids": [str(pool_id) for pool_id in request.library_pool_ids],
             "constraints": request.constraints,
+            "experiment_workspace": experiment_workspace,
         },
         "progress_pct": 0,
         "current_step": None,

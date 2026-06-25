@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -13,6 +14,8 @@ DEFAULT_TREE_LIMIT = 300
 DEFAULT_FILE_MAX_BYTES = 262_144
 DEFAULT_LOG_MAX_BYTES = 262_144
 DEFAULT_WORKSPACE_ROOT = Path("/data/research-os/experiments")
+DEFAULT_RUN_TITLE_SLUG = "research-run"
+MAX_RUN_TITLE_SLUG_LENGTH = 80
 
 
 def _is_relative_to(path: Path, base: Path) -> bool:
@@ -43,6 +46,70 @@ def _safe_relative_path(raw: str | Path | None, *, field_name: str = "path") -> 
     if path.is_absolute() or ".." in path.parts:
         raise ValueError(f"{field_name} must be a workspace-relative path")
     return path
+
+
+def _slugify_run_title(title: str) -> str:
+    chars = [
+        char if char.isalnum() else "-"
+        for char in title.strip().lower()
+    ]
+    slug = re.sub(r"-+", "-", "".join(chars)).strip("-")
+    slug = slug[:MAX_RUN_TITLE_SLUG_LENGTH].rstrip("-")
+    return slug or DEFAULT_RUN_TITLE_SLUG
+
+
+def default_run_workspace_name(*, run_id: UUID, title: str) -> str:
+    """Return the default local folder name for a research conversation/run."""
+
+    return f"{_slugify_run_title(title)}-{run_id}"
+
+
+def resolve_run_workspace_path(
+    *,
+    run_id: UUID,
+    title: str,
+    configured: str | Path | None = None,
+) -> Path:
+    """Resolve a run's experiment workspace under the configured root."""
+
+    base = workspace_base()
+    if configured is not None and str(configured).strip():
+        raw = Path(str(configured).strip()).expanduser()
+        candidate = (
+            raw.resolve()
+            if raw.is_absolute()
+            else (base / _safe_relative_path(raw, field_name="experiment_workspace")).resolve()
+        )
+    else:
+        candidate = (base / default_run_workspace_name(run_id=run_id, title=title)).resolve()
+    if not _is_relative_to(candidate, base):
+        raise ValueError("experiment_workspace escapes workspace root")
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
+def run_workspace_record(
+    *,
+    run_id: UUID,
+    title: str,
+    configured: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return a serializable run workspace record for storage in policy_json."""
+
+    base = workspace_base()
+    manual = configured is not None and str(configured).strip() != ""
+    path = resolve_run_workspace_path(
+        run_id=run_id,
+        title=title,
+        configured=configured,
+    )
+    return {
+        "path": str(path),
+        "relative_path": _relative_display(path, base),
+        "name": path.name,
+        "source": "manual" if manual else "default",
+        "configured_path": str(configured).strip() if manual else None,
+    }
 
 
 def resolve_under_workspace(

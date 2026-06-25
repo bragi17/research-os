@@ -97,6 +97,61 @@ def test_workspace_base_defaults_to_data_experiment_root(
     assert expected.is_dir()
 
 
+def test_resolve_run_workspace_path_defaults_to_title_and_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from apps.worker.production import workspaces
+
+    run_id = uuid4()
+    monkeypatch.setenv("RESEARCH_OS_WORKSPACE_ROOT", str(tmp_path))
+
+    path = workspaces.resolve_run_workspace_path(
+        run_id=run_id,
+        title="Prime Gaps: CPU / Proof?",
+    )
+
+    assert path == (tmp_path / f"prime-gaps-cpu-proof-{run_id}").resolve()
+    assert path.is_dir()
+
+
+def test_resolve_run_workspace_path_accepts_safe_manual_relative_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from apps.worker.production import workspaces
+
+    run_id = uuid4()
+    monkeypatch.setenv("RESEARCH_OS_WORKSPACE_ROOT", str(tmp_path))
+
+    path = workspaces.resolve_run_workspace_path(
+        run_id=run_id,
+        title="Ignored when manual path is set",
+        configured="manual/prime-gap-study",
+    )
+
+    assert path == (tmp_path / "manual" / "prime-gap-study").resolve()
+    assert path.is_dir()
+
+
+@pytest.mark.parametrize("configured", ["../escape", "/tmp/outside-research-os"])
+def test_resolve_run_workspace_path_rejects_paths_outside_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    configured: str,
+) -> None:
+    from apps.worker.production import workspaces
+
+    monkeypatch.setenv("RESEARCH_OS_WORKSPACE_ROOT", str(tmp_path))
+
+    with pytest.raises(ValueError, match="experiment_workspace"):
+        workspaces.resolve_run_workspace_path(
+            run_id=uuid4(),
+            title="Unsafe",
+            configured=configured,
+        )
+
+
 def test_expand_manifest_jobs_preserves_phase_and_job_order() -> None:
     manifest = {
         "project": "demo",

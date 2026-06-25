@@ -2,10 +2,11 @@
 
 import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import Link from "next/link";
 import {
   createRunV2,
+  getModelSettings,
   listLibraryPools,
   startRun,
   searchLibraryTitles,
@@ -26,6 +27,34 @@ const PLACEHOLDERS: Record<RunMode, string> = {
   divergent: "e.g. Finding novel approaches to zero-shot 3D anomaly detection",
   review: "Describe your research topic...",
 };
+
+const DEFAULT_EXPERIMENT_ROOT = "/data/research-os/experiments";
+
+function createDraftRunId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+    const value = Math.floor(Math.random() * 16);
+    const next = char === "x" ? value : (value & 0x3) | 0x8;
+    return next.toString(16);
+  });
+}
+
+function slugifyRunTitle(title: string): string {
+  const slug = Array.from(title.trim().toLowerCase())
+    .map((char) => (/[\p{L}\p{N}]/u.test(char) ? char : "-"))
+    .join("")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80)
+    .replace(/-$/g, "");
+  return slug || "research-run";
+}
+
+function joinWorkspacePath(root: string, name: string): string {
+  return `${root.replace(/\/+$/g, "")}/${name}`;
+}
 
 export default function NewResearchPage() {
   return (
@@ -58,6 +87,10 @@ function NewResearchContent() {
   const [mode, setMode] = useState<RunMode>(initialMode);
   const [topic, setTopic] = useState("");
   const [loading, setLoading] = useState(false);
+  const [draftRunId] = useState(createDraftRunId);
+  const [experimentRoot, setExperimentRoot] = useState(DEFAULT_EXPERIMENT_ROOT);
+  const [experimentWorkspace, setExperimentWorkspace] = useState("");
+  const [workspaceEdited, setWorkspaceEdited] = useState(false);
 
   // Research parameters - always visible
   const [seedPapers, setSeedPapers] = useState("");
@@ -96,6 +129,32 @@ function NewResearchContent() {
       .then((result) => setLibraryPools(result.items))
       .catch(() => setLibraryPools([]));
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    getModelSettings()
+      .then((result) => {
+        const storage = result.categories.find((category) => category.id === "storage");
+        const root = storage?.items.find((item) => item.key === "RESEARCH_OS_WORKSPACE_ROOT");
+        if (active && root?.value) {
+          setExperimentRoot(root.value);
+        }
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  const runTitle = useMemo(() => topic.trim().slice(0, 60) || "New Research", [topic]);
+  const defaultExperimentWorkspace = useMemo(
+    () => joinWorkspacePath(
+      experimentRoot,
+      `${slugifyRunTitle(runTitle)}-${draftRunId}`,
+    ),
+    [draftRunId, experimentRoot, runTitle],
+  );
+  const displayedExperimentWorkspace = workspaceEdited
+    ? experimentWorkspace
+    : defaultExperimentWorkspace;
 
   const addKeyword = useCallback(() => {
     const trimmed = keywordInput.trim();
@@ -163,6 +222,7 @@ function NewResearchContent() {
       const seeds = [...librarySeeds, ...manualSeeds];
       const kws = keywords.length > 0 ? keywords : keywordInput.split(",").map((k) => k.trim()).filter(Boolean);
       const payload: Record<string, unknown> = {
+        run_id: draftRunId,
         title: topic.trim().slice(0, 60),
         topic: topic.trim(),
         mode,
@@ -171,6 +231,9 @@ function NewResearchContent() {
         library_pool_ids: selectedPoolIds,
         budget: { max_new_papers: maxPapers, max_fulltext_reads: maxReads },
       };
+      if (workspaceEdited && displayedExperimentWorkspace.trim()) {
+        payload.experiment_workspace = displayedExperimentWorkspace.trim();
+      }
       if (mode === "frontier") {
         if (venueFilter.trim()) payload.venue_filter = venueFilter.split(",").map((v) => v.trim()).filter(Boolean);
         if (benchmark.trim()) payload.benchmark = benchmark.trim();
@@ -451,6 +514,36 @@ function NewResearchContent() {
                 />
               </div>
             )}
+
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider mb-1">
+                Experiment Directory
+              </label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  type="text"
+                  className="input-field text-[13px] flex-1"
+                  style={{ fontFamily: "var(--font-mono)" }}
+                  value={displayedExperimentWorkspace}
+                  onChange={(e) => {
+                    setWorkspaceEdited(true);
+                    setExperimentWorkspace(e.target.value);
+                  }}
+                />
+                {workspaceEdited && (
+                  <button
+                    type="button"
+                    className="btn-secondary text-[11px] px-3 py-1.5 sm:w-auto"
+                    onClick={() => {
+                      setWorkspaceEdited(false);
+                      setExperimentWorkspace("");
+                    }}
+                  >
+                    Default
+                  </button>
+                )}
+              </div>
+            </div>
 
             {/* Budget - collapsible */}
             <div className="border-t border-[var(--border-subtle)] pt-4">
