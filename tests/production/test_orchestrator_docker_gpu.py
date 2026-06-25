@@ -260,3 +260,65 @@ async def test_run_job_builds_docker_spec_for_docker_gpu(monkeypatch, tmp_path: 
     assert executor.spec.memory == "12g"
     assert executor.spec.cpus == "3"
     assert fake_db.updates[-1]["artifact_dir"] == str(workspace / "experiments" / "smoke")
+
+
+@pytest.mark.asyncio
+async def test_run_job_rejects_unsafe_persisted_docker_metrics_before_executor(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import apps.worker.production.orchestrator as orchestrator
+
+    project_id = uuid4()
+    workspace_id = uuid4()
+    job_id = uuid4()
+    base = tmp_path / "trusted-workspaces"
+    monkeypatch.setenv("RESEARCH_OS_WORKSPACE_ROOT", str(base))
+    workspace = base / "workspaces" / str(workspace_id) / "projects" / str(project_id)
+    (workspace / "experiments" / "smoke").mkdir(parents=True)
+
+    fake_job = {
+        "id": job_id,
+        "project_id": project_id,
+        "executor_type": "docker_gpu",
+        "cmd": "python train.py",
+        "cwd": "experiments/smoke",
+        "expected_outputs_json": ["metrics.json"],
+        "metrics_json": {
+            "gpu_count": 1,
+            "job_image": "--privileged",
+            "memory": "12g",
+            "cpus": "3",
+            "network": "none",
+        },
+    }
+
+    class FakeDb:
+        async def get_experiment_job(self, _job_id):
+            return fake_job
+
+        async def get_project(self, _project_id):
+            return {
+                "id": project_id,
+                "workspace_id": workspace_id,
+                "default_workspace_path": str(workspace),
+            }
+
+        async def update_experiment_job(self, _job_id, updates):
+            return {**fake_job, **updates}
+
+    class FakeExecutor:
+        def __init__(self):
+            self.called = False
+
+        async def run(self, spec):
+            self.called = True
+            raise AssertionError("executor should not be called")
+
+    executor = FakeExecutor()
+    monkeypatch.setattr(orchestrator, "db", FakeDb())
+
+    with pytest.raises(ValueError, match="docker"):
+        await orchestrator.run_job(job_id, executor=executor)
+
+    assert executor.called is False

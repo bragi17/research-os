@@ -44,7 +44,11 @@ from apps.worker.production.workspaces import (
     resolve_project_workspace_path,
     resolve_under_workspace,
 )
-from libs.schemas.production import CodingTaskCreate, ExperimentManifestPayload
+from libs.schemas.production import (
+    CodingTaskCreate,
+    ExperimentManifestPayload,
+    validate_docker_job_metrics,
+)
 
 
 DEFAULT_LOCAL_JOB_TIMEOUT_SEC = 1800
@@ -1064,19 +1068,20 @@ async def run_local_job(
         cwd = Path(str(job.get("cwd") or "."))
         resolved_cwd = _resolve_job_cwd(job.get("cwd"), root)
         metrics = job.get("metrics_json") if isinstance(job.get("metrics_json"), dict) else {}
+        docker_metrics = validate_docker_job_metrics(metrics, require_all=True)
         spec = DockerJobSpec(
             job_id=str(job_id),
             workspace_root=root,
             cwd=cwd,
             command=job["cmd"],
-            image=str(metrics.get("job_image") or "research-os-job-runtime:latest"),
+            image=str(docker_metrics["job_image"]),
             log_dir=log_dir,
             expected_outputs=_expected_output_paths(job),
             timeout_sec=_job_timeout(job),
-            gpu_count=int(metrics.get("gpu_count") or 1),
-            memory=str(metrics.get("memory") or "16g"),
-            cpus=str(metrics.get("cpus") or "4"),
-            network=str(metrics.get("network") or "none"),
+            gpu_count=int(docker_metrics["gpu_count"]),
+            memory=str(docker_metrics["memory"]),
+            cpus=str(docker_metrics["cpus"]),
+            network=str(docker_metrics["network"]),
         )
         artifact_dir = str(resolved_cwd)
         executor = executor or DockerExperimentExecutor()

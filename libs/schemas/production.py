@@ -104,6 +104,45 @@ def _validate_docker_cpus(value: str) -> str:
     return raw
 
 
+DOCKER_METRIC_KEYS = {"gpu_count", "job_image", "memory", "cpus", "network"}
+
+
+def validate_docker_job_metrics(
+    metrics: dict[str, Any],
+    *,
+    require_all: bool = False,
+) -> dict[str, Any]:
+    """Validate Docker executor metadata carried in experiment job metrics."""
+
+    values = dict(metrics)
+    if require_all or "gpu_count" in values:
+        gpu_count = values.get("gpu_count", 1)
+        try:
+            gpu_count_int = int(gpu_count)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("docker gpu_count must be an integer") from exc
+        if gpu_count_int < 1:
+            raise ValueError("docker gpu_count must be at least 1")
+        values["gpu_count"] = gpu_count_int
+
+    if require_all or "job_image" in values:
+        job_image = values["job_image"] if "job_image" in values else "research-os-job-runtime:latest"
+        values["job_image"] = _validate_docker_image_reference(str(job_image))
+    if require_all or "memory" in values:
+        memory = values["memory"] if "memory" in values else "16g"
+        values["memory"] = _validate_docker_memory(str(memory))
+    if require_all or "cpus" in values:
+        cpus = values["cpus"] if "cpus" in values else "4"
+        values["cpus"] = _validate_docker_cpus(str(cpus))
+    if require_all or "network" in values:
+        network_value = values["network"] if "network" in values else "none"
+        network = str(network_value).strip()
+        if network != "none":
+            raise ValueError("docker network must be none")
+        values["network"] = network
+    return values
+
+
 class ProjectStatus(str, Enum):
     """Research project lifecycle states."""
 
@@ -442,6 +481,20 @@ class ExperimentResources(BaseModel):
     def validate_cpus(cls, value: str) -> str:
         return _validate_docker_cpus(value)
 
+    @model_validator(mode="after")
+    def validate_docker_metrics(self) -> ExperimentResources:
+        validate_docker_job_metrics(
+            {
+                "gpu_count": self.gpu_count,
+                "job_image": self.job_image,
+                "memory": self.memory,
+                "cpus": self.cpus,
+                "network": self.network,
+            },
+            require_all=True,
+        )
+        return self
+
 
 class ExperimentEnvironment(BaseModel):
     """Environment section from an experiment manifest."""
@@ -701,9 +754,11 @@ class ExperimentJobCreate(BaseModel):
     failure_reason: str | None = None
 
     @model_validator(mode="after")
-    def validate_attempts(self) -> ExperimentJobCreate:
+    def validate_job(self) -> ExperimentJobCreate:
         if self.attempt > self.max_attempts:
             raise ValueError("attempt must be less than or equal to max_attempts")
+        if self.executor_type == ExperimentJobExecutorType.DOCKER_GPU:
+            validate_docker_job_metrics(self.metrics_json, require_all=True)
         return self
 
     @field_validator("cwd")
@@ -832,6 +887,16 @@ class ExperimentJobPatch(BaseModel):
     def validate_attempt_bounds(self) -> ExperimentJobPatch:
         if self.attempt is not None and self.max_attempts is not None and self.attempt > self.max_attempts:
             raise ValueError("attempt must be less than or equal to max_attempts")
+        if self.metrics_json is not None:
+            validate_docker_metrics = (
+                self.executor_type == ExperimentJobExecutorType.DOCKER_GPU
+                or any(key in self.metrics_json for key in DOCKER_METRIC_KEYS)
+            )
+            if validate_docker_metrics:
+                validate_docker_job_metrics(
+                    self.metrics_json,
+                    require_all=self.executor_type == ExperimentJobExecutorType.DOCKER_GPU,
+                )
         return self
 
 

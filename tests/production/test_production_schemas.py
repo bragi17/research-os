@@ -309,6 +309,37 @@ def test_experiment_job_paths_must_be_workspace_relative() -> None:
         ExperimentJobCreate(**base, metrics_json={"log_dir": "/tmp/logs"})
 
 
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"network": "host"},
+        {"job_image": "--privileged"},
+        {"job_image": ""},
+        {"gpu_count": 0},
+    ],
+)
+def test_docker_gpu_job_create_rejects_unsafe_metrics(metrics: dict) -> None:
+    with pytest.raises(ValidationError):
+        ExperimentJobCreate(
+            manifest_id=uuid4(),
+            experiment_plan_id=uuid4(),
+            project_id=uuid4(),
+            phase_name="sanity",
+            job_name="smoke",
+            executor_type="docker_gpu",
+            cmd="python train.py --debug",
+            metrics_json=metrics,
+        )
+
+
+def test_docker_gpu_job_patch_rejects_unsafe_metrics_when_executor_type_is_provided() -> None:
+    with pytest.raises(ValidationError):
+        ExperimentJobPatch(
+            executor_type="docker_gpu",
+            metrics_json={"network": "host"},
+        )
+
+
 def test_typed_patch_models_validate_status_and_paths() -> None:
     with pytest.raises(ValidationError):
         ExperimentJobPatch(status="not-a-status")
