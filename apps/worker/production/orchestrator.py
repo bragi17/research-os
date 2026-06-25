@@ -126,11 +126,10 @@ def _normalize_codex_mcp_config(value: Any) -> dict[str, Any] | None:
     raise ValueError("unsupported_mcp_config: CodexProvider v1 does not support MCP config")
 
 
-def _build_exec_options(task: dict[str, Any]) -> CodingExecOptions:
+def _build_exec_options(task: dict[str, Any], project: dict[str, Any]) -> CodingExecOptions:
     cwd = task.get("workspace_path") or task.get("cwd")
     if not cwd:
         raise ValueError("workspace_path is required to run coding task")
-    project = {"id": task["project_id"], "default_workspace_path": cwd}
     cwd = str(resolve_coding_workspace_path(task, project))
 
     return CodingExecOptions(
@@ -250,13 +249,19 @@ async def run_codex_task(
         raise ValueError(f"Coding task not found: {task_id}")
 
     try:
-        options = _build_exec_options(task)
+        project = await db.get_project(task["project_id"])
+        if project is None:
+            raise ValueError(f"Project not found: {task['project_id']}")
+        options = _build_exec_options(task, project)
         prompt = task.get("user_prompt")
         if not prompt:
             raise ValueError("user_prompt is required to run coding task")
     except ValueError as exc:
         failure_text = str(exc)
-        if "workspace_path escapes workspace root" in failure_text:
+        if (
+            "workspace_path escapes workspace root" in failure_text
+            or "workspace_path escapes project workspace root" in failure_text
+        ):
             failure_reason = "workspace_path_escaped"
         elif "workspace_path is required" in failure_text or "Project not found" in failure_text:
             failure_reason = "workspace_unavailable"
