@@ -396,8 +396,8 @@ async def claim_queued_coding_tasks(
                         'lease_id', gen_random_uuid()::text,
                         'worker_id', $2::text,
                         'claimed_at', NOW(),
-                        'claimed_until', NOW() + ($3::text || ' seconds')::interval,
-                        'lease_seconds', $3
+                        'claimed_until', NOW() + ($3::int::text || ' seconds')::interval,
+                        'lease_seconds', $3::int
                     )
                 )
         WHERE id IN (SELECT id FROM picked)
@@ -436,8 +436,8 @@ async def claim_coding_task(
                         'lease_id', gen_random_uuid()::text,
                         'worker_id', $2::text,
                         'claimed_at', NOW(),
-                        'claimed_until', NOW() + ($3::text || ' seconds')::interval,
-                        'lease_seconds', $3
+                        'claimed_until', NOW() + ($3::int::text || ' seconds')::interval,
+                        'lease_seconds', $3::int
                     )
                 )
         WHERE id = $1
@@ -839,8 +839,8 @@ async def claim_experiment_jobs(
                         'lease_id', gen_random_uuid()::text,
                         'worker_id', $3::text,
                         'claimed_at', NOW(),
-                        'claimed_until', NOW() + ($4::text || ' seconds')::interval,
-                        'lease_seconds', $4
+                        'claimed_until', NOW() + ($4::int::text || ' seconds')::interval,
+                        'lease_seconds', $4::int
                     )
                 )
         WHERE id IN (SELECT id FROM picked)
@@ -880,8 +880,8 @@ async def claim_experiment_job(
                         'lease_id', gen_random_uuid()::text,
                         'worker_id', $2::text,
                         'claimed_at', NOW(),
-                        'claimed_until', NOW() + ($3::text || ' seconds')::interval,
-                        'lease_seconds', $3
+                        'claimed_until', NOW() + ($3::int::text || ' seconds')::interval,
+                        'lease_seconds', $3::int
                     )
                 )
         WHERE id = $1

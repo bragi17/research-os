@@ -12,6 +12,7 @@ import apps.api.database as db
 DEFAULT_TREE_LIMIT = 300
 DEFAULT_FILE_MAX_BYTES = 262_144
 DEFAULT_LOG_MAX_BYTES = 262_144
+DEFAULT_WORKSPACE_ROOT = Path("/data/research-os/experiments")
 
 
 def _is_relative_to(path: Path, base: Path) -> bool:
@@ -26,7 +27,11 @@ def workspace_base() -> Path:
     """Return the configured base directory for all local production workspaces."""
 
     configured = os.getenv("RESEARCH_OS_WORKSPACE_ROOT")
-    raw = Path(configured).expanduser() if configured else Path.cwd() / ".research-os" / "workspaces"
+    raw = (
+        Path(configured).expanduser()
+        if configured and configured.strip()
+        else DEFAULT_WORKSPACE_ROOT
+    )
     base = raw.resolve()
     base.mkdir(parents=True, exist_ok=True)
     return base

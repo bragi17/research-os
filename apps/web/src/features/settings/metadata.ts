@@ -1,11 +1,3 @@
-export const CATEGORY_ICONS: Record<string, string> = {
-  llm: "🧠",
-  embedding: "📐",
-  rerank: "🔄",
-  academic: "🎓",
-  storage: "💾",
-};
-
 export const CATEGORY_DESC: Record<string, string> = {
   llm: "Configure the LLM provider for research analysis, paper review, and innovation generation.",
   embedding: "Configure the embedding model for vector search and RAG indexing.",

@@ -11,10 +11,14 @@ from structlog import get_logger
 from libs.schemas.settings import LLMSettingsUpdate, LLMTestRequest
 from services.llm_settings import (
     DEFAULT_DEEPSEEK_BASE_URL,
+    DEFAULT_DEEPSEEK_LABEL,
     DEFAULT_DEEPSEEK_MODEL,
+    DEFAULT_WORKSPACE_ID,
+    DEEPSEEK_PROVIDER,
     LLMProfile,
     LLMSettingsRepository,
     invalidate_llm_config,
+    mask_api_key,
     redact_secret_text,
 )
 
@@ -23,6 +27,7 @@ router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
 # .env file path
 ENV_PATH = Path(os.getenv("ENV_FILE_PATH", "/root/research-os/.env"))
+DEFAULT_EXPERIMENT_ROOT = "/data/research-os/experiments"
 
 # Model config categories
 MODEL_CATEGORIES = {
@@ -43,9 +48,18 @@ MODEL_CATEGORIES = {
         "label": "Academic APIs",
     },
     "storage": {
-        "keys": ["STORAGE_BACKEND", "LIBRARY_STORAGE_DIR", "GROBID_URL"],
+        "keys": [
+            "RESEARCH_OS_WORKSPACE_ROOT",
+            "STORAGE_BACKEND",
+            "LIBRARY_STORAGE_DIR",
+            "GROBID_URL",
+        ],
         "label": "Storage & Services",
     },
+}
+
+DEFAULT_SETTING_VALUES = {
+    "RESEARCH_OS_WORKSPACE_ROOT": DEFAULT_EXPERIMENT_ROOT,
 }
 
 # Keys that should be masked in GET responses
@@ -99,6 +113,35 @@ def _mask_value(key: str, value: str) -> str:
     if key in SENSITIVE_KEYS and len(value) > 8:
         return value[:4] + "****" + value[-4:]
     return value
+
+
+def _effective_setting_value(key: str, env: dict[str, str]) -> str:
+    value = env.get(key)
+    if value is None:
+        value = os.getenv(key)
+    if value is None or value.strip() == "":
+        value = DEFAULT_SETTING_VALUES.get(key, "")
+    return value
+
+
+def _fallback_llm_profile(env: dict[str, str], error: Exception | None = None) -> LLMProfile:
+    api_key = _effective_setting_value("DEEPSEEK_API_KEY", env)
+    return LLMProfile(
+        id=None,
+        workspace_id=DEFAULT_WORKSPACE_ID,
+        provider=DEEPSEEK_PROVIDER,
+        label=DEFAULT_DEEPSEEK_LABEL,
+        base_url=_effective_setting_value("DEEPSEEK_BASE_URL", env)
+        or DEFAULT_DEEPSEEK_BASE_URL,
+        model=_effective_setting_value("DEEPSEEK_MODEL", env)
+        or DEFAULT_DEEPSEEK_MODEL,
+        api_key=None,
+        api_key_preview=mask_api_key(api_key),
+        is_key_set=bool(api_key),
+        last_test_status="error" if error else None,
+        last_test_error=redact_secret_text(str(error)) if error else None,
+        last_test_at=None,
+    )
 
 
 def _profile_response(profile: LLMProfile) -> dict[str, Any]:
@@ -170,7 +213,14 @@ def _reset_embedding_runtime() -> None:
 async def get_model_settings() -> dict[str, Any]:
     """Get all model configuration grouped by category."""
     env = _read_env()
-    profile = await LLMSettingsRepository().get_active_profile(include_secret=False)
+    try:
+        profile = await LLMSettingsRepository().get_active_profile(include_secret=False)
+    except Exception as exc:
+        logger.warning(
+            "settings.llm_profile_fallback",
+            error=redact_secret_text(str(exc))[:200],
+        )
+        profile = _fallback_llm_profile(env, exc)
     categories: list[dict[str, Any]] = [_llm_category(profile)]
 
     for cat_id, cat_info in MODEL_CATEGORIES.items():
@@ -178,7 +228,7 @@ async def get_model_settings() -> dict[str, Any]:
             continue
         items: list[dict[str, Any]] = []
         for key in cat_info["keys"]:
-            value = env.get(key, "")
+            value = _effective_setting_value(key, env)
             items.append({
                 "key": key,
                 "value": _mask_value(key, value),

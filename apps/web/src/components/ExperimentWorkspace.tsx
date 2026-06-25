@@ -48,6 +48,7 @@ import {
   gateSubmissionPackage,
   getExperimentJobArtifacts,
   getExperimentJobLog,
+  getModelSettings,
   getWorkspaceFile,
   getWorkspaceTree,
   listAgentRuntimes,
@@ -151,6 +152,8 @@ const INPUT_CLASS =
 const TEXTAREA_CLASS =
   "min-h-[72px] w-full resize-y rounded-md border border-[var(--border-subtle)] bg-[var(--bg-primary)] px-2 py-2 text-[12px] leading-relaxed text-[var(--text-secondary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] disabled:opacity-50";
 
+const DEFAULT_EXPERIMENT_ROOT = "/data/research-os/experiments";
+
 const REQUIRED_ACCEPTANCE_CRITERIA = {
   sanity_checks: ["The experiment command exits successfully."],
   minimum_artifacts: ["metrics.json", "report.md"],
@@ -245,6 +248,11 @@ function slugify(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return slug || "experiment";
+}
+
+function buildExperimentWorkspacePath(root: string, topic: string, runId: string): string {
+  const base = (root.trim() || DEFAULT_EXPERIMENT_ROOT).replace(/\/+$/g, "");
+  return `${base}/${slugify(topic)}-${shortId(runId)}`;
 }
 
 function statusClass(status?: string | null): string {
@@ -413,6 +421,9 @@ export default function ExperimentWorkspace({
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [createDraft, setCreateDraft] =
     useState<CreateDraftState>(EMPTY_CREATE_DRAFT);
+  const [settingsWorkspaceRoot, setSettingsWorkspaceRoot] = useState(
+    DEFAULT_EXPERIMENT_ROOT,
+  );
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTree | null>(
     null,
   );
@@ -459,9 +470,10 @@ export default function ExperimentWorkspace({
   const activeManuscript = state.manuscripts[0] ?? null;
   const topicLabel = topic.trim() || "Research experiment";
   const defaultProjectTitle = topicLabel;
-  const defaultWorkspacePath = `workspaces/${slugify(topicLabel)}-${shortId(
-    runId,
-  )}`;
+  const defaultWorkspacePath = useMemo(
+    () => buildExperimentWorkspacePath(settingsWorkspaceRoot, topicLabel, runId),
+    [runId, settingsWorkspaceRoot, topicLabel],
+  );
   const latestTerminal = state.terminals[0] ?? null;
   const activeJobCount = state.jobs.filter((job) =>
     ["pending", "running", "stuck"].includes(job.status),
@@ -676,6 +688,25 @@ export default function ExperimentWorkspace({
       xtermRef.current?.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getModelSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        const rootItem = settings.categories
+          .find((category) => category.id === "storage")
+          ?.items.find((item) => item.key === "RESEARCH_OS_WORKSPACE_ROOT");
+        const root = rootItem?.value?.trim();
+        if (root) setSettingsWorkspaceRoot(root);
+      })
+      .catch(() => {
+        if (!cancelled) setSettingsWorkspaceRoot(DEFAULT_EXPERIMENT_ROOT);
+      });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
