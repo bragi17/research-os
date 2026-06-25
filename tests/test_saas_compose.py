@@ -99,13 +99,21 @@ def test_saas_compose_builds_tagged_job_runtime_image() -> None:
 def test_saas_compose_uses_saas_env_and_database_substitutions() -> None:
     compose = _compose()
 
+    expected_env_files = [
+        "../../.env.saas.example",
+        {"path": "../../.env.saas", "required": False},
+    ]
     for service_name in ["api", "worker", "production-scheduler", "gpu-worker"]:
-        assert compose["services"][service_name]["env_file"] == ["../../.env.saas"]
+        assert compose["services"][service_name]["env_file"] == expected_env_files
 
     postgres_env = compose["services"]["postgres"]["environment"]
     assert postgres_env["POSTGRES_DB"] == "${POSTGRES_DB:-research_os}"
     assert postgres_env["POSTGRES_USER"] == "${POSTGRES_USER:-ros_user}"
     assert postgres_env["POSTGRES_PASSWORD"] == "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.saas}"
+    assert compose["services"]["postgres"]["healthcheck"]["test"] == [
+        "CMD-SHELL",
+        "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
+    ]
 
     for service_name in ["api", "worker", "production-scheduler", "gpu-worker"]:
         assert (
