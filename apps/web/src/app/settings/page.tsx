@@ -17,6 +17,7 @@ export default function SettingsPage() {
   const [llmEdit, setLlmEdit] = useState<LLMEdit>(DEFAULT_LLM_EDIT);
   const [savedLlmEdit, setSavedLlmEdit] = useState<LLMEdit>(DEFAULT_LLM_EDIT);
   const [literatureEdits, setLiteratureEdits] = useState<Record<string, LiteratureSourceProfile>>({});
+  const [savingLiteratureSource, setSavingLiteratureSource] = useState<string | null>(null);
   const savedLlmEditRef = useRef<LLMEdit>(DEFAULT_LLM_EDIT);
   const llmDirtyRef = useRef(false);
 
@@ -167,6 +168,12 @@ export default function SettingsPage() {
 
   const handleLiteratureEdit = (source: string, value: LiteratureSourceProfile) => {
     setLiteratureEdits((prev) => ({ ...prev, [source]: value }));
+    setTestResults((prev) => {
+      if (!prev[source]) return prev;
+      const next = { ...prev };
+      delete next[source];
+      return next;
+    });
     setSaveResult(null);
   };
 
@@ -174,7 +181,7 @@ export default function SettingsPage() {
     const draft = literatureEdits[source];
     if (!draft) return;
 
-    setSaving(true);
+    setSavingLiteratureSource(source);
     setSaveResult(null);
     try {
       const newCredentials = String(draft.options["new_credentials"] || "")
@@ -214,7 +221,7 @@ export default function SettingsPage() {
     } catch (error) {
       setSaveResult(`Error: ${String(error)}`);
     } finally {
-      setSaving(false);
+      setSavingLiteratureSource(null);
     }
   };
 
@@ -257,6 +264,14 @@ export default function SettingsPage() {
   };
 
   const handleTestLiterature = async (source: string) => {
+    if (literatureEdits[source]) {
+      setTestResults((prev) => ({
+        ...prev,
+        [source]: { status: "error", detail: "Save this source before testing." },
+      }));
+      return;
+    }
+
     setTesting(source);
     try {
       const res = await fetch(`/api/v1/settings/literature/${source}/test`, { method: "POST" });
@@ -333,6 +348,7 @@ export default function SettingsPage() {
           llmEdit={llmEdit}
           literatureEdits={literatureEdits}
           saving={saving}
+          savingLiteratureSource={savingLiteratureSource}
           testing={testing}
           testResult={testResults[cat.id]}
           literatureTestResults={testResults}

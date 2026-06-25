@@ -6,6 +6,7 @@ interface LiteratureSourcesPanelProps {
   sources: LiteratureSourceProfile[];
   edits: Record<string, LiteratureSourceProfile>;
   saving: boolean;
+  savingSource: string | null;
   testing: string | null;
   testResults: Record<string, TestResult>;
   onEdit: (source: string, value: LiteratureSourceProfile) => void;
@@ -14,6 +15,7 @@ interface LiteratureSourcesPanelProps {
 }
 
 const TRANSIENT_OPTION_KEYS = new Set(["new_credentials", "clear_credential_ids"]);
+const CREDENTIAL_SOURCES = new Set(["web_search", "semantic_scholar", "openalex"]);
 
 function sourceDraft(
   source: LiteratureSourceProfile,
@@ -46,6 +48,10 @@ function formatOptions(options: Record<string, unknown>): string {
   return JSON.stringify(editableOptions(options), null, 2);
 }
 
+function sourceOptionsKey(source: LiteratureSourceProfile): string {
+  return `${source.source}:${formatOptions(source.options || {})}`;
+}
+
 function mergeOptions(
   currentOptions: Record<string, unknown>,
   nextOptions: Record<string, unknown>,
@@ -68,6 +74,7 @@ export function LiteratureSourcesPanel({
   sources,
   edits,
   saving,
+  savingSource,
   testing,
   testResults,
   onEdit,
@@ -75,6 +82,10 @@ export function LiteratureSourcesPanel({
   onTest,
 }: LiteratureSourcesPanelProps) {
   const sourceKeys = useMemo(() => sources.map((source) => source.source).join("|"), [sources]);
+  const sourceOptionsKeys = useMemo(
+    () => sources.map(sourceOptionsKey).join("|"),
+    [sources],
+  );
   const [optionText, setOptionText] = useState<Record<string, string>>({});
   const [optionErrors, setOptionErrors] = useState<Record<string, string>>({});
 
@@ -82,13 +93,13 @@ export function LiteratureSourcesPanel({
     setOptionText((previous) => {
       const next = { ...previous };
       for (const source of sources) {
-        if (next[source.source] === undefined && !edits[source.source]) {
+        if (!edits[source.source] && !optionErrors[source.source]) {
           next[source.source] = formatOptions(source.options || {});
         }
       }
       return next;
     });
-  }, [sources, sourceKeys, edits]);
+  }, [sources, sourceKeys, sourceOptionsKeys, edits, optionErrors]);
 
   if (sources.length === 0) {
     return (
@@ -109,7 +120,11 @@ export function LiteratureSourcesPanel({
         const optionsText = optionText[source.source] ?? formatOptions(draft.options || {});
         const optionError = optionErrors[source.source];
         const hasEdit = Boolean(edits[source.source]);
-        const canSave = hasEdit && !saving && !optionError;
+        const isSavingThisSource = savingSource === source.source;
+        const isAnySourceSaving = Boolean(savingSource);
+        const canSave = hasEdit && !saving && !isAnySourceSaving && !optionError;
+        const canTest = testing !== source.source && !saving && !isAnySourceSaving;
+        const supportsCredentials = CREDENTIAL_SOURCES.has(source.source);
 
         return (
           <div key={source.source} className="px-5 py-4">
@@ -137,6 +152,9 @@ export function LiteratureSourcesPanel({
                     </p>
                   ) : (
                     <p className="text-[var(--text-muted)]">No test recorded.</p>
+                  )}
+                  {hasEdit && (
+                    <p className="text-[var(--accent-amber)]">Save this source before testing.</p>
                   )}
                   {testResult && (
                     <p
@@ -173,7 +191,7 @@ export function LiteratureSourcesPanel({
                     htmlFor={`literature-options-${source.source}`}
                     className="pt-1.5 text-[12px] font-medium text-[var(--text-secondary)]"
                   >
-                    Options JSON
+                    Options update JSON
                   </label>
                   <div className="min-w-0 space-y-1">
                     <textarea
@@ -211,76 +229,92 @@ export function LiteratureSourcesPanel({
                     {optionError && (
                       <p className="text-[11px] text-[var(--accent-red)]">{optionError}</p>
                     )}
+                    <p className="text-[11px] text-[var(--text-muted)]">
+                      Saved as a merge into existing options; omitted keys are left unchanged.
+                    </p>
                   </div>
 
-                  <span className="pt-1.5 text-[12px] font-medium text-[var(--text-secondary)]">
-                    Stored keys
-                  </span>
-                  <div className="min-w-0">
-                    {source.credentials.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {source.credentials.map((credential) => {
-                          const marked = credential.id ? pendingClear.has(credential.id) : false;
-                          return (
-                            <span
-                              key={credential.id || credential.label}
-                              className={`inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--border-subtle)] px-2 py-1 text-[11px] ${
-                                marked ? "text-[var(--accent-red)] line-through" : "text-[var(--text-muted)]"
-                              }`}
-                            >
-                              <span className="min-w-0 truncate" style={{ fontFamily: "var(--font-mono)" }}>
-                                {credential.preview || credential.label}
-                              </span>
-                              {credential.id && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const nextClearIds = marked
-                                      ? clearIds.filter((id) => id !== credential.id)
-                                      : [...clearIds, credential.id];
-                                    onEdit(source.source, {
-                                      ...draft,
-                                      options: {
-                                        ...(draft.options || {}),
-                                        clear_credential_ids: nextClearIds,
-                                      },
-                                    });
-                                  }}
-                                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--accent-red)] hover:bg-[var(--accent-red-soft)]"
-                                  aria-label={`${marked ? "Keep" : "Remove"} ${credential.label}`}
-                                  title={marked ? "Keep credential" : "Remove credential"}
+                  {supportsCredentials ? (
+                    <>
+                      <span className="pt-1.5 text-[12px] font-medium text-[var(--text-secondary)]">
+                        Stored keys
+                      </span>
+                      <div className="min-w-0">
+                        {source.credentials.length > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {source.credentials.map((credential) => {
+                              const marked = credential.id ? pendingClear.has(credential.id) : false;
+                              return (
+                                <span
+                                  key={credential.id || credential.label}
+                                  className={`inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--border-subtle)] px-2 py-1 text-[11px] ${
+                                    marked ? "text-[var(--accent-red)] line-through" : "text-[var(--text-muted)]"
+                                  }`}
                                 >
-                                  <Trash2 size={12} strokeWidth={2} />
-                                </button>
-                              )}
-                            </span>
-                          );
-                        })}
+                                  <span className="min-w-0 truncate" style={{ fontFamily: "var(--font-mono)" }}>
+                                    {credential.preview || credential.label}
+                                  </span>
+                                  {credential.id && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const nextClearIds = marked
+                                          ? clearIds.filter((id) => id !== credential.id)
+                                          : [...clearIds, credential.id];
+                                        onEdit(source.source, {
+                                          ...draft,
+                                          options: {
+                                            ...(draft.options || {}),
+                                            clear_credential_ids: nextClearIds,
+                                          },
+                                        });
+                                      }}
+                                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--accent-red)] hover:bg-[var(--accent-red-soft)]"
+                                      aria-label={`${marked ? "Keep" : "Remove"} ${credential.label}`}
+                                      title={marked ? "Keep credential" : "Remove credential"}
+                                    >
+                                      <Trash2 size={12} strokeWidth={2} />
+                                    </button>
+                                  )}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <span className="text-[12px] text-[var(--text-muted)]">No stored keys.</span>
+                        )}
                       </div>
-                    ) : (
-                      <span className="text-[12px] text-[var(--text-muted)]">No stored keys.</span>
-                    )}
-                  </div>
 
-                  <label
-                    htmlFor={`literature-keys-${source.source}`}
-                    className="pt-1.5 text-[12px] font-medium text-[var(--text-secondary)]"
-                  >
-                    New keys
-                  </label>
-                  <textarea
-                    id={`literature-keys-${source.source}`}
-                    className="input-field min-h-[68px] resize-y py-1.5 text-[12px] leading-relaxed"
-                    style={{ fontFamily: "var(--font-mono)" }}
-                    value={nextKeys}
-                    placeholder="Paste one or more keys, separated by whitespace or new lines"
-                    onChange={(event) => {
-                      onEdit(source.source, {
-                        ...draft,
-                        options: { ...(draft.options || {}), new_credentials: event.target.value },
-                      });
-                    }}
-                  />
+                      <label
+                        htmlFor={`literature-keys-${source.source}`}
+                        className="pt-1.5 text-[12px] font-medium text-[var(--text-secondary)]"
+                      >
+                        New keys
+                      </label>
+                      <textarea
+                        id={`literature-keys-${source.source}`}
+                        className="input-field min-h-[68px] resize-y py-1.5 text-[12px] leading-relaxed"
+                        style={{ fontFamily: "var(--font-mono)" }}
+                        value={nextKeys}
+                        placeholder="Paste one or more keys, separated by whitespace or new lines"
+                        onChange={(event) => {
+                          onEdit(source.source, {
+                            ...draft,
+                            options: { ...(draft.options || {}), new_credentials: event.target.value },
+                          });
+                        }}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <span className="pt-1.5 text-[12px] font-medium text-[var(--text-secondary)]">
+                        Credentials
+                      </span>
+                      <p className="text-[12px] text-[var(--text-muted)]">
+                        Configure this source through options, local paths, or commands; stored API keys are not used.
+                      </p>
+                    </>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap justify-end gap-2">
@@ -290,12 +324,12 @@ export function LiteratureSourcesPanel({
                     disabled={!canSave}
                     onClick={() => onSave(source.source)}
                   >
-                    {saving ? "Saving..." : "Save"}
+                    {isSavingThisSource ? "Saving..." : "Save"}
                   </button>
                   <button
                     type="button"
                     className="btn-secondary px-3 py-1 text-[11px]"
-                    disabled={testing === source.source}
+                    disabled={!canTest}
                     onClick={() => onTest(source.source)}
                   >
                     {testing === source.source ? "Testing..." : "Test"}

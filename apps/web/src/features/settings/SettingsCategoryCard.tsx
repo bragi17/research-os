@@ -20,6 +20,7 @@ interface SettingsCategoryCardProps {
   llmEdit: LLMEdit;
   literatureEdits: Record<string, LiteratureSourceProfile>;
   saving: boolean;
+  savingLiteratureSource: string | null;
   testing: string | null;
   testResult?: TestResult;
   literatureTestResults: Record<string, TestResult>;
@@ -48,6 +49,7 @@ export function SettingsCategoryCard({
   llmEdit,
   literatureEdits,
   saving,
+  savingLiteratureSource,
   testing,
   testResult,
   literatureTestResults,
@@ -106,6 +108,7 @@ export function SettingsCategoryCard({
           sources={category.sources || []}
           edits={literatureEdits}
           saving={saving}
+          savingSource={savingLiteratureSource}
           testing={testing}
           testResults={literatureTestResults}
           onEdit={onLiteratureEdit}
