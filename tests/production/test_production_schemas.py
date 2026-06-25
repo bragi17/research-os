@@ -340,6 +340,14 @@ def test_docker_gpu_job_patch_rejects_unsafe_metrics_when_executor_type_is_provi
         )
 
 
+def test_job_patch_allows_metric_names_without_executor_context() -> None:
+    patch = ExperimentJobPatch(
+        metrics_json={"memory": "avg_peak_by_phase", "network": "host"},
+    )
+
+    assert patch.metrics_json == {"memory": "avg_peak_by_phase", "network": "host"}
+
+
 def test_typed_patch_models_validate_status_and_paths() -> None:
     with pytest.raises(ValidationError):
         ExperimentJobPatch(status="not-a-status")

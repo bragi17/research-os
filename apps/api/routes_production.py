@@ -57,6 +57,7 @@ from libs.schemas.production import (
     TerminalResizeRequest,
     TerminalSessionPatch,
     TerminalSessionResponse,
+    validate_docker_job_metrics,
 )
 
 try:
@@ -878,6 +879,12 @@ async def patch_experiment_job(
     remote_host_id = updates.get("remote_host_id", existing.get("remote_host_id"))
     if executor_type == "ssh" and remote_host_id is None:
         raise HTTPException(status_code=400, detail="remote_host_id is required for ssh jobs")
+    effective_metrics = updates.get("metrics_json", existing.get("metrics_json") or {})
+    if executor_type == "docker_gpu":
+        try:
+            validate_docker_job_metrics(effective_metrics, require_all=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     row = await db.update_experiment_job(job_id, updates)
     if row is None:
         raise HTTPException(status_code=404, detail="Experiment job not found")

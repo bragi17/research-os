@@ -19,6 +19,7 @@ from libs.schemas.production import (
     CodingEventCreate,
     CodingTaskCreate,
     ExperimentJobCreate,
+    ExperimentJobPatch,
     ExperimentManifestCreate,
     ManuscriptPackageCreate,
     ProjectCreate,
@@ -824,6 +825,46 @@ async def test_manual_run_routes_return_conflict_when_claim_fails(
 
     run_codex_task.assert_not_awaited()
     run_local_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_experiment_job_rejects_unsafe_docker_metrics_with_existing_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.routes_production as routes_production
+
+    job_id = uuid4()
+    project_id = uuid4()
+    existing_job = {
+        "id": job_id,
+        "project_id": project_id,
+        "executor_type": "docker_gpu",
+        "remote_host_id": None,
+        "metrics_json": {
+            "gpu_count": 1,
+            "job_image": "research-os-job-runtime:latest",
+            "memory": "16g",
+            "cpus": "4",
+            "network": "none",
+        },
+    }
+    update_experiment_job = AsyncMock(return_value={})
+    monkeypatch.setattr(routes_production.db, "get_experiment_job", AsyncMock(return_value=existing_job))
+    monkeypatch.setattr(
+        routes_production.db,
+        "get_project",
+        AsyncMock(return_value={"id": project_id, "owner_user_id": TEST_USER_ID}),
+    )
+    monkeypatch.setattr(routes_production.db, "update_experiment_job", update_experiment_job)
+
+    with pytest.raises(Exception, match="docker network"):
+        await routes_production.patch_experiment_job(
+            job_id,
+            ExperimentJobPatch(metrics_json={"network": "host"}),
+            user=TEST_USER,
+        )
+
+    update_experiment_job.assert_not_awaited()
 
 
 @pytest.mark.asyncio

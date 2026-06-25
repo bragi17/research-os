@@ -104,9 +104,6 @@ def _validate_docker_cpus(value: str) -> str:
     return raw
 
 
-DOCKER_METRIC_KEYS = {"gpu_count", "job_image", "memory", "cpus", "network"}
-
-
 def validate_docker_job_metrics(
     metrics: dict[str, Any],
     *,
@@ -887,16 +884,8 @@ class ExperimentJobPatch(BaseModel):
     def validate_attempt_bounds(self) -> ExperimentJobPatch:
         if self.attempt is not None and self.max_attempts is not None and self.attempt > self.max_attempts:
             raise ValueError("attempt must be less than or equal to max_attempts")
-        if self.metrics_json is not None:
-            validate_docker_metrics = (
-                self.executor_type == ExperimentJobExecutorType.DOCKER_GPU
-                or any(key in self.metrics_json for key in DOCKER_METRIC_KEYS)
-            )
-            if validate_docker_metrics:
-                validate_docker_job_metrics(
-                    self.metrics_json,
-                    require_all=self.executor_type == ExperimentJobExecutorType.DOCKER_GPU,
-                )
+        if self.metrics_json is not None and self.executor_type == ExperimentJobExecutorType.DOCKER_GPU:
+            validate_docker_job_metrics(self.metrics_json, require_all=True)
         return self
 
 
