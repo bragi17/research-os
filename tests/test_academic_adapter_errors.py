@@ -188,12 +188,32 @@ async def test_semantic_scholar_dataset_5xx_raises_transient_error(
 
 
 @pytest.mark.asyncio
-async def test_openalex_api_key_is_sent_as_header() -> None:
-    adapter = OpenAlexAdapter(api_key="openalex-key")
+async def test_openalex_api_key_is_sent_as_query_param_without_mutating_params() -> None:
+    captured_request: httpx.Request | None = None
 
-    client = await adapter._get_client()
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_request
+        captured_request = request
+        return httpx.Response(200, request=request, json={"results": []})
 
-    assert client.headers["api-key"] == "openalex-key"
+    adapter = OpenAlexAdapter(
+        api_key="openalex-key",
+        config=OpenAlexConfig(requests_per_second=100.0),
+    )
+    adapter._client = httpx.AsyncClient(
+        base_url=OPENALEX_API_BASE,
+        transport=httpx.MockTransport(handler),
+    )
+    params = {"search": "rag", "mailto": "owner@example.com"}
+
+    await adapter._request("/works", params=params, use_cache=False)
+
+    assert params == {"search": "rag", "mailto": "owner@example.com"}
+    assert captured_request is not None
+    assert captured_request.url.params["api_key"] == "openalex-key"
+    assert captured_request.url.params["search"] == "rag"
+    assert captured_request.url.params["mailto"] == "owner@example.com"
+    assert "api-key" not in captured_request.headers
 
     await adapter.close()
 

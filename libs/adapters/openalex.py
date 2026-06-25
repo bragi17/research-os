@@ -172,8 +172,6 @@ class OpenAlexAdapter:
         """Get or create HTTP client."""
         if self._client is None:
             headers = {"User-Agent": f"ResearchOS/0.1.0 (mailto:{self.config.email or 'anonymous'})"}
-            if self.config.api_key:
-                headers["api-key"] = self.config.api_key
             self._client = httpx.AsyncClient(
                 base_url=self.config.base_url,
                 headers=headers,
@@ -206,6 +204,10 @@ class OpenAlexAdapter:
             if cached and time.time() - cached[1] < 86400:  # 24 hour cache
                 return cached[0]
 
+        request_params = dict(params or {})
+        if self.config.api_key:
+            request_params["api_key"] = self.config.api_key
+
         client = await self._get_client()
         attempts = max(1, self.config.retry_attempts)
         last_error: Exception | None = None
@@ -215,7 +217,7 @@ class OpenAlexAdapter:
             final_attempt = attempt == attempts - 1
 
             try:
-                response = await client.get(endpoint, params=params)
+                response = await client.get(endpoint, params=request_params)
             except (httpx.TimeoutException, httpx.RequestError) as e:
                 last_error = e
                 if final_attempt:
