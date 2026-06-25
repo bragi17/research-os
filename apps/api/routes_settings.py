@@ -23,6 +23,7 @@ from services.llm_settings import (
     mask_api_key,
     redact_secret_text,
 )
+from services.workspace_context import workspace_context
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
@@ -360,11 +361,12 @@ async def _test_saved_llm_connection(workspace_id: Any) -> dict[str, Any]:
         from apps.worker.llm_gateway import get_gateway
 
         gw = get_gateway()
-        result = await gw.chat(
-            messages=[{"role": "user", "content": "Reply with just: OK"}],
-            max_tokens=5,
-            temperature=0,
-        )
+        with workspace_context(workspace_id):
+            result = await gw.chat(
+                messages=[{"role": "user", "content": "Reply with just: OK"}],
+                max_tokens=5,
+                temperature=0,
+            )
         await repo.record_test_result("ok", None)
         return {"status": "ok", "model": result.get("model", "?"), "response": result.get("content", "")}
     except Exception as exc:

@@ -15,6 +15,7 @@ from services.llm_settings import (
     DEFAULT_WORKSPACE_ID,
     LLMProfile,
 )
+from services.workspace_context import current_workspace_id
 
 
 WORKSPACE_A = UUID("11111111-1111-1111-1111-111111111111")
@@ -350,6 +351,39 @@ def test_legacy_test_llm_delegates_to_gateway_and_records_result(
         max_tokens=5,
         temperature=0,
     )
+    repo.record_test_result.assert_awaited_once_with("ok", None)
+
+
+def test_llm_test_runs_gateway_call_inside_authenticated_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_workspace_ids: list[UUID] = []
+
+    async def fake_chat(*args: Any, **kwargs: Any) -> dict[str, str]:
+        seen_workspace_ids.append(current_workspace_id())
+        return {"model": DEFAULT_DEEPSEEK_MODEL, "content": "OK"}
+
+    gateway = Mock()
+    gateway.chat = AsyncMock(side_effect=fake_chat)
+    repo = FakeRepository(
+        _profile(
+            workspace_id=str(WORKSPACE_A),
+            api_key="test-secret-key",
+        )
+    )
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda *args, **kwargs: repo,
+        raising=False,
+    )
+    monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
+
+    response = _client(user=_user()).post("/api/v1/settings/llm/test")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert seen_workspace_ids == [WORKSPACE_A]
     repo.record_test_result.assert_awaited_once_with("ok", None)
 
 
