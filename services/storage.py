@@ -29,6 +29,17 @@ STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "local")  # "local" or "minio"
 LOCAL_STORAGE_DIR = os.getenv("LOCAL_STORAGE_DIR", "/tmp/research-os-storage")
 
 
+def workspace_object_prefix(workspace_id: UUID | str, prefix: str) -> str:
+    relative = Path(prefix)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ValueError("storage prefix must be relative and safe")
+    return f"workspaces/{UUID(str(workspace_id))}/{relative.as_posix()}"
+
+
 class StorageService:
     """
     Object storage service for Research OS.

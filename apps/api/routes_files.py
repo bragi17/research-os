@@ -2,10 +2,12 @@
 
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from structlog import get_logger
 
-from services.storage import get_storage
+from apps.api.auth import get_current_user
+from apps.api.tenancy import WorkspaceContext
+from services.storage import get_storage, workspace_object_prefix
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
@@ -16,6 +18,7 @@ MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(..., description="PDF file to upload"),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Upload a PDF file to object storage."""
     if file.content_type and file.content_type != "application/pdf":
@@ -37,13 +40,14 @@ async def upload_file(
             detail=f"File too large. Max size: {MAX_UPLOAD_SIZE // (1024 * 1024)} MB",
         )
 
+    ctx = WorkspaceContext.from_user(user)
     storage = get_storage()
     try:
         metadata = await storage.upload_file(
             content=content,
             filename=file.filename,
             content_type=file.content_type or "application/pdf",
-            prefix="pdfs",
+            prefix=workspace_object_prefix(ctx.workspace_id, "pdfs"),
         )
     except Exception as exc:
         logger.error("file_upload_failed", filename=file.filename, error=str(exc))
