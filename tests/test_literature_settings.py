@@ -169,6 +169,19 @@ async def test_env_bootstrap_for_s2_and_openalex_hides_plaintext(
 
 
 @pytest.mark.asyncio
+async def test_list_sources_rejects_include_secrets() -> None:
+    pool = FakePool()
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    with pytest.raises(ValueError, match="include_secrets"):
+        await repo.list_sources(include_secrets=True)
+
+    assert pool.fetch_calls == []
+    assert pool.fetchrow_calls == []
+    assert pool.execute_calls == []
+
+
+@pytest.mark.asyncio
 async def test_db_credentials_decrypt_only_through_get_active_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -212,6 +225,99 @@ async def test_db_credentials_decrypt_only_through_get_active_credentials(
             label="primary",
             secret="db-secret-key-123456",
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_source_rejects_unsupported_credentials_before_settings_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "unit-test-encryption-secret")
+    pool = FakePool(
+        settings=[
+            _setting_row(
+                LiteratureSource.ZOTERO,
+                enabled=False,
+                options_json={"library_path": "/papers/zotero.sqlite"},
+            )
+        ]
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    with pytest.raises(ValueError, match="does not support stored credentials"):
+        await repo.update_source(
+            LiteratureSource.ZOTERO,
+            enabled=True,
+            options={"library_path": "/papers/other.sqlite"},
+            new_credentials=["zotero-secret-key"],
+            clear_credential_ids=[],
+        )
+
+    assert not [
+        args
+        for sql, args in pool.fetchrow_calls
+        if "INSERT INTO literature_source_settings" in sql
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_source_rejects_invalid_clear_id_before_settings_write() -> None:
+    pool = FakePool(
+        settings=[
+            _setting_row(
+                LiteratureSource.WEB_SEARCH,
+                enabled=False,
+                options_json={"provider": "exa"},
+            )
+        ]
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    with pytest.raises(ValueError, match="Invalid credential id"):
+        await repo.update_source(
+            LiteratureSource.WEB_SEARCH,
+            enabled=True,
+            options={"provider": "tavily"},
+            new_credentials=[],
+            clear_credential_ids=["not-a-uuid"],
+        )
+
+    assert not [
+        args
+        for sql, args in pool.fetchrow_calls
+        if "INSERT INTO literature_source_settings" in sql
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_source_encrypts_new_credentials_before_settings_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
+    pool = FakePool(
+        settings=[
+            _setting_row(
+                LiteratureSource.WEB_SEARCH,
+                enabled=False,
+                options_json={"provider": "exa"},
+            )
+        ]
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    with pytest.raises(RuntimeError, match="CREDENTIAL_ENCRYPTION_KEY is required"):
+        await repo.update_source(
+            LiteratureSource.WEB_SEARCH,
+            enabled=True,
+            options={"provider": "tavily"},
+            new_credentials=["web-search-secret-key-123456"],
+            clear_credential_ids=[],
+        )
+
+    assert not [
+        args
+        for sql, args in pool.fetchrow_calls
+        if "INSERT INTO literature_source_settings" in sql
     ]
 
 
@@ -317,3 +423,34 @@ async def test_update_source_options_none_and_empty_dict_preserve_existing() -> 
     assert settings_writes[1][3] == {"provider": "tavily", "limit": 5}
     assert isinstance(settings_writes[0][2], bool)
     assert isinstance(UUID(str(settings_writes[0][0])), UUID)
+
+
+@pytest.mark.asyncio
+async def test_record_source_test_redacts_exact_env_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("S2_API_KEY", "s2-secret-key-123456")
+    pool = FakePool(
+        settings=[
+            _setting_row(
+                LiteratureSource.SEMANTIC_SCHOLAR,
+                enabled=True,
+            )
+        ]
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    settings = await repo.record_source_test(
+        LiteratureSource.SEMANTIC_SCHOLAR,
+        status="error",
+        error="provider echoed s2-secret-key-123456",
+    )
+
+    assert settings.last_test_error == "provider echoed [redacted]"
+    update_args = [
+        args
+        for sql, args in pool.fetchrow_calls
+        if "UPDATE literature_source_settings" in sql
+    ][0]
+    assert update_args[3] == "provider echoed [redacted]"
+    assert "s2-secret-key-123456" not in repr(pool.fetchrow_calls)

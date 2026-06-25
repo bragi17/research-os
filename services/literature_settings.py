@@ -45,6 +45,14 @@ DEFAULT_ENABLED: dict[LiteratureSource, bool] = {
     LiteratureSource.DEEPXIV: False,
 }
 
+SUPPORTED_CREDENTIAL_SOURCES: frozenset[LiteratureSource] = frozenset(
+    {
+        LiteratureSource.WEB_SEARCH,
+        LiteratureSource.SEMANTIC_SCHOLAR,
+        LiteratureSource.OPENALEX,
+    }
+)
+
 
 @dataclass(frozen=True)
 class LiteratureCredentialSecret:
@@ -52,6 +60,13 @@ class LiteratureCredentialSecret:
     source: LiteratureSource
     label: str
     secret: str
+
+
+@dataclass(frozen=True)
+class _PreparedCredential:
+    label: str
+    secret_encrypted: str
+    secret_preview: str
 
 
 class LiteratureSettingsRepository:
@@ -62,7 +77,10 @@ class LiteratureSettingsRepository:
         self,
         include_secrets: bool = False,
     ) -> list[LiteratureSourceSettings]:
-        del include_secrets
+        if include_secrets:
+            raise ValueError(
+                "include_secrets=True is not supported; use get_active_credentials()"
+            )
         settings_rows = await self._fetch_all_source_settings()
         credential_rows = await self._fetch_all_active_credential_rows()
         settings_by_source = {
@@ -110,28 +128,23 @@ class LiteratureSettingsRepository:
     ) -> LiteratureSourceSettings:
         parsed_source = _coerce_source(source)
         current = await self.get_source(parsed_source)
+        clear_ids = _parse_credential_ids(clear_credential_ids or [])
+        prepared_credentials = _prepare_new_credentials(
+            parsed_source,
+            new_credentials or [],
+        )
         next_options = dict(current.options)
         if options is not None:
             next_options.update(options)
         next_enabled = current.enabled if enabled is None else enabled
 
-        await self._upsert_source_settings(
+        await self._write_source_update(
             parsed_source,
             enabled=next_enabled,
             options=next_options,
+            clear_ids=clear_ids,
+            new_credentials=prepared_credentials,
         )
-
-        clear_ids = [
-            UUID(str(credential_id))
-            for credential_id in clear_credential_ids or []
-        ]
-        if clear_ids:
-            await self._clear_credentials(parsed_source, clear_ids)
-
-        for credential in new_credentials or []:
-            cleaned = _clean(credential)
-            if cleaned:
-                await self._insert_credential(parsed_source, cleaned)
 
         return await self.get_source(parsed_source)
 
@@ -142,21 +155,19 @@ class LiteratureSettingsRepository:
         error: str | None = None,
     ) -> LiteratureSourceSettings:
         parsed_source = _coerce_source(source)
-        safe_error = redact_secret_text(error) if error else None
+        credentials = await self.get_active_credentials(parsed_source)
+        safe_error = (
+            redact_secret_text(
+                error,
+                secrets=[credential.secret for credential in credentials],
+            )
+            if error
+            else None
+        )
         pool = await self._get_pool()
-        row = await pool.fetchrow(
-            """
-            UPDATE literature_source_settings
-            SET last_test_status = $3,
-                last_test_error = $4,
-                last_test_at = NOW(),
-                updated_at = NOW()
-            WHERE workspace_id = $1
-              AND source = $2
-            RETURNING *
-            """,
-            DEFAULT_WORKSPACE_ID,
-            parsed_source.value,
+        row = await self._record_source_test_row(
+            pool,
+            parsed_source,
             status,
             safe_error,
         )
@@ -166,7 +177,14 @@ class LiteratureSettingsRepository:
                 enabled=DEFAULT_ENABLED[parsed_source],
                 options=_env_options(parsed_source),
             )
-            return await self.record_source_test(parsed_source, status, safe_error)
+            row = await self._record_source_test_row(
+                pool,
+                parsed_source,
+                status,
+                safe_error,
+            )
+            if row is None:
+                return await self.get_source(parsed_source)
 
         credential_rows = await self._fetch_active_credential_rows(parsed_source)
         return _source_settings_from_data(
@@ -244,9 +262,10 @@ class LiteratureSettingsRepository:
         *,
         enabled: bool,
         options: dict[str, Any],
+        executor: Any | None = None,
     ) -> dict[str, Any]:
-        pool = await self._get_pool()
-        row = await pool.fetchrow(
+        db = executor or await self._get_pool()
+        row = await db.fetchrow(
             """
             INSERT INTO literature_source_settings (
                 workspace_id,
@@ -273,9 +292,10 @@ class LiteratureSettingsRepository:
         self,
         source: LiteratureSource,
         credential_ids: list[UUID],
+        executor: Any | None = None,
     ) -> None:
-        pool = await self._get_pool()
-        await pool.execute(
+        db = executor or await self._get_pool()
+        await db.execute(
             """
             UPDATE literature_source_credentials
             SET is_active = FALSE,
@@ -292,10 +312,11 @@ class LiteratureSettingsRepository:
     async def _insert_credential(
         self,
         source: LiteratureSource,
-        secret: str,
+        credential: _PreparedCredential,
+        executor: Any | None = None,
     ) -> dict[str, Any]:
-        pool = await self._get_pool()
-        row = await pool.fetchrow(
+        db = executor or await self._get_pool()
+        row = await db.fetchrow(
             """
             INSERT INTO literature_source_credentials (
                 workspace_id,
@@ -310,11 +331,100 @@ class LiteratureSettingsRepository:
             """,
             DEFAULT_WORKSPACE_ID,
             source.value,
-            "primary",
-            encrypt_api_key(secret),
-            mask_api_key(secret),
+            credential.label,
+            credential.secret_encrypted,
+            credential.secret_preview,
         )
         return _record_to_dict(row)
+
+    async def _write_source_update(
+        self,
+        source: LiteratureSource,
+        *,
+        enabled: bool,
+        options: dict[str, Any],
+        clear_ids: list[UUID],
+        new_credentials: list[_PreparedCredential],
+    ) -> None:
+        pool = await self._get_pool()
+        acquire = getattr(pool, "acquire", None)
+        if callable(acquire):
+            async with acquire() as conn:
+                transaction = getattr(conn, "transaction", None)
+                if callable(transaction):
+                    async with transaction():
+                        await self._write_source_update_on(
+                            conn,
+                            source,
+                            enabled=enabled,
+                            options=options,
+                            clear_ids=clear_ids,
+                            new_credentials=new_credentials,
+                        )
+                        return
+                await self._write_source_update_on(
+                    conn,
+                    source,
+                    enabled=enabled,
+                    options=options,
+                    clear_ids=clear_ids,
+                    new_credentials=new_credentials,
+                )
+                return
+
+        await self._write_source_update_on(
+            pool,
+            source,
+            enabled=enabled,
+            options=options,
+            clear_ids=clear_ids,
+            new_credentials=new_credentials,
+        )
+
+    async def _write_source_update_on(
+        self,
+        executor: Any,
+        source: LiteratureSource,
+        *,
+        enabled: bool,
+        options: dict[str, Any],
+        clear_ids: list[UUID],
+        new_credentials: list[_PreparedCredential],
+    ) -> None:
+        await self._upsert_source_settings(
+            source,
+            enabled=enabled,
+            options=options,
+            executor=executor,
+        )
+        if clear_ids:
+            await self._clear_credentials(source, clear_ids, executor=executor)
+        for credential in new_credentials:
+            await self._insert_credential(source, credential, executor=executor)
+
+    async def _record_source_test_row(
+        self,
+        executor: Any,
+        source: LiteratureSource,
+        status: str,
+        safe_error: str | None,
+    ) -> Any | None:
+        return await executor.fetchrow(
+            """
+            UPDATE literature_source_settings
+            SET last_test_status = $3,
+                last_test_error = $4,
+                last_test_at = NOW(),
+                updated_at = NOW()
+            WHERE workspace_id = $1
+              AND source = $2
+            RETURNING *
+            """,
+            DEFAULT_WORKSPACE_ID,
+            source.value,
+            status,
+            safe_error,
+        )
 
     async def _get_pool(self) -> Any:
         getter = self._pool_getter or _default_pool_getter
@@ -322,6 +432,41 @@ class LiteratureSettingsRepository:
         if inspect.isawaitable(pool):
             return await pool
         return pool
+
+
+def _parse_credential_ids(
+    credential_ids: Iterable[str | UUID],
+) -> list[UUID]:
+    parsed_ids: list[UUID] = []
+    for credential_id in credential_ids:
+        try:
+            parsed_ids.append(UUID(str(credential_id)))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid credential id: {credential_id}") from exc
+    return parsed_ids
+
+
+def _prepare_new_credentials(
+    source: LiteratureSource,
+    credentials: Iterable[str],
+) -> list[_PreparedCredential]:
+    cleaned_credentials = [
+        cleaned
+        for credential in credentials
+        if (cleaned := _clean(credential))
+    ]
+    if not cleaned_credentials:
+        return []
+    if source not in SUPPORTED_CREDENTIAL_SOURCES:
+        raise ValueError(f"{source.value} does not support stored credentials")
+    return [
+        _PreparedCredential(
+            label="primary",
+            secret_encrypted=encrypt_api_key(credential),
+            secret_preview=mask_api_key(credential),
+        )
+        for credential in cleaned_credentials
+    ]
 
 
 def _source_settings_from_data(
