@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -14,6 +14,7 @@ from libs.schemas.literature import (
     LiteratureSource,
     LiteratureSourceSettings,
 )
+from services.literature_settings import LiteratureCredentialSecret
 
 
 def _client() -> TestClient:
@@ -71,6 +72,18 @@ class FakeLiteratureRepository:
         self.get_source = AsyncMock(return_value=self.semantic_scholar)
         self.update_source = AsyncMock(return_value=self.semantic_scholar)
         self.record_source_test = AsyncMock(return_value=self.semantic_scholar)
+        self.get_active_credentials = AsyncMock(return_value=[])
+
+
+def _credential_secret(
+    source: LiteratureSource = LiteratureSource.SEMANTIC_SCHOLAR,
+) -> LiteratureCredentialSecret:
+    return LiteratureCredentialSecret(
+        id=uuid4(),
+        source=source,
+        label="primary",
+        secret="semantic-secret-key-1234567890",
+    )
 
 
 def test_get_models_includes_literature_sources_from_repository_without_secrets(
@@ -106,6 +119,48 @@ def test_get_models_includes_literature_sources_from_repository_without_secrets(
     repo.list_sources.assert_awaited_once_with(include_secrets=False)
     assert "plain-secret-value" not in response.text
     assert "semantic-secret-key-1234567890" not in response.text
+
+
+def test_get_models_redacts_literature_source_fallback_error_with_active_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeLiteratureRepository()
+    repo.list_sources.side_effect = RuntimeError(
+        "settings failed for semantic-secret-key-1234567890"
+    )
+    repo.get_active_credentials = AsyncMock(
+        side_effect=lambda source: [_credential_secret(source)]
+        if source == LiteratureSource.SEMANTIC_SCHOLAR
+        else []
+    )
+    logger = Mock()
+    monkeypatch.setattr(
+        routes_settings,
+        "LiteratureSettingsRepository",
+        lambda: repo,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda: FakeLLMRepository(),
+    )
+    monkeypatch.setattr(routes_settings, "logger", logger)
+
+    response = _client().get("/api/v1/settings/models")
+
+    assert response.status_code == 200
+    category = next(
+        item for item in response.json()["categories"]
+        if item["id"] == "literature_sources"
+    )
+    assert category["sources"] == []
+    logger.warning.assert_any_call(
+        "settings.literature_sources_fallback_failed",
+        error="settings failed for [redacted]",
+    )
+    assert "semantic-secret-key-1234567890" not in response.text
+    assert "semantic-secret-key-1234567890" not in repr(logger.method_calls)
 
 
 def test_put_literature_source_updates_repository_and_redacts_secret(
@@ -166,6 +221,36 @@ def test_put_literature_source_redacts_secret_from_error(
     assert "semantic-secret-key-1234567890" not in response.text
 
 
+def test_put_literature_source_value_error_returns_400_and_redacts_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeLiteratureRepository()
+    repo.update_source.side_effect = ValueError(
+        "local_library does not support stored credentials "
+        "semantic-secret-key-1234567890"
+    )
+    logger = Mock()
+    monkeypatch.setattr(
+        routes_settings,
+        "LiteratureSettingsRepository",
+        lambda: repo,
+        raising=False,
+    )
+    monkeypatch.setattr(routes_settings, "logger", logger)
+
+    response = _client().put(
+        "/api/v1/settings/literature/local_library",
+        json={"new_credentials": ["semantic-secret-key-1234567890"]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "local_library does not support stored credentials [redacted]"
+    )
+    assert "semantic-secret-key-1234567890" not in response.text
+    assert "semantic-secret-key-1234567890" not in repr(logger.method_calls)
+
+
 def test_post_literature_source_test_records_ok_for_configured_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -215,3 +300,46 @@ def test_post_literature_source_test_records_error_for_unconfigured_source(
         "error",
         "web_search is not configured",
     )
+
+
+def test_post_literature_source_test_redacts_exception_with_active_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeLiteratureRepository()
+    repo.get_source.side_effect = RuntimeError(
+        "probe failed for semantic-secret-key-1234567890"
+    )
+    repo.get_active_credentials.return_value = [
+        _credential_secret(LiteratureSource.SEMANTIC_SCHOLAR)
+    ]
+    repo.record_source_test.side_effect = RuntimeError(
+        "record failed for semantic-secret-key-1234567890"
+    )
+    logger = Mock()
+    monkeypatch.setattr(
+        routes_settings,
+        "LiteratureSettingsRepository",
+        lambda: repo,
+        raising=False,
+    )
+    monkeypatch.setattr(routes_settings, "logger", logger)
+
+    response = _client().post("/api/v1/settings/literature/semantic_scholar/test")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "error",
+        "error": "probe failed for [redacted]",
+    }
+    repo.record_source_test.assert_awaited_once_with(
+        LiteratureSource.SEMANTIC_SCHOLAR,
+        "error",
+        "probe failed for [redacted]",
+    )
+    logger.warning.assert_called_once_with(
+        "settings.literature_test_record_failed",
+        source="semantic_scholar",
+        error="record failed for [redacted]",
+    )
+    assert "semantic-secret-key-1234567890" not in response.text
+    assert "semantic-secret-key-1234567890" not in repr(logger.method_calls)

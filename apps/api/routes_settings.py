@@ -199,15 +199,35 @@ def _llm_category(profile: LLMProfile) -> dict[str, Any]:
     }
 
 
+async def _literature_secret_values(
+    repo: LiteratureSettingsRepository,
+    source: LiteratureSource | None = None,
+) -> list[str]:
+    sources = [source] if source is not None else list(LiteratureSource)
+    secrets: list[str] = []
+    seen: set[str] = set()
+    for literature_source in sources:
+        try:
+            credentials = await repo.get_active_credentials(literature_source)
+        except Exception:
+            continue
+        for credential in credentials:
+            secret = getattr(credential, "secret", "")
+            if secret and secret not in seen:
+                secrets.append(secret)
+                seen.add(secret)
+    return secrets
+
+
 async def _literature_sources_category() -> dict[str, Any]:
+    repo = LiteratureSettingsRepository()
     try:
-        sources = await LiteratureSettingsRepository().list_sources(
-            include_secrets=False
-        )
+        sources = await repo.list_sources(include_secrets=False)
     except Exception as exc:
+        secrets = await _literature_secret_values(repo)
         logger.warning(
             "settings.literature_sources_fallback_failed",
-            error=redact_secret_text(str(exc))[:200],
+            error=redact_secret_text(str(exc), secrets=secrets)[:200],
         )
         sources = []
     return {
@@ -355,8 +375,9 @@ async def update_literature_source(
     new_credentials = [
         credential.get_secret_value() for credential in body.new_credentials
     ]
+    repo = LiteratureSettingsRepository()
     try:
-        updated = await LiteratureSettingsRepository().update_source(
+        updated = await repo.update_source(
             source,
             enabled=body.enabled,
             options=body.options,
@@ -366,8 +387,18 @@ async def update_literature_source(
             ],
         )
         return updated.model_dump(mode="json")
+    except ValueError as exc:
+        secrets = new_credentials + await _literature_secret_values(repo, source)
+        error = redact_secret_text(str(exc), secrets=secrets)[:200]
+        logger.error(
+            "settings.literature_update_failed",
+            source=source.value,
+            error=error,
+        )
+        raise HTTPException(status_code=400, detail=error)
     except Exception as exc:
-        error = redact_secret_text(str(exc), secrets=new_credentials)[:200]
+        secrets = new_credentials + await _literature_secret_values(repo, source)
+        error = redact_secret_text(str(exc), secrets=secrets)[:200]
         logger.error(
             "settings.literature_update_failed",
             source=source.value,
@@ -386,14 +417,15 @@ async def test_literature_source(source: LiteratureSource) -> dict[str, Any]:
         await repo.record_source_test(source, status, error)
         return {"status": status, "error": error}
     except Exception as exc:
-        error = redact_secret_text(str(exc))[:200]
+        secrets = await _literature_secret_values(repo, source)
+        error = redact_secret_text(str(exc), secrets=secrets)[:200]
         try:
             await repo.record_source_test(source, "error", error)
         except Exception as record_exc:
             logger.warning(
                 "settings.literature_test_record_failed",
                 source=source.value,
-                error=redact_secret_text(str(record_exc))[:200],
+                error=redact_secret_text(str(record_exc), secrets=secrets)[:200],
             )
         return {"status": "error", "error": error}
 
