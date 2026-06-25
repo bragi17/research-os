@@ -156,6 +156,20 @@ def test_fresh_saas_migration_accepts_docker_gpu_jobs() -> None:
     assert "CHECK (executor_type IN ('local', 'ssh', 'docker_gpu'))" in migration
 
 
+def test_docker_build_context_excludes_local_artifacts() -> None:
+    dockerignore = (ROOT / ".dockerignore").read_text()
+
+    for ignored in [
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+        "apps/web/node_modules",
+        "apps/web/.next",
+        ".worktrees",
+    ]:
+        assert ignored in dockerignore
+
+
 def test_saas_env_example_requires_secrets() -> None:
     env = (ROOT / ".env.saas.example").read_text()
 
