@@ -7,7 +7,10 @@ import pytest
 from fastapi import HTTPException
 
 from apps.api.routes_production import _project_for_access
-from apps.worker.production.workspaces import resolve_project_workspace_path
+from apps.worker.production.workspaces import (
+    resolve_coding_workspace_path,
+    resolve_project_workspace_path,
+)
 
 
 class FakeDb:
@@ -149,3 +152,115 @@ def test_legacy_project_explicit_workspace_path_uses_legacy_segment(
 
     assert path == tmp_path / "shared"
     assert "workspaces" not in path.relative_to(tmp_path).parts
+
+
+def test_relative_coding_workspace_path_is_project_workspace_scoped(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    first_workspace_id = uuid4()
+    second_workspace_id = uuid4()
+    first_project_id = uuid4()
+    second_project_id = uuid4()
+    monkeypatch.setenv("RESEARCH_OS_WORKSPACE_ROOT", str(tmp_path))
+
+    first_path = resolve_coding_workspace_path(
+        {"workspace_path": "shared-task"},
+        {"id": first_project_id, "workspace_id": first_workspace_id},
+    )
+    second_path = resolve_coding_workspace_path(
+        {"workspace_path": "shared-task"},
+        {"id": second_project_id, "workspace_id": second_workspace_id},
+    )
+
+    assert first_path == (
+        tmp_path
+        / "workspaces"
+        / str(first_workspace_id)
+        / "projects"
+        / str(first_project_id)
+        / "shared-task"
+    )
+    assert second_path == (
+        tmp_path
+        / "workspaces"
+        / str(second_workspace_id)
+        / "projects"
+        / str(second_project_id)
+        / "shared-task"
+    )
+    assert first_path != second_path
+
+
+def test_absolute_coding_workspace_path_rejects_other_project_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_workspace_id = uuid4()
+    other_workspace_id = uuid4()
+    project_id = uuid4()
+    other_project_id = uuid4()
+    monkeypatch.setenv("RESEARCH_OS_WORKSPACE_ROOT", str(tmp_path))
+    other_project_path = (
+        tmp_path
+        / "workspaces"
+        / str(other_workspace_id)
+        / "projects"
+        / str(other_project_id)
+        / "shared-task"
+    )
+
+    with pytest.raises(ValueError, match="workspace_path escapes project workspace root"):
+        resolve_coding_workspace_path(
+            {"workspace_path": str(other_project_path)},
+            {"id": project_id, "workspace_id": project_workspace_id},
+        )
+
+
+def test_coding_workspace_path_fallback_includes_run_segment(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace_id = uuid4()
+    project_id = uuid4()
+    run_id = uuid4()
+    monkeypatch.setenv("RESEARCH_OS_WORKSPACE_ROOT", str(tmp_path))
+
+    path = resolve_coding_workspace_path(
+        {"workspace_path": None, "run_id": run_id},
+        {"id": project_id, "workspace_id": workspace_id},
+    )
+
+    assert path == (
+        tmp_path
+        / "workspaces"
+        / str(workspace_id)
+        / "projects"
+        / str(project_id)
+        / "runs"
+        / str(run_id)
+    )
+
+
+def test_legacy_project_workspace_run_segment_rejects_symlink_escape(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_id = uuid4()
+    run_id = uuid4()
+    shared = tmp_path / "shared"
+    outside = tmp_path.parent / f"outside-{uuid4()}"
+    shared.mkdir()
+    outside.mkdir()
+    (shared / "runs").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("RESEARCH_OS_WORKSPACE_ROOT", str(tmp_path))
+
+    with pytest.raises(ValueError, match="default_workspace_path escapes workspace root"):
+        resolve_project_workspace_path(
+            {
+                "id": project_id,
+                "workspace_id": None,
+                "default_workspace_path": "shared",
+            },
+            run_id=run_id,
+        )
