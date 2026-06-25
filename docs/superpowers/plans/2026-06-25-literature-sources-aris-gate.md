@@ -231,10 +231,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 
 class LiteratureSource(str, Enum):
@@ -263,11 +263,11 @@ class LiteratureGateStatus(str, Enum):
 
 
 class LiteratureCredentialPreview(BaseModel):
-    id: UUID | str | None = None
+    id: UUID | None = None
     label: str = "primary"
     preview: str = ""
     is_active: bool = True
-    last_status: str | None = None
+    last_status: Literal["ok", "rate_limited", "credential_error", "error"] | None = None
     last_error: str | None = None
     last_used_at: datetime | None = None
     cooldown_until: datetime | None = None
@@ -280,16 +280,16 @@ class LiteratureSourceSettings(BaseModel):
     configured: bool = False
     options: dict[str, Any] = Field(default_factory=dict)
     credentials: list[LiteratureCredentialPreview] = Field(default_factory=list)
-    last_test_status: str | None = None
+    last_test_status: Literal["ok", "error"] | None = None
     last_test_error: str | None = None
     last_test_at: datetime | None = None
 
 
 class LiteratureSourceUpdate(BaseModel):
     enabled: bool | None = None
-    options: dict[str, Any] = Field(default_factory=dict)
-    new_credentials: list[str] = Field(default_factory=list)
-    clear_credential_ids: list[str] = Field(default_factory=list)
+    options: dict[str, Any] | None = None
+    new_credentials: list[SecretStr] = Field(default_factory=list)
+    clear_credential_ids: list[UUID] = Field(default_factory=list)
 
 
 class LiteratureCandidate(BaseModel):
@@ -627,14 +627,15 @@ class LiteratureSettingsRepository:
         source: LiteratureSource,
         *,
         enabled: bool | None,
-        options: dict[str, Any],
+        options: dict[str, Any] | None,
         new_credentials: list[str],
         clear_credential_ids: list[str],
     ) -> LiteratureSourceSettings:
         pool = await self._get_pool()
         current = await self.get_source(source)
         next_options = dict(current.options)
-        next_options.update(options)
+        if options is not None:
+            next_options.update(options)
         row = await pool.fetchrow(
             """
             INSERT INTO literature_source_settings (
@@ -1794,6 +1795,7 @@ def test_put_literature_source_updates_repository_and_redacts_secret(monkeypatch
 
     assert response.status_code == 200
     repo.update_source.assert_awaited_once()
+    assert repo.update_source.await_args.kwargs["new_credentials"] == ["secret-key"]
     assert "secret-key" not in response.text
 ```
 
@@ -1837,17 +1839,18 @@ async def update_literature_source(
     source: LiteratureSource,
     body: LiteratureSourceUpdate,
 ) -> dict[str, Any]:
+    new_credentials = [secret.get_secret_value() for secret in body.new_credentials]
     try:
         updated = await LiteratureSettingsRepository().update_source(
             source,
             enabled=body.enabled,
             options=body.options,
-            new_credentials=body.new_credentials,
-            clear_credential_ids=body.clear_credential_ids,
+            new_credentials=new_credentials,
+            clear_credential_ids=[str(credential_id) for credential_id in body.clear_credential_ids],
         )
         return updated.model_dump(mode="json")
     except Exception as exc:
-        error = redact_secret_text(str(exc), secrets=body.new_credentials)[:200]
+        error = redact_secret_text(str(exc), secrets=new_credentials)[:200]
         logger.error("settings.literature_update_failed", source=source.value, error=error)
         raise HTTPException(status_code=500, detail=error)
 ```

@@ -21,6 +21,9 @@ import httpx
 from pydantic import BaseModel, Field
 from structlog import get_logger
 
+from libs.schemas.literature import LiteratureErrorKind, LiteratureSource
+from services.literature_errors import SourceRequestError, retry_after_seconds
+
 logger = get_logger(__name__)
 
 # API Configuration
@@ -54,7 +57,7 @@ class RateLimitConfig:
     """Rate limiting configuration."""
 
     requests_per_second: float = 1.0
-    burst_capacity: int = 5
+    burst_capacity: int = 1
     retry_attempts: int = 3
     retry_base_delay: float = 1.0
     retry_max_delay: float = 60.0
@@ -208,10 +211,11 @@ class SemanticScholarAdapter:
                 return cached[0]
 
         client = await self._get_client()
-        last_error = None
+        last_error: Exception | None = None
 
         for attempt in range(self.rate_limit.retry_attempts):
             await self._acquire_token()
+            final_attempt = attempt == self.rate_limit.retry_attempts - 1
 
             try:
                 if method.upper() == "GET":
@@ -226,24 +230,49 @@ class SemanticScholarAdapter:
                     return data
 
                 elif response.status_code == 429:
-                    # Rate limited - exponential backoff
-                    delay = min(
-                        self.rate_limit.retry_base_delay * (2**attempt),
-                        self.rate_limit.retry_max_delay,
+                    parsed_retry_after = retry_after_seconds(
+                        response.headers.get("Retry-After")
+                    )
+                    if final_attempt:
+                        raise SourceRequestError(
+                            source=LiteratureSource.SEMANTIC_SCHOLAR,
+                            kind=LiteratureErrorKind.RATE_LIMITED,
+                            message="Semantic Scholar rate limit exceeded",
+                            status_code=response.status_code,
+                            retry_after_seconds=parsed_retry_after,
+                        )
+                    delay = (
+                        parsed_retry_after
+                        if parsed_retry_after is not None
+                        else self._retry_delay(attempt)
                     )
                     logger.warning("rate_limited", attempt=attempt, delay=delay)
                     await asyncio.sleep(delay)
                     continue
 
+                elif response.status_code == 403:
+                    raise SourceRequestError(
+                        source=LiteratureSource.SEMANTIC_SCHOLAR,
+                        kind=LiteratureErrorKind.CREDENTIAL_ERROR,
+                        message="Semantic Scholar credentials were rejected",
+                        status_code=response.status_code,
+                    )
+
                 elif response.status_code == 404:
                     raise ValueError(f"Resource not found: {url}")
 
                 elif response.status_code >= 500:
-                    # Server error - retry
-                    delay = min(
-                        self.rate_limit.retry_base_delay * (2**attempt),
-                        self.rate_limit.retry_max_delay,
-                    )
+                    if final_attempt:
+                        raise SourceRequestError(
+                            source=LiteratureSource.SEMANTIC_SCHOLAR,
+                            kind=LiteratureErrorKind.TRANSIENT_ERROR,
+                            message=(
+                                "Semantic Scholar transient error: "
+                                f"{response.status_code}"
+                            ),
+                            status_code=response.status_code,
+                        )
+                    delay = self._retry_delay(attempt)
                     logger.warning(
                         "server_error",
                         status=response.status_code,
@@ -258,15 +287,33 @@ class SemanticScholarAdapter:
 
             except httpx.TimeoutException as e:
                 last_error = e
+                if final_attempt:
+                    raise SourceRequestError(
+                        source=LiteratureSource.SEMANTIC_SCHOLAR,
+                        kind=LiteratureErrorKind.TRANSIENT_ERROR,
+                        message=f"Semantic Scholar request timed out: {e}",
+                    ) from e
                 logger.warning("timeout", attempt=attempt, error=str(e))
-                await asyncio.sleep(self.rate_limit.retry_base_delay * (2**attempt))
+                await asyncio.sleep(self._retry_delay(attempt))
 
             except httpx.RequestError as e:
                 last_error = e
+                if final_attempt:
+                    raise SourceRequestError(
+                        source=LiteratureSource.SEMANTIC_SCHOLAR,
+                        kind=LiteratureErrorKind.TRANSIENT_ERROR,
+                        message=f"Semantic Scholar request failed: {e}",
+                    ) from e
                 logger.warning("request_error", attempt=attempt, error=str(e))
-                await asyncio.sleep(self.rate_limit.retry_base_delay * (2**attempt))
+                await asyncio.sleep(self._retry_delay(attempt))
 
         raise RuntimeError(f"Failed after {self.rate_limit.retry_attempts} attempts: {last_error}")
+
+    def _retry_delay(self, attempt: int) -> float:
+        return min(
+            self.rate_limit.retry_base_delay * (2**attempt),
+            self.rate_limit.retry_max_delay,
+        )
 
     # ============================================
     # Paper Search Methods
@@ -543,28 +590,18 @@ class SemanticScholarAdapter:
                 "venue", "authors", "citationCount", "isOpenAccess",
             ]
 
-        # Use recommendations base URL
-        client = await self._get_client()
         url = f"{S2_RECOMMENDATIONS_BASE}/papers"
-
-        await self._acquire_token()
-
-        response = await client.post(
+        return await self._request_with_retry(
+            "POST",
             url,
             params={"fields": ",".join(fields)},
-            json={
+            json_data={
                 "positivePaperIds": positive_paper_ids,
                 "negativePaperIds": negative_paper_ids or [],
                 "limit": min(limit, 500),
             },
+            use_cache=False,
         )
-
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 429:
-            raise RuntimeError("Rate limited")
-        else:
-            raise ValueError(f"API error: {response.status_code}")
 
     async def get_recommendations_for_paper(
         self,
@@ -582,26 +619,17 @@ class SemanticScholarAdapter:
                 "venue", "authors", "citationCount", "isOpenAccess",
             ]
 
-        client = await self._get_client()
         url = f"{S2_RECOMMENDATIONS_BASE}/papers/forpaper/{paper_id}"
-
-        await self._acquire_token()
-
-        response = await client.get(
+        return await self._request_with_retry(
+            "GET",
             url,
             params={
                 "limit": min(limit, 500),
                 "from": from_pool,
                 "fields": ",".join(fields),
             },
+            use_cache=False,
         )
-
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 429:
-            raise RuntimeError("Rate limited")
-        else:
-            raise ValueError(f"API error: {response.status_code}")
 
     # ============================================
     # Snippet Search Method
@@ -638,15 +666,8 @@ class SemanticScholarAdapter:
 
     async def get_latest_release(self) -> dict[str, Any]:
         """Get the latest dataset release information."""
-        client = await self._get_client()
         url = f"{S2_DATASETS_BASE}/release/latest"
-
-        await self._acquire_token()
-        response = await client.get(url)
-
-        if response.status_code == 200:
-            return response.json()
-        raise ValueError(f"API error: {response.status_code}")
+        return await self._request_with_retry("GET", url, use_cache=False)
 
     async def get_dataset_download_url(
         self,
@@ -654,16 +675,9 @@ class SemanticScholarAdapter:
         dataset_name: str,
     ) -> str:
         """Get download URL for a specific dataset."""
-        client = await self._get_client()
         url = f"{S2_DATASETS_BASE}/release/{release_id}/dataset/{dataset_name}"
-
-        await self._acquire_token()
-        response = await client.get(url)
-
-        if response.status_code == 200:
-            data = response.json()
-            return data["downloadLink"]
-        raise ValueError(f"API error: {response.status_code}")
+        data = await self._request_with_retry("GET", url, use_cache=False)
+        return data["downloadLink"]
 
     async def close(self) -> None:
         """Close the HTTP client."""
