@@ -173,6 +173,35 @@ def test_patch_run_scopes_get_before_update(
     assert response.json()["title"] == "New title"
 
 
+def test_patch_run_returns_404_without_update_when_scoped_get_missing(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.database as database
+
+    run_id = uuid4()
+    get_calls: list[tuple[UUID, UUID]] = []
+    update_calls: list[tuple[UUID, dict[str, Any]]] = []
+
+    async def fake_get_run(run_id_arg: UUID, *, workspace_id: UUID) -> None:
+        get_calls.append((run_id_arg, workspace_id))
+        return None
+
+    async def fake_update_run(run_id_arg: UUID, updates: dict[str, Any]) -> None:
+        update_calls.append((run_id_arg, updates))
+        return None
+
+    monkeypatch.setattr(database, "get_run", fake_get_run)
+    monkeypatch.setattr(database, "update_run", fake_update_run)
+
+    response = client.patch(f"/api/v1/runs/{run_id}", json={"title": "New title"})
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Run not found"
+    assert get_calls == [(run_id, WORKSPACE_A)]
+    assert update_calls == []
+
+
 def test_delete_run_returns_404_without_unscoped_delete_when_scoped_get_missing(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -276,6 +305,70 @@ def test_run_actions_scope_get_before_update(
     assert response.status_code == 200
     assert response.json()["status"] == expected_status
     assert calls == ["get", "update"]
+
+
+@pytest.mark.parametrize(
+    ("path_suffix", "method_body"),
+    [
+        ("start", None),
+        ("pause", {"mode": "soft"}),
+        ("resume", {}),
+        ("cancel", None),
+    ],
+)
+def test_run_actions_return_404_without_mutation_when_scoped_get_missing(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path_suffix: str,
+    method_body: dict[str, Any] | None,
+) -> None:
+    import apps.api.database as database
+    import apps.api.routes_runs as routes_runs
+
+    run_id = uuid4()
+    get_calls: list[tuple[UUID, UUID]] = []
+    update_calls: list[tuple[UUID, dict[str, Any]]] = []
+    event_calls: list[dict[str, Any]] = []
+    queue_calls: list[UUID] = []
+    publish_calls: list[UUID] = []
+
+    async def fake_get_run(run_id_arg: UUID, *, workspace_id: UUID) -> None:
+        get_calls.append((run_id_arg, workspace_id))
+        return None
+
+    async def fake_update_run(run_id_arg: UUID, updates: dict[str, Any]) -> None:
+        update_calls.append((run_id_arg, updates))
+        return None
+
+    async def fake_create_event(**kwargs: Any) -> dict[str, Any]:
+        event_calls.append(kwargs)
+        return {}
+
+    async def fake_enqueue_run(run_id_arg: UUID, _run: dict[str, Any]) -> bool:
+        queue_calls.append(run_id_arg)
+        return True
+
+    async def fake_publish_event(run_id_arg: UUID, _event: dict[str, Any]) -> None:
+        publish_calls.append(run_id_arg)
+
+    monkeypatch.setattr(database, "get_run", fake_get_run)
+    monkeypatch.setattr(database, "update_run", fake_update_run)
+    monkeypatch.setattr(database, "create_event", fake_create_event)
+    monkeypatch.setattr(routes_runs, "enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr(routes_runs, "publish_event", fake_publish_event)
+
+    response = client.post(
+        f"/api/v1/runs/{run_id}/{path_suffix}",
+        json=method_body,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Run not found"
+    assert get_calls == [(run_id, WORKSPACE_A)]
+    assert update_calls == []
+    assert event_calls == []
+    assert queue_calls == []
+    assert publish_calls == []
 
 
 def test_status_passes_workspace_id_to_counts(

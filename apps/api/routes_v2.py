@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from structlog import get_logger
 
 from apps.api.auth import get_current_user
+from apps.api.tenancy import WorkspaceContext
 
 from apps.api.database import (
     create_context_bundle,
@@ -109,10 +110,10 @@ async def _publish_event(run_id: UUID, event_data: dict[str, Any]) -> None:
         logger.warning("publish_event_failed", run_id=str(run_id), error=str(exc))
 
 
-async def _require_run(run_id: UUID) -> dict[str, Any]:
+async def _require_run(run_id: UUID, ctx: WorkspaceContext) -> dict[str, Any]:
     """Fetch a run or raise 404."""
     try:
-        run = await db_get_run(run_id)
+        run = await db_get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("get_run_failed", run_id=str(run_id), error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to retrieve run")
@@ -154,6 +155,7 @@ async def create_run_v2(
     user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Create a new research run with an explicit research mode."""
+    ctx = WorkspaceContext.from_user(user)
     await _require_project_access(request.project_id, user)
 
     run_id = uuid4()
@@ -179,8 +181,8 @@ async def create_run_v2(
         "completed_at": None,
         "created_at": now,
         "updated_at": now,
-        "workspace_id": user["workspace_id"],
-        "created_by": user["id"],
+        "workspace_id": ctx.workspace_id,
+        "created_by": ctx.user_id,
         "project_id": request.project_id,
         # v2 multi-mode columns
         "mode": request.mode.value,
@@ -234,7 +236,8 @@ async def spawn_run(
     user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Spawn a child run from an existing parent run."""
-    parent = await _require_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    parent = await _require_run(run_id, ctx)
     await _require_project_access(parent.get("project_id"), user)
 
     child_id = uuid4()
@@ -255,8 +258,8 @@ async def spawn_run(
         "completed_at": None,
         "created_at": now,
         "updated_at": now,
-        "workspace_id": user["workspace_id"],
-        "created_by": user["id"],
+        "workspace_id": ctx.workspace_id,
+        "created_by": ctx.user_id,
         "project_id": parent.get("project_id"),
         # v2 multi-mode columns
         "mode": request.target_mode.value,
@@ -310,9 +313,11 @@ async def get_pain_points(
     run_id: UUID,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """List pain points identified for a run."""
-    await _require_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    await _require_run(run_id, ctx)
     try:
         items = await list_pain_points(run_id, limit=limit, offset=offset)
     except Exception as exc:
@@ -331,9 +336,11 @@ async def get_idea_cards(
     run_id: UUID,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """List idea cards generated for a run."""
-    await _require_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    await _require_run(run_id, ctx)
     try:
         items = await list_idea_cards(run_id, limit=limit, offset=offset)
     except Exception as exc:
@@ -351,9 +358,11 @@ async def get_idea_cards(
 async def get_figures(
     run_id: UUID,
     limit: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """List extracted figures for a run."""
-    await _require_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    await _require_run(run_id, ctx)
     try:
         items = await list_figures_by_run(run_id, limit=limit)
     except Exception as exc:
@@ -368,9 +377,13 @@ async def get_figures(
 
 
 @router.get("/runs/{run_id}/reading-path")
-async def get_run_reading_path(run_id: UUID) -> dict[str, Any]:
+async def get_run_reading_path(
+    run_id: UUID,
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get the reading path generated for a run."""
-    await _require_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    await _require_run(run_id, ctx)
     try:
         path = await get_reading_path(run_id)
     except Exception as exc:
@@ -385,9 +398,13 @@ async def get_run_reading_path(run_id: UUID) -> dict[str, Any]:
 
 
 @router.get("/runs/{run_id}/context-bundle")
-async def get_run_context_bundle(run_id: UUID) -> dict[str, Any]:
+async def get_run_context_bundle(
+    run_id: UUID,
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get the output context bundle for a run."""
-    run = await _require_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    run = await _require_run(run_id, ctx)
     bundle_id = run.get("output_bundle_id") or run.get("context_bundle_id")
     if bundle_id is None:
         return {"run_id": str(run_id), "context_bundle": None}
@@ -408,9 +425,12 @@ async def get_run_context_bundle(run_id: UUID) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def _get_bundle_for_run(run_id: UUID) -> dict[str, Any] | None:
+async def _get_bundle_for_run(
+    run_id: UUID,
+    ctx: WorkspaceContext,
+) -> dict[str, Any] | None:
     """Fetch the output context bundle for a run, if available."""
-    run = await _require_run(run_id)
+    run = await _require_run(run_id, ctx)
     bundle_id = run.get("output_bundle_id") or run.get("context_bundle_id")
     if bundle_id is None:
         return None
@@ -421,9 +441,13 @@ async def _get_bundle_for_run(run_id: UUID) -> dict[str, Any] | None:
 
 
 @router.get("/runs/{run_id}/timeline")
-async def get_run_timeline(run_id: UUID) -> dict[str, Any]:
+async def get_run_timeline(
+    run_id: UUID,
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get timeline data for a run."""
-    bundle = await _get_bundle_for_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    bundle = await _get_bundle_for_run(run_id, ctx)
     timeline_data: dict[str, Any] = {}
     if bundle is not None:
         benchmark = bundle.get("benchmark_data")
@@ -433,9 +457,13 @@ async def get_run_timeline(run_id: UUID) -> dict[str, Any]:
 
 
 @router.get("/runs/{run_id}/taxonomy")
-async def get_run_taxonomy(run_id: UUID) -> dict[str, Any]:
+async def get_run_taxonomy(
+    run_id: UUID,
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get taxonomy tree data for a run."""
-    bundle = await _get_bundle_for_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    bundle = await _get_bundle_for_run(run_id, ctx)
     taxonomy_data: dict[str, Any] = {}
     if bundle is not None:
         benchmark = bundle.get("benchmark_data")
@@ -445,9 +473,13 @@ async def get_run_taxonomy(run_id: UUID) -> dict[str, Any]:
 
 
 @router.get("/runs/{run_id}/comparison")
-async def get_run_comparison(run_id: UUID) -> dict[str, Any]:
+async def get_run_comparison(
+    run_id: UUID,
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get comparison matrix data for a run."""
-    bundle = await _get_bundle_for_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    bundle = await _get_bundle_for_run(run_id, ctx)
     comparison_data: dict[str, Any] = {}
     if bundle is not None:
         benchmark = bundle.get("benchmark_data")
@@ -457,9 +489,13 @@ async def get_run_comparison(run_id: UUID) -> dict[str, Any]:
 
 
 @router.get("/runs/{run_id}/mindmap")
-async def get_run_mindmap(run_id: UUID) -> dict[str, Any]:
+async def get_run_mindmap(
+    run_id: UUID,
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get mind map JSON for a run."""
-    bundle = await _get_bundle_for_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    bundle = await _get_bundle_for_run(run_id, ctx)
     mindmap_data: dict[str, Any] = {}
     if bundle is not None:
         mindmap = bundle.get("mindmap_json")
@@ -478,6 +514,7 @@ async def perform_action(
     run_id: UUID,
     action: str,
     request: UserActionRequest,
+    user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """
     Unified user-action endpoint.
@@ -494,7 +531,8 @@ async def perform_action(
             detail=f"Invalid action: {action}. Must be one of: {', '.join(sorted(VALID_ACTIONS))}",
         )
 
-    await _require_run(run_id)
+    ctx = WorkspaceContext.from_user(user)
+    await _require_run(run_id, ctx)
 
     event_type = f"user.action.{action}"
     now = datetime.utcnow()
