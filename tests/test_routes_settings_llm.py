@@ -209,6 +209,35 @@ def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
     assert "test-secret-key" not in response.text
 
 
+def test_put_llm_missing_credential_encryption_key_returns_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepository(_profile())
+    repo.upsert_active_profile.side_effect = RuntimeError(
+        "CREDENTIAL_ENCRYPTION_KEY is required to store DeepSeek API keys"
+    )
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda: repo,
+        raising=False,
+    )
+
+    response = _client().put(
+        "/api/v1/settings/llm",
+        json={
+            "label": "OpenAI-compatible",
+            "base_url": "https://example.test/v1",
+            "model": "cpu-research-model",
+            "api_key": "test-secret-key",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "CREDENTIAL_ENCRYPTION_KEY" in response.json()["detail"]
+    assert "test-secret-key" not in response.text
+
+
 def test_delete_llm_api_key_clears_repository_key_and_resets_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

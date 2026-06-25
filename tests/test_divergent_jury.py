@@ -1823,6 +1823,191 @@ def test_divergent_graph_routes_prior_art_through_novelty_jury():
 
 
 @pytest.mark.asyncio
+async def test_normalize_pain_package_bootstraps_topic_only_runs(monkeypatch):
+    captured: dict[str, str] = {}
+
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_generate_llm_json(system_prompt, user_content, gateway, tier):
+        captured["user_content"] = user_content
+        return (
+            {
+                "pain_points": [
+                    {
+                        "statement": "Divisor summatory identities need CPU-runnable empirical checks.",
+                        "pain_type": "evaluation_gap",
+                    }
+                ],
+                "problem_signatures": [
+                    {
+                        "abstract_keywords": ["summatory identity", "integer counting"],
+                    }
+                ],
+                "domain_context": "CPU-only arithmetic verification",
+            },
+            0.01,
+            [],
+        )
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=uuid4(),
+        topic="CPU-only divisor summatory identity experiments",
+        mode="divergent",
+        pain_points=[],
+        context_bundle={},
+    )
+
+    updates = await divergent.normalize_pain_package(state)
+
+    assert "infer 3-5 concrete pain points" in captured["user_content"]
+    assert updates["pain_points"] == [
+        {
+            "statement": "Divisor summatory identities need CPU-runnable empirical checks.",
+            "pain_type": "evaluation_gap",
+            "signature": {
+                "abstract_keywords": ["summatory identity", "integer counting"],
+            },
+        }
+    ]
+    assert updates["context_bundle"]["problem_signatures"] == [
+        {
+            "abstract_keywords": ["summatory identity", "integer counting"],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_normalize_pain_package_derives_signatures_when_model_omits_them(
+    monkeypatch,
+):
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_generate_llm_json(system_prompt, user_content, gateway, tier):
+        return ({}, 0.01, [])
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=uuid4(),
+        topic="CPU-only divisor summatory identity experiments",
+        mode="divergent",
+        pain_points=[],
+        context_bundle={},
+    )
+
+    updates = await divergent.normalize_pain_package(state)
+
+    assert len(updates["pain_points"]) == 3
+    assert len(updates["context_bundle"]["problem_signatures"]) == 3
+    assert all(
+        point["signature"]
+        for point in updates["pain_points"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_method_transfer_screening_bootstraps_without_candidate_papers(
+    monkeypatch,
+):
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_generate_llm_json(system_prompt, user_content, gateway, tier):
+        return ({}, 0.01, [])
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=uuid4(),
+        topic="CPU-only divisor summatory identity experiments",
+        mode="divergent",
+        candidate_paper_ids=[],
+        context_bundle={
+            "problem_signatures": [
+                {
+                    "statement": "Need reproducible divisor summatory checks.",
+                    "abstract_keywords": ["integer counting", "error envelope"],
+                }
+            ]
+        },
+    )
+
+    updates = await divergent.method_transfer_screening(state)
+
+    transfers = updates["context_bundle"]["method_transfers"]
+    assert transfers
+    assert transfers[0]["source_domain"] == "algorithmic-toolbox"
+
+
+@pytest.mark.asyncio
+async def test_idea_composition_falls_back_when_model_returns_no_ideas(
+    monkeypatch,
+):
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_generate_llm_json(system_prompt, user_content, gateway, tier):
+        return ({}, 0.01, [])
+
+    async def fake_load_failed_idea_memory(project_id, limit=20):
+        return []
+
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+    monkeypatch.setattr(
+        "apps.worker.modes.divergent.load_failed_idea_memory",
+        fake_load_failed_idea_memory,
+    )
+
+    state = ModeGraphState(
+        run_id=uuid4(),
+        topic="CPU-only divisor summatory identity experiments",
+        mode="divergent",
+        pain_points=[
+            {
+                "statement": "Need reproducible divisor summatory checks.",
+                "pain_type": "evaluation_gap",
+            }
+        ],
+        context_bundle={
+            "problem_signatures": [
+                {
+                    "statement": "Need reproducible divisor summatory checks.",
+                    "abstract_keywords": ["integer counting", "error envelope"],
+                }
+            ],
+            "method_transfers": [
+                {
+                    "core_mechanism": "stratified exact-vs-approximate comparison",
+                    "source_domain": "algorithmic-toolbox",
+                    "transfer_feasibility": 0.8,
+                    "required_modifications": [
+                        "Use integer arithmetic and CPU-only batches.",
+                    ],
+                }
+            ],
+        },
+    )
+
+    updates = await divergent.idea_composition(state)
+
+    assert updates["idea_cards"]
+    assert updates["idea_cards"][0]["required_experiments"]
+    assert updates["idea_cards"][0]["quality_verdict"] == "hold"
+
+
+@pytest.mark.asyncio
 async def test_idea_composition_includes_failed_idea_memory(monkeypatch):
     captured: dict[str, str] = {}
 

@@ -61,6 +61,7 @@ MODEL_CATEGORIES = {
 DEFAULT_SETTING_VALUES = {
     "RESEARCH_OS_WORKSPACE_ROOT": DEFAULT_EXPERIMENT_ROOT,
 }
+MISSING_CREDENTIAL_ENCRYPTION_KEY_FRAGMENT = "CREDENTIAL_ENCRYPTION_KEY is required"
 
 # Keys that should be masked in GET responses
 SENSITIVE_KEYS = {"DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "S2_API_KEY", "SEMANTIC_SCHOLAR_API_KEY", "JWT_SECRET"}
@@ -122,6 +123,12 @@ def _effective_setting_value(key: str, env: dict[str, str]) -> str:
     if value is None or value.strip() == "":
         value = DEFAULT_SETTING_VALUES.get(key, "")
     return value
+
+
+def _llm_settings_error_status(error: str) -> int:
+    if MISSING_CREDENTIAL_ENCRYPTION_KEY_FRAGMENT in error:
+        return 400
+    return 500
 
 
 def _fallback_llm_profile(env: dict[str, str], error: Exception | None = None) -> LLMProfile:
@@ -301,7 +308,7 @@ async def update_llm_settings(body: LLMSettingsUpdate) -> dict[str, Any]:
     except Exception as exc:
         error = redact_secret_text(str(exc), secrets=[body.api_key])[:200]
         logger.error("settings.llm_update_failed", error=error)
-        raise HTTPException(status_code=500, detail=error)
+        raise HTTPException(status_code=_llm_settings_error_status(error), detail=error)
 
 
 @router.delete("/llm/api-key")

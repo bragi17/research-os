@@ -94,6 +94,232 @@ _VERIFIER_CARD_FIELDS = (
     "quality_verdict",
     "prior_art_check_status",
 )
+_BOOTSTRAP_STOPWORDS = {
+    "about",
+    "after",
+    "around",
+    "before",
+    "being",
+    "using",
+    "without",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "and",
+    "the",
+    "for",
+    "needs",
+    "need",
+    "research",
+    "topic",
+}
+
+
+def _bootstrap_keywords(text: str, limit: int = 5) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", text.lower()):
+        if token in _BOOTSTRAP_STOPWORDS or token in seen:
+            continue
+        seen.add(token)
+        terms.append(token.replace("_", "-"))
+        if len(terms) >= limit:
+            break
+    return terms
+
+
+def _topic_bootstrap_pain_points(topic: str) -> list[dict[str, Any]]:
+    topic_text = topic.strip() or "the requested research topic"
+    return [
+        {
+            "statement": (
+                f"{topic_text} needs a falsifiable problem framing that can be "
+                "tested without specialized hardware."
+            ),
+            "pain_type": "topic_bootstrap",
+        },
+        {
+            "statement": (
+                f"{topic_text} needs CPU-runnable baselines and ablations that "
+                "separate algorithmic signal from implementation artifacts."
+            ),
+            "pain_type": "topic_bootstrap",
+        },
+        {
+            "statement": (
+                f"{topic_text} needs measurable error criteria and reproducible "
+                "local experiments before claims can be trusted."
+            ),
+            "pain_type": "topic_bootstrap",
+        },
+    ]
+
+
+def _coerce_pain_points(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    pain_points: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            statement = (
+                item.get("statement")
+                or item.get("description")
+                or item.get("title")
+            )
+            if not statement:
+                continue
+            pain_points.append({
+                **item,
+                "statement": str(statement),
+                "pain_type": item.get("pain_type", "topic_bootstrap"),
+            })
+        elif item:
+            pain_points.append({
+                "statement": str(item),
+                "pain_type": "topic_bootstrap",
+            })
+    return pain_points
+
+
+def _pain_points_from_normalization_result(result: Any) -> list[dict[str, Any]]:
+    if not isinstance(result, dict):
+        return []
+    for key in ("pain_points", "topic_pain_points", "inferred_pain_points"):
+        pain_points = _coerce_pain_points(result.get(key))
+        if pain_points:
+            return pain_points
+    return []
+
+
+def _derive_problem_signatures(
+    topic: str,
+    pain_points: list[Any],
+) -> list[dict[str, Any]]:
+    signatures: list[dict[str, Any]] = []
+    topic_keywords = _bootstrap_keywords(topic, limit=4)
+
+    for point in pain_points[:5]:
+        if isinstance(point, dict):
+            statement = str(
+                point.get("statement")
+                or point.get("description")
+                or point.get("title")
+                or topic
+            )
+        else:
+            statement = str(point)
+
+        keywords = _bootstrap_keywords(statement, limit=4)
+        merged_keywords = list(dict.fromkeys(keywords + topic_keywords))[:6]
+        signatures.append({
+            "statement": statement,
+            "abstract_keywords": merged_keywords or ["evaluation", "verification"],
+            "data_conditions": ["small-to-medium local batches", "deterministic inputs"],
+            "supervision_setting": "unsupervised numerical verification",
+            "evaluation_target": "accuracy, error envelope, and CPU runtime",
+        })
+
+    return signatures
+
+
+def _topic_bootstrap_transfers(
+    topic: str,
+    signatures: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    mechanisms = [
+        (
+            "stratified exact-vs-approximate comparison",
+            "Partition input ranges by structural regimes, run exact counts on "
+            "small strata, and compare approximations on matched CPU batches.",
+        ),
+        (
+            "residual envelope tracking",
+            "Track signed and absolute residuals across growing ranges to expose "
+            "where an identity or approximation changes behavior.",
+        ),
+        (
+            "metamorphic arithmetic testing",
+            "Generate equivalent integer formulations and check that computed "
+            "summatory values agree under deterministic transformations.",
+        ),
+    ]
+    if not signatures:
+        signatures = _derive_problem_signatures(topic, _topic_bootstrap_pain_points(topic))
+
+    transfers: list[dict[str, Any]] = []
+    for idx, signature in enumerate(signatures[:3]):
+        mechanism, adaptation = mechanisms[idx % len(mechanisms)]
+        transfers.append({
+            "core_mechanism": mechanism,
+            "source_domain": "algorithmic-toolbox",
+            "transfer_feasibility": 0.75,
+            "failed_assumptions": [],
+            "required_modifications": [
+                adaptation,
+                "Use deterministic CPU-only integer arithmetic and persist raw outputs.",
+            ],
+            "target_signature": signature,
+        })
+    return transfers
+
+
+def _fallback_idea_cards(
+    topic: str,
+    pain_points: list[Any],
+    transfers: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not pain_points:
+        pain_points = _topic_bootstrap_pain_points(topic)
+    if not transfers:
+        transfers = _topic_bootstrap_transfers(
+            topic,
+            _derive_problem_signatures(topic, pain_points),
+        )
+
+    cards: list[dict[str, Any]] = []
+    for idx, point in enumerate(pain_points[:3]):
+        transfer = transfers[idx % len(transfers)]
+        if isinstance(point, dict):
+            statement = str(
+                point.get("statement")
+                or point.get("description")
+                or point.get("title")
+                or topic
+            )
+        else:
+            statement = str(point)
+        mechanism = str(transfer.get("core_mechanism") or "CPU-only validation")
+        title_keywords = _bootstrap_keywords(f"{mechanism} {topic} {statement}", limit=4)
+        title_base = " ".join(word.title() for word in title_keywords) or "Topic"
+        cards.append({
+            "title": f"{title_base} Validation Harness",
+            "problem_statement": statement,
+            "borrowed_method": mechanism,
+            "source_domain": str(transfer.get("source_domain") or "algorithmic-toolbox"),
+            "mechanism_of_transfer": (
+                f"Adapt {mechanism} to the target topic with deterministic "
+                "CPU-only batches and persisted exact-vs-approximate traces."
+            ),
+            "expected_benefit": (
+                "A reproducible first-pass experiment that can falsify weak "
+                "claims before larger theory or implementation work."
+            ),
+            "risks": [
+                "The empirical range may be too small to expose asymptotic behavior.",
+                "Approximation choices may encode the expected conclusion.",
+            ],
+            "required_experiments": [
+                "Implement exact and approximate counters for matched integer ranges.",
+                "Measure residual distributions, maximum error, and CPU runtime.",
+                "Run ablations over range size and stratification strategy.",
+            ],
+            "novelty_score": 0.45,
+            "feasibility_score": 0.8,
+        })
+    return cards
 
 
 def _normalized_idea_key(card: dict[str, Any]) -> str:
@@ -713,12 +939,20 @@ async def normalize_pain_package(state: ModeGraphState) -> dict[str, Any]:
 
     pain_package = state.context_bundle.get("pain_point_package", {})
     pain_points_raw = state.pain_points or pain_package.get("pain_points", [])
+    topic_only_bootstrap = not pain_points_raw
 
     user_content = (
         f"Research topic: {state.topic}\n"
         f"Pain points:\n{json.dumps(pain_points_raw[:15], default=str)}\n"
         f"Context: {pain_package.get('context', '')}\n"
     )
+    if topic_only_bootstrap:
+        user_content += (
+            "\nNo pain-point package was supplied. First infer 3-5 concrete pain "
+            "points from the research topic, then normalize them into problem "
+            "signatures. Return JSON with both pain_points and "
+            "problem_signatures.\n"
+        )
 
     result, delta, errs = await generate_llm_json(
         _NORMALIZE_PAIN_SYSTEM, user_content, gateway, ModelTier.HIGH
@@ -729,6 +963,15 @@ async def normalize_pain_package(state: ModeGraphState) -> dict[str, Any]:
     signatures: list[dict[str, Any]] = []
     if isinstance(result, dict):
         signatures = result.get("problem_signatures", [])
+        if not isinstance(signatures, list):
+            signatures = []
+        if topic_only_bootstrap:
+            pain_points_raw = (
+                _pain_points_from_normalization_result(result)
+                or _topic_bootstrap_pain_points(state.topic)
+            )
+    if not signatures:
+        signatures = _derive_problem_signatures(state.topic, pain_points_raw)
 
     # Enrich pain_points with their signatures for downstream consumption
     enriched_pain_points: list[dict[str, Any]] = []
@@ -863,6 +1106,12 @@ async def method_transfer_screening(state: ModeGraphState) -> dict[str, Any]:
         f"- failed_assumptions: which assumptions would NOT hold in the target?\n"
         f"- required_modifications: what modules need replacement?\n"
     )
+    if not state.candidate_paper_ids:
+        user_content += (
+            "\nNo external candidate papers were found. Propose transferable "
+            "candidate methods from a general algorithmic or experimental-design "
+            "toolbox, and set source_domain to algorithmic-toolbox.\n"
+        )
 
     result, delta, errs = await generate_llm_json(
         _METHOD_TRANSFER_SYSTEM, user_content, gateway, ModelTier.HIGH
@@ -885,6 +1134,8 @@ async def method_transfer_screening(state: ModeGraphState) -> dict[str, Any]:
             filtered_count += 1
             continue
         transfers.append(t)
+    if not transfers:
+        transfers = _topic_bootstrap_transfers(state.topic, signatures)
 
     if filtered_count > 0:
         logger.info(
@@ -1001,6 +1252,8 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
         idea_cards = result
     elif isinstance(result, dict) and "ideas" in result:
         idea_cards = result["ideas"]
+    if not idea_cards:
+        idea_cards = _fallback_idea_cards(state.topic, pain_points, transfers)
 
     # Assign IDs and initial status; score novelty and feasibility defaults
     for idx, card in enumerate(idea_cards):
