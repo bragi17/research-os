@@ -117,13 +117,16 @@ export function LiteratureSourcesPanel({
         const pendingClear = new Set(clearIds);
         const nextKeys = newCredentialsText(draft.options || {});
         const testResult = testResults[source.source];
+        const savedOptionsText = formatOptions(source.options || {});
         const optionsText = optionText[source.source] ?? formatOptions(draft.options || {});
         const optionError = optionErrors[source.source];
         const hasEdit = Boolean(edits[source.source]);
+        const hasUnsavedOptionsText = optionsText !== savedOptionsText;
+        const hasPendingChanges = hasEdit || hasUnsavedOptionsText || Boolean(optionError);
         const isSavingThisSource = savingSource === source.source;
         const isAnySourceSaving = Boolean(savingSource);
         const canSave = hasEdit && !saving && !isAnySourceSaving && !optionError;
-        const canTest = testing !== source.source && !saving && !isAnySourceSaving;
+        const canTest = testing !== source.source && !saving && !isAnySourceSaving && !hasPendingChanges;
         const supportsCredentials = CREDENTIAL_SOURCES.has(source.source);
 
         return (
@@ -153,8 +156,10 @@ export function LiteratureSourcesPanel({
                   ) : (
                     <p className="text-[var(--text-muted)]">No test recorded.</p>
                   )}
-                  {hasEdit && (
-                    <p className="text-[var(--accent-amber)]">Save this source before testing.</p>
+                  {hasPendingChanges && (
+                    <p className="text-[var(--accent-amber)]">
+                      {optionError ? "Fix options JSON before testing." : "Save this source before testing."}
+                    </p>
                   )}
                   {testResult && (
                     <p
