@@ -10,6 +10,7 @@ import pytest
 
 import services.literature_settings as literature_settings
 from libs.schemas.literature import LiteratureSource
+from libs.schemas.literature import LiteratureSourceUpdate
 from services.literature_settings import (
     DEFAULT_WORKSPACE_ID,
     LiteratureCredentialSecret,
@@ -165,6 +166,37 @@ class DirectTransactionalFakePool(FakePool):
 
     def transaction(self) -> FakeTransaction:
         return FakeTransaction(self)
+
+
+class FakeAcquire:
+    def __init__(self, pool: "AcquireTransactionalFakePool") -> None:
+        self.pool = pool
+
+    async def __aenter__(self) -> "AcquireTransactionalFakePool":
+        self.pool.acquire_entries += 1
+        return self.pool
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: Any,
+    ) -> None:
+        return None
+
+
+class AcquireTransactionalFakePool(DirectTransactionalFakePool):
+    def __init__(
+        self,
+        *,
+        settings: Iterable[dict[str, Any]] | None = None,
+        credentials: Iterable[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(settings=settings, credentials=credentials)
+        self.acquire_entries = 0
+
+    def acquire(self) -> FakeAcquire:
+        return FakeAcquire(self)
 
 
 @pytest.mark.asyncio
@@ -415,6 +447,45 @@ async def test_update_source_encrypts_inserts_clears_and_hides_plaintext(
 
 
 @pytest.mark.asyncio
+async def test_update_source_accepts_schema_secret_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "unit-test-encryption-secret")
+    plaintext = "schema-secret-key-123456"
+    body = LiteratureSourceUpdate(new_credentials=[plaintext])
+    pool = FakePool(
+        settings=[
+            _setting_row(
+                LiteratureSource.WEB_SEARCH,
+                enabled=False,
+                options_json={"provider": "exa"},
+            )
+        ]
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    updated = await repo.update_source(
+        LiteratureSource.WEB_SEARCH,
+        enabled=True,
+        options={"provider": "tavily"},
+        new_credentials=body.new_credentials,
+        clear_credential_ids=[],
+    )
+
+    assert len(updated.credentials) == 1
+    assert updated.credentials[0].preview == mask_api_key(plaintext)
+    inserted_credential = [
+        args
+        for sql, args in pool.fetchrow_calls
+        if "INSERT INTO literature_source_credentials" in sql
+    ][0]
+    assert inserted_credential[3] != plaintext
+    assert plaintext not in inserted_credential[3]
+    assert plaintext not in pool.captured_arguments()
+    assert plaintext not in repr(updated.model_dump(mode="json"))
+
+
+@pytest.mark.asyncio
 async def test_update_source_uses_direct_executor_transaction() -> None:
     pool = DirectTransactionalFakePool(
         settings=[
@@ -437,6 +508,33 @@ async def test_update_source_uses_direct_executor_transaction() -> None:
 
     assert updated.enabled is True
     assert updated.options == {"provider": "tavily"}
+    assert pool.transaction_entries == 1
+
+
+@pytest.mark.asyncio
+async def test_update_source_uses_acquired_connection_transaction() -> None:
+    pool = AcquireTransactionalFakePool(
+        settings=[
+            _setting_row(
+                LiteratureSource.WEB_SEARCH,
+                enabled=False,
+                options_json={"provider": "exa"},
+            )
+        ]
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    updated = await repo.update_source(
+        LiteratureSource.WEB_SEARCH,
+        enabled=True,
+        options={"provider": "tavily"},
+        new_credentials=[],
+        clear_credential_ids=[],
+    )
+
+    assert updated.enabled is True
+    assert updated.options == {"provider": "tavily"}
+    assert pool.acquire_entries == 1
     assert pool.transaction_entries == 1
 
 
@@ -510,3 +608,43 @@ async def test_record_source_test_redacts_exact_env_secret(
     ][0]
     assert update_args[3] == "provider echoed [redacted]"
     assert "s2-secret-key-123456" not in repr(pool.fetchrow_calls)
+
+
+@pytest.mark.asyncio
+async def test_record_source_test_success_does_not_decrypt_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decrypt_calls: list[str] = []
+
+    def fake_decrypt(secret: str | None) -> str | None:
+        assert secret is not None
+        decrypt_calls.append(secret)
+        return "db-secret-key-123456"
+
+    monkeypatch.setattr(literature_settings, "decrypt_api_key", fake_decrypt)
+    pool = FakePool(
+        settings=[
+            _setting_row(
+                LiteratureSource.SEMANTIC_SCHOLAR,
+                enabled=True,
+            )
+        ],
+        credentials=[
+            _credential_row(
+                LiteratureSource.SEMANTIC_SCHOLAR,
+                secret_encrypted="encrypted-db-secret",
+                secret_preview="db-s****3456",
+            )
+        ],
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    settings = await repo.record_source_test(
+        LiteratureSource.SEMANTIC_SCHOLAR,
+        status="ok",
+        error=None,
+    )
+
+    assert settings.last_test_status == "ok"
+    assert settings.last_test_error is None
+    assert decrypt_calls == []

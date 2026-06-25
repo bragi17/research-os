@@ -15,6 +15,7 @@ from libs.schemas.literature import (
     LiteratureSource,
     LiteratureSourceSettings,
 )
+from pydantic import SecretStr
 from services.llm_settings import (
     DEFAULT_WORKSPACE_ID,
     decrypt_api_key,
@@ -123,7 +124,7 @@ class LiteratureSettingsRepository:
         source: LiteratureSource | str,
         enabled: bool | None = None,
         options: dict[str, Any] | None = None,
-        new_credentials: list[str] | None = None,
+        new_credentials: list[str | SecretStr] | None = None,
         clear_credential_ids: Iterable[str | UUID] | None = None,
     ) -> LiteratureSourceSettings:
         parsed_source = _coerce_source(source)
@@ -155,15 +156,14 @@ class LiteratureSettingsRepository:
         error: str | None = None,
     ) -> LiteratureSourceSettings:
         parsed_source = _coerce_source(source)
-        credentials = await self.get_active_credentials(parsed_source)
-        safe_error = (
-            redact_secret_text(
+        if error:
+            credentials = await self.get_active_credentials(parsed_source)
+            safe_error = redact_secret_text(
                 error,
                 secrets=[credential.secret for credential in credentials],
             )
-            if error
-            else None
-        )
+        else:
+            safe_error = None
         pool = await self._get_pool()
         row = await self._record_source_test_row(
             pool,
@@ -461,12 +461,12 @@ def _parse_credential_ids(
 
 def _prepare_new_credentials(
     source: LiteratureSource,
-    credentials: Iterable[str],
+    credentials: Iterable[str | SecretStr],
 ) -> list[_PreparedCredential]:
     cleaned_credentials = [
         cleaned
         for credential in credentials
-        if (cleaned := _clean(credential))
+        if (cleaned := _secret_text(credential))
     ]
     if not cleaned_credentials:
         return []
@@ -480,6 +480,12 @@ def _prepare_new_credentials(
         )
         for credential in cleaned_credentials
     ]
+
+
+def _secret_text(value: str | SecretStr) -> str | None:
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    return _clean(value)
 
 
 def _source_settings_from_data(
