@@ -8,7 +8,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from structlog import get_logger
 
+from libs.schemas.literature import LiteratureSource, LiteratureSourceUpdate
 from libs.schemas.settings import LLMSettingsUpdate, LLMTestRequest
+from services.literature_settings import LiteratureSettingsRepository
 from services.llm_settings import (
     DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_DEEPSEEK_LABEL,
@@ -197,6 +199,25 @@ def _llm_category(profile: LLMProfile) -> dict[str, Any]:
     }
 
 
+async def _literature_sources_category() -> dict[str, Any]:
+    try:
+        sources = await LiteratureSettingsRepository().list_sources(
+            include_secrets=False
+        )
+    except Exception as exc:
+        logger.warning(
+            "settings.literature_sources_fallback_failed",
+            error=redact_secret_text(str(exc))[:200],
+        )
+        sources = []
+    return {
+        "id": "literature_sources",
+        "label": "Literature Sources",
+        "items": [],
+        "sources": [source.model_dump(mode="json") for source in sources],
+    }
+
+
 def _reset_llm_runtime() -> None:
     invalidate_llm_config()
     try:
@@ -247,6 +268,8 @@ async def get_model_settings() -> dict[str, Any]:
             "label": cat_info["label"],
             "items": items,
         })
+        if cat_id == "academic":
+            categories.append(await _literature_sources_category())
 
     return {"categories": categories}
 
@@ -322,6 +345,57 @@ async def delete_llm_api_key() -> dict[str, Any]:
         error = redact_secret_text(str(exc))[:200]
         logger.error("settings.llm_key_delete_failed", error=error)
         raise HTTPException(status_code=500, detail=error)
+
+
+@router.put("/literature/{source}")
+async def update_literature_source(
+    source: LiteratureSource,
+    body: LiteratureSourceUpdate,
+) -> dict[str, Any]:
+    new_credentials = [
+        credential.get_secret_value() for credential in body.new_credentials
+    ]
+    try:
+        updated = await LiteratureSettingsRepository().update_source(
+            source,
+            enabled=body.enabled,
+            options=body.options,
+            new_credentials=new_credentials,
+            clear_credential_ids=[
+                str(credential_id) for credential_id in body.clear_credential_ids
+            ],
+        )
+        return updated.model_dump(mode="json")
+    except Exception as exc:
+        error = redact_secret_text(str(exc), secrets=new_credentials)[:200]
+        logger.error(
+            "settings.literature_update_failed",
+            source=source.value,
+            error=error,
+        )
+        raise HTTPException(status_code=500, detail=error)
+
+
+@router.post("/literature/{source}/test")
+async def test_literature_source(source: LiteratureSource) -> dict[str, Any]:
+    repo = LiteratureSettingsRepository()
+    try:
+        settings = await repo.get_source(source)
+        status = "ok" if settings.configured else "error"
+        error = None if settings.configured else f"{source.value} is not configured"
+        await repo.record_source_test(source, status, error)
+        return {"status": status, "error": error}
+    except Exception as exc:
+        error = redact_secret_text(str(exc))[:200]
+        try:
+            await repo.record_source_test(source, "error", error)
+        except Exception as record_exc:
+            logger.warning(
+                "settings.literature_test_record_failed",
+                source=source.value,
+                error=redact_secret_text(str(record_exc))[:200],
+            )
+        return {"status": "error", "error": error}
 
 
 async def _test_saved_llm_connection() -> dict[str, Any]:
