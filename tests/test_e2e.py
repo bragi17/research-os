@@ -74,16 +74,27 @@ async def mock_create_run(run_data: dict[str, Any]) -> dict[str, Any]:
     return run
 
 
-async def mock_get_run(run_id: UUID) -> dict[str, Any] | None:
-    return _mock_runs.get(str(run_id))
+async def mock_get_run(
+    run_id: UUID,
+    workspace_id: UUID | None = None,
+) -> dict[str, Any] | None:
+    run = _mock_runs.get(str(run_id))
+    if run is None:
+        return None
+    if workspace_id is not None and str(run.get("workspace_id")) != str(workspace_id):
+        return None
+    return run
 
 
 async def mock_list_runs(
     status: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    workspace_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
     runs = list(_mock_runs.values())
+    if workspace_id is not None:
+        runs = [r for r in runs if str(r.get("workspace_id")) == str(workspace_id)]
     if status:
         runs = [r for r in runs if r["status"] == status]
     return runs[offset : offset + limit]
@@ -132,16 +143,27 @@ async def mock_count_events(run_id: UUID) -> int:
     return len([e for e in _mock_events if str(e["run_id"]) == str(run_id)])
 
 
-async def mock_count_runs(status: str | None = None) -> int:
+async def mock_count_runs(
+    status: str | None = None,
+    workspace_id: UUID | None = None,
+) -> int:
+    runs = list(_mock_runs.values())
+    if workspace_id is not None:
+        runs = [r for r in runs if str(r.get("workspace_id")) == str(workspace_id)]
     if status:
-        return len([r for r in _mock_runs.values() if r["status"] == status])
-    return len(_mock_runs)
+        runs = [r for r in runs if r["status"] == status]
+    return len(runs)
 
 
-async def mock_count_runs_by_status() -> dict[str, int]:
+async def mock_count_runs_by_status(
+    workspace_id: UUID | None = None,
+) -> dict[str, int]:
     from collections import Counter
 
-    c = Counter(r["status"] for r in _mock_runs.values())
+    runs = list(_mock_runs.values())
+    if workspace_id is not None:
+        runs = [r for r in runs if str(r.get("workspace_id")) == str(workspace_id)]
+    c = Counter(r["status"] for r in runs)
     return dict(c)
 
 

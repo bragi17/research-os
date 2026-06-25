@@ -122,6 +122,60 @@ async def _require_run(run_id: UUID, ctx: WorkspaceContext) -> dict[str, Any]:
     return run
 
 
+async def _get_visible_context_bundle(
+    bundle_id: UUID,
+    ctx: WorkspaceContext,
+) -> dict[str, Any] | None:
+    """Fetch a context bundle only if its source run is visible in this workspace."""
+    try:
+        bundle = await get_context_bundle(bundle_id)
+    except Exception as exc:
+        logger.error(
+            "get_context_bundle_failed",
+            bundle_id=str(bundle_id),
+            error=str(exc),
+        )
+        raise HTTPException(status_code=500, detail="Failed to get context bundle")
+    if bundle is None:
+        return None
+
+    source_run_id = bundle.get("source_run_id")
+    if source_run_id is None:
+        return None
+    try:
+        source_run_uuid = UUID(str(source_run_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+    try:
+        source_run = await db_get_run(
+            source_run_uuid,
+            workspace_id=ctx.workspace_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "get_context_bundle_source_run_failed",
+            bundle_id=str(bundle_id),
+            source_run_id=str(source_run_id),
+            error=str(exc),
+        )
+        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+    if source_run is None:
+        return None
+    return bundle
+
+
+async def _require_context_bundle_access(
+    bundle_id: UUID | None,
+    ctx: WorkspaceContext,
+) -> None:
+    if bundle_id is None:
+        return
+    bundle = await _get_visible_context_bundle(bundle_id, ctx)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Context bundle not found")
+
+
 def _same_id(left: Any, right: Any) -> bool:
     return str(left) == str(right)
 
@@ -157,6 +211,7 @@ async def create_run_v2(
     """Create a new research run with an explicit research mode."""
     ctx = WorkspaceContext.from_user(user)
     await _require_project_access(request.project_id, user)
+    await _require_context_bundle_access(request.context_bundle_id, ctx)
 
     run_id = uuid4()
     now = datetime.utcnow()
@@ -239,6 +294,7 @@ async def spawn_run(
     ctx = WorkspaceContext.from_user(user)
     parent = await _require_run(run_id, ctx)
     await _require_project_access(parent.get("project_id"), user)
+    await _require_context_bundle_access(request.context_bundle_id, ctx)
 
     child_id = uuid4()
     now = datetime.utcnow()
@@ -408,11 +464,7 @@ async def get_run_context_bundle(
     bundle_id = run.get("output_bundle_id") or run.get("context_bundle_id")
     if bundle_id is None:
         return {"run_id": str(run_id), "context_bundle": None}
-    try:
-        bundle = await get_context_bundle(bundle_id)
-    except Exception as exc:
-        logger.error("get_context_bundle_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to get context bundle")
+    bundle = await _get_visible_context_bundle(UUID(str(bundle_id)), ctx)
     return {"run_id": str(run_id), "context_bundle": bundle}
 
 
@@ -435,8 +487,8 @@ async def _get_bundle_for_run(
     if bundle_id is None:
         return None
     try:
-        return await get_context_bundle(bundle_id)
-    except Exception:
+        return await _get_visible_context_bundle(UUID(str(bundle_id)), ctx)
+    except (ValueError, TypeError, AttributeError):
         return None
 
 
