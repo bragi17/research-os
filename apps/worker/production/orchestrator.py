@@ -17,14 +17,14 @@ from apps.worker.production.coding_agents.base import (
     CodingExecOptions,
 )
 from apps.worker.production.coding_agents.provider_factory import provider_for_name
+from apps.worker.production.experiments.docker_executor import (
+    DockerExperimentExecutor,
+    DockerJobSpec,
+)
 from apps.worker.production.experiments.local_executor import (
     LocalExperimentExecutor,
     LocalJobResult,
     LocalJobSpec,
-)
-from apps.worker.production.experiments.docker_executor import (
-    DockerExperimentExecutor,
-    DockerJobSpec,
 )
 from apps.worker.production.experiments.manifest import expand_manifest_jobs
 from apps.worker.production.experiments.ssh_executor import (
@@ -44,7 +44,7 @@ from apps.worker.production.workspaces import (
     resolve_project_workspace_path,
     resolve_under_workspace,
 )
-from libs.schemas.production import CodingTaskCreate
+from libs.schemas.production import CodingTaskCreate, ExperimentManifestPayload
 
 
 DEFAULT_LOCAL_JOB_TIMEOUT_SEC = 1800
@@ -376,19 +376,19 @@ async def create_manifest_jobs(manifest_id: UUID) -> list[dict[str, Any]]:
         raise ValueError("accepted manifest is required before job expansion")
 
     manifest_json = manifest.get("manifest_json", {})
-    expanded_jobs = expand_manifest_jobs(manifest_json)
-    resources = manifest_json.get("resources") if isinstance(manifest_json, dict) else {}
-    resources = resources if isinstance(resources, dict) else {}
-    remote_host_id = resources.get("remote_host_id")
-    executor_type = resources.get("executor_type")
+    manifest_payload = ExperimentManifestPayload.model_validate(manifest_json)
+    expanded_jobs = expand_manifest_jobs(manifest_payload)
+    resources = manifest_payload.resources
+    remote_host_id = resources.remote_host_id
+    executor_type = resources.executor_type
     if executor_type is None:
-        if resources.get("gpu_required") is True:
-            executor_type = "docker_gpu"
-        elif remote_host_id and resources.get("local_first") is False:
+        if remote_host_id and resources.local_first is False:
             executor_type = "ssh"
+        elif resources.gpu_required is True:
+            executor_type = "docker_gpu"
         else:
             executor_type = "local"
-    remote_host_uuid = UUID(str(remote_host_id)) if executor_type == "ssh" and remote_host_id else None
+    remote_host_uuid = remote_host_id if executor_type == "ssh" and remote_host_id else None
     if executor_type == "ssh" and remote_host_uuid is None:
         raise ValueError("remote_host_id is required for ssh manifest resources")
     if remote_host_uuid is not None:
@@ -422,11 +422,11 @@ async def create_manifest_jobs(manifest_id: UUID) -> list[dict[str, Any]]:
                     "job_index": job.job_index,
                     "oom_retry": job.oom_retry,
                     "phase_dependencies": list(job.phase_dependencies),
-                    "gpu_count": int(resources.get("gpu_count") or 1),
-                    "job_image": resources.get("job_image") or "research-os-job-runtime:latest",
-                    "memory": resources.get("memory") or "16g",
-                    "cpus": resources.get("cpus") or "4",
-                    "network": resources.get("network") or "none",
+                    "gpu_count": resources.gpu_count,
+                    "job_image": resources.job_image,
+                    "memory": resources.memory,
+                    "cpus": resources.cpus,
+                    "network": resources.network,
                 },
             }
         )
@@ -1062,6 +1062,7 @@ async def run_local_job(
         executor = executor or SSHExperimentExecutor()
     elif executor_type == "docker_gpu":
         cwd = Path(str(job.get("cwd") or "."))
+        resolved_cwd = _resolve_job_cwd(job.get("cwd"), root)
         metrics = job.get("metrics_json") if isinstance(job.get("metrics_json"), dict) else {}
         spec = DockerJobSpec(
             job_id=str(job_id),
@@ -1077,7 +1078,7 @@ async def run_local_job(
             cpus=str(metrics.get("cpus") or "4"),
             network=str(metrics.get("network") or "none"),
         )
-        artifact_dir = str(_resolve_job_artifact_dir(root, job_id))
+        artifact_dir = str(resolved_cwd)
         executor = executor or DockerExperimentExecutor()
     elif executor_type == "local":
         cwd = _resolve_job_cwd(job.get("cwd"), root)

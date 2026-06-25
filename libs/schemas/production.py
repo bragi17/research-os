@@ -7,6 +7,7 @@ claim, writing, and submission contracts.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
@@ -17,6 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 
 
 NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+SAFE_DOCKER_IMAGE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$")
+SAFE_DOCKER_MEMORY = re.compile(r"^[1-9][0-9]*[bkmgBKMG]?$")
+SAFE_DOCKER_CPUS = re.compile(r"^(?:[1-9][0-9]*|[1-9][0-9]*\.[0-9]+|0\.[0-9]*[1-9][0-9]*)$")
 
 
 def _validate_workspace_relative_path(value: str | None, field_name: str) -> str | None:
@@ -48,6 +52,55 @@ def _validate_terminal_shell(value: str | None) -> str | None:
         raise ValueError("unsafe shell value")
     if not path.is_absolute() and "/" in raw:
         raise ValueError("unsafe shell value")
+    return raw
+
+
+def _validate_docker_image_reference(value: str) -> str:
+    raw = str(value).strip()
+    if (
+        not raw
+        or raw.startswith("-")
+        or any(character.isspace() or ord(character) < 32 for character in raw)
+        or SAFE_DOCKER_IMAGE_REFERENCE.fullmatch(raw) is None
+    ):
+        raise ValueError("docker image reference is unsafe")
+    return raw
+
+
+def _validate_docker_memory(value: str) -> str:
+    raw = str(value).strip()
+    if (
+        not raw
+        or raw.startswith("-")
+        or any(character.isspace() or ord(character) < 32 for character in raw)
+        or SAFE_DOCKER_MEMORY.fullmatch(raw) is None
+    ):
+        raise ValueError("docker memory value is unsafe")
+    unit = raw[-1].lower() if raw[-1].isalpha() else "b"
+    amount = int(raw[:-1] if raw[-1].isalpha() else raw)
+    multiplier_by_unit = {
+        "b": 1,
+        "k": 1024,
+        "m": 1024**2,
+        "g": 1024**3,
+    }
+    if amount * multiplier_by_unit[unit] > 1024**4:
+        raise ValueError("docker memory value is outside allowed range")
+    return raw
+
+
+def _validate_docker_cpus(value: str) -> str:
+    raw = str(value).strip()
+    if (
+        not raw
+        or raw.startswith("-")
+        or any(character.isspace() or ord(character) < 32 for character in raw)
+        or SAFE_DOCKER_CPUS.fullmatch(raw) is None
+    ):
+        raise ValueError("docker cpus value is unsafe")
+    cpus = float(raw)
+    if cpus <= 0 or cpus > 256:
+        raise ValueError("docker cpus value is outside allowed range")
     return raw
 
 
@@ -371,8 +424,23 @@ class ExperimentResources(BaseModel):
     job_image: str = "research-os-job-runtime:latest"
     memory: str = "16g"
     cpus: str = "4"
-    network: str = "none"
+    network: Literal["none"] = "none"
     max_parallel: int = Field(default=1, ge=1)
+
+    @field_validator("job_image")
+    @classmethod
+    def validate_job_image(cls, value: str) -> str:
+        return _validate_docker_image_reference(value)
+
+    @field_validator("memory")
+    @classmethod
+    def validate_memory(cls, value: str) -> str:
+        return _validate_docker_memory(value)
+
+    @field_validator("cpus")
+    @classmethod
+    def validate_cpus(cls, value: str) -> str:
+        return _validate_docker_cpus(value)
 
 
 class ExperimentEnvironment(BaseModel):
