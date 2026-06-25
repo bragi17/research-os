@@ -476,9 +476,15 @@ async def test_run_codex_task_streams_events_and_persists_completed_status(
     workspace = base / "codex-task"
     workspace.mkdir()
     task_id = uuid4()
+    project_id = uuid4()
+    fake_db.projects[project_id] = {
+        "id": project_id,
+        "default_workspace_path": str(workspace),
+        **_now_row(),
+    }
     fake_db.coding_tasks[task_id] = {
         "id": task_id,
-        "project_id": uuid4(),
+        "project_id": project_id,
         "run_id": uuid4(),
         "provider_session_id": "resume-1",
         "workspace_path": str(workspace),
@@ -537,6 +543,50 @@ async def test_run_codex_task_streams_events_and_persists_completed_status(
 
 
 @pytest.mark.asyncio
+async def test_run_codex_task_accepts_stored_workspace_scoped_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from apps.worker.production import orchestrator
+
+    fake_db = FakeProductionDb()
+    monkeypatch.setattr(orchestrator, "db", fake_db)
+    base = _set_workspace_base(monkeypatch, tmp_path)
+    workspace_id = uuid4()
+    project_id = uuid4()
+    fake_db.projects[project_id] = {
+        "id": project_id,
+        "workspace_id": workspace_id,
+        "default_workspace_path": None,
+        **_now_row(),
+    }
+    created = await orchestrator.create_coding_task(
+        {
+            "project_id": project_id,
+            "user_prompt": "Run scoped task",
+            "env_json": {},
+            "mcp_config_json": {},
+        }
+    )
+    expected_workspace = (
+        base
+        / "workspaces"
+        / str(workspace_id)
+        / "projects"
+        / str(project_id)
+    ).resolve()
+    assert created["workspace_path"] == str(expected_workspace)
+    provider = FakeProvider([CodingAgentEvent(type="status", status="completed")])
+
+    result = await orchestrator.run_codex_task(created["id"], provider=provider)
+
+    assert provider.calls
+    assert provider.calls[0][1].cwd == str(expected_workspace)
+    assert result.status == "completed"
+    assert fake_db.coding_task_updates[-1][1]["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_run_codex_task_uses_configured_provider_factory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -549,9 +599,15 @@ async def test_run_codex_task_uses_configured_provider_factory(
     workspace = base / "claude-task"
     workspace.mkdir()
     task_id = uuid4()
+    project_id = uuid4()
+    fake_db.projects[project_id] = {
+        "id": project_id,
+        "default_workspace_path": str(workspace),
+        **_now_row(),
+    }
     fake_db.coding_tasks[task_id] = {
         "id": task_id,
-        "project_id": uuid4(),
+        "project_id": project_id,
         "provider": "claude",
         "workspace_path": str(workspace),
         "user_prompt": "Use the configured agent",
@@ -589,6 +645,11 @@ async def test_run_codex_task_does_not_overwrite_after_lease_changes(
     workspace.mkdir()
     task_id = uuid4()
     project_id = uuid4()
+    fake_db.projects[project_id] = {
+        "id": project_id,
+        "default_workspace_path": str(workspace),
+        **_now_row(),
+    }
     claimed_task = {
         "id": task_id,
         "project_id": project_id,
@@ -642,9 +703,15 @@ async def test_run_codex_task_persists_provider_failure_without_reraising(
     workspace = base / "codex-task"
     workspace.mkdir()
     task_id = uuid4()
+    project_id = uuid4()
+    fake_db.projects[project_id] = {
+        "id": project_id,
+        "default_workspace_path": str(workspace),
+        **_now_row(),
+    }
     fake_db.coding_tasks[task_id] = {
         "id": task_id,
-        "project_id": uuid4(),
+        "project_id": project_id,
         "run_id": None,
         "provider_session_id": None,
         "workspace_path": str(workspace),
@@ -711,9 +778,15 @@ async def test_run_codex_task_rejects_non_empty_mcp_config_before_provider_call(
     workspace = base / "codex-task"
     workspace.mkdir()
     task_id = uuid4()
+    project_id = uuid4()
+    fake_db.projects[project_id] = {
+        "id": project_id,
+        "default_workspace_path": str(workspace),
+        **_now_row(),
+    }
     fake_db.coding_tasks[task_id] = {
         "id": task_id,
-        "project_id": uuid4(),
+        "project_id": project_id,
         "workspace_path": str(workspace),
         "user_prompt": "Do the work",
         "env_json": {},
@@ -741,11 +814,17 @@ async def test_run_codex_task_marks_workspace_escape_as_failed_before_provider_c
 
     fake_db = FakeProductionDb()
     monkeypatch.setattr(orchestrator, "db", fake_db)
-    _set_workspace_base(monkeypatch, tmp_path)
+    base = _set_workspace_base(monkeypatch, tmp_path)
     task_id = uuid4()
+    project_id = uuid4()
+    fake_db.projects[project_id] = {
+        "id": project_id,
+        "default_workspace_path": str(base / "workspace"),
+        **_now_row(),
+    }
     fake_db.coding_tasks[task_id] = {
         "id": task_id,
-        "project_id": uuid4(),
+        "project_id": project_id,
         "workspace_path": str(tmp_path / "outside"),
         "user_prompt": "Do the work",
         "env_json": {},
@@ -762,6 +841,55 @@ async def test_run_codex_task_marks_workspace_escape_as_failed_before_provider_c
     assert result.status == "failed"
     assert result.failure_reason == "workspace_path_escaped"
     assert "workspace_path escapes workspace root" in (result.failure_detail or "")
+
+
+@pytest.mark.asyncio
+async def test_run_codex_task_rejects_workspace_path_under_other_project_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from apps.worker.production import orchestrator
+
+    fake_db = FakeProductionDb()
+    monkeypatch.setattr(orchestrator, "db", fake_db)
+    base = _set_workspace_base(monkeypatch, tmp_path)
+    workspace_id = uuid4()
+    other_workspace_id = uuid4()
+    project_id = uuid4()
+    other_project_id = uuid4()
+    fake_db.projects[project_id] = {
+        "id": project_id,
+        "workspace_id": workspace_id,
+        "default_workspace_path": None,
+        **_now_row(),
+    }
+    task_id = uuid4()
+    fake_db.coding_tasks[task_id] = {
+        "id": task_id,
+        "project_id": project_id,
+        "workspace_path": str(
+            base
+            / "workspaces"
+            / str(other_workspace_id)
+            / "projects"
+            / str(other_project_id)
+            / "shared-task"
+        ),
+        "user_prompt": "Do the work",
+        "env_json": {},
+        "mcp_config_json": {},
+        "extra_args": [],
+        "custom_args": [],
+        **_now_row(),
+    }
+    provider = FakeProvider([])
+
+    result = await orchestrator.run_codex_task(task_id, provider=provider)
+
+    assert provider.calls == []
+    assert result.status == "failed"
+    assert result.failure_reason == "workspace_path_escaped"
+    assert "workspace_path escapes project workspace root" in (result.failure_detail or "")
 
 
 @pytest.mark.asyncio

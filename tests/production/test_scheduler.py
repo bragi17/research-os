@@ -377,6 +377,56 @@ async def test_tick_consumes_queued_coding_tasks_and_pending_jobs_with_caps() ->
 
 
 @pytest.mark.asyncio
+async def test_scheduler_can_disable_coding_or_experiment_work_classes() -> None:
+    task_id = uuid4()
+    job_id = uuid4()
+    coding_only_db = FakeSchedulerDb(
+        coding_tasks=[{"id": task_id, "status": "queued"}],
+        experiment_jobs=[{"id": job_id, "status": "pending", "executor_type": "local"}],
+    )
+    coding_only_orchestrator = FakeSchedulerOrchestrator()
+    coding_only_scheduler = ProductionScheduler(
+        db=coding_only_db,
+        orchestrator=coding_only_orchestrator,
+        max_concurrent_tasks=1,
+        max_concurrent_jobs=1,
+        enable_experiment_jobs=False,
+    )
+
+    coding_only_result = await coding_only_scheduler.tick()
+
+    assert coding_only_db.coding_task_claim_calls == [1]
+    assert coding_only_db.experiment_job_list_calls == []
+    assert coding_only_db.experiment_job_claim_calls == []
+    assert coding_only_orchestrator.codex_calls == [task_id]
+    assert coding_only_orchestrator.local_job_calls == []
+    assert coding_only_result.coding_tasks_started == 1
+    assert coding_only_result.experiment_jobs_started == 0
+
+    job_only_db = FakeSchedulerDb(
+        coding_tasks=[{"id": uuid4(), "status": "queued"}],
+        experiment_jobs=[{"id": job_id, "status": "pending", "executor_type": "local"}],
+    )
+    job_only_orchestrator = FakeSchedulerOrchestrator()
+    job_only_scheduler = ProductionScheduler(
+        db=job_only_db,
+        orchestrator=job_only_orchestrator,
+        max_concurrent_tasks=1,
+        max_concurrent_jobs=1,
+        enable_coding_tasks=False,
+    )
+
+    job_only_result = await job_only_scheduler.tick()
+
+    assert job_only_db.coding_task_claim_calls == []
+    assert job_only_db.experiment_job_claim_calls == [([job_id], 1)]
+    assert job_only_orchestrator.codex_calls == []
+    assert job_only_orchestrator.local_job_calls == [job_id]
+    assert job_only_result.coding_tasks_started == 0
+    assert job_only_result.experiment_jobs_started == 1
+
+
+@pytest.mark.asyncio
 async def test_scheduler_heartbeats_long_running_work() -> None:
     task_id = uuid4()
     job_id = uuid4()

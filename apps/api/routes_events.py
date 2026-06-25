@@ -5,12 +5,14 @@ import json
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from structlog import get_logger
 
 import apps.api.database as db
+from apps.api.auth import get_current_user
 from apps.api.redis_queue import REDIS_EVENTS_CHANNEL, get_redis
+from apps.api.tenancy import WorkspaceContext
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/runs", tags=["events"])
@@ -21,10 +23,12 @@ async def get_run_events(
     run_id: UUID,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Get events for a research run."""
+    ctx = WorkspaceContext.from_user(user)
     try:
-        run = await db.get_run(run_id)
+        run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("get_events_run_check_failed", run_id=str(run_id), error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to retrieve run")
@@ -57,10 +61,14 @@ async def get_run_events(
 
 
 @router.get("/{run_id}/events/stream")
-async def stream_run_events(run_id: UUID) -> StreamingResponse:
+async def stream_run_events(
+    run_id: UUID,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> StreamingResponse:
     """Stream events for a research run via Server-Sent Events."""
+    ctx = WorkspaceContext.from_user(user)
     try:
-        run = await db.get_run(run_id)
+        run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("stream_events_run_check_failed", run_id=str(run_id), error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to retrieve run")
@@ -129,7 +137,10 @@ async def stream_run_events(run_id: UUID) -> StreamingResponse:
                             })
                         last_count = current_count
 
-                    current_run = await db.get_run(run_id)
+                    current_run = await db.get_run(
+                        run_id,
+                        workspace_id=ctx.workspace_id,
+                    )
                     if current_run and current_run.get("status") in terminal_statuses:
                         yield format_sse({"event_type": "stream_end"})
                         break

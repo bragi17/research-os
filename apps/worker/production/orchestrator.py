@@ -17,6 +17,10 @@ from apps.worker.production.coding_agents.base import (
     CodingExecOptions,
 )
 from apps.worker.production.coding_agents.provider_factory import provider_for_name
+from apps.worker.production.experiments.docker_executor import (
+    DockerExperimentExecutor,
+    DockerJobSpec,
+)
 from apps.worker.production.experiments.local_executor import (
     LocalExperimentExecutor,
     LocalJobResult,
@@ -40,7 +44,11 @@ from apps.worker.production.workspaces import (
     resolve_project_workspace_path,
     resolve_under_workspace,
 )
-from libs.schemas.production import CodingTaskCreate
+from libs.schemas.production import (
+    CodingTaskCreate,
+    ExperimentManifestPayload,
+    validate_docker_job_metrics,
+)
 
 
 DEFAULT_LOCAL_JOB_TIMEOUT_SEC = 1800
@@ -126,11 +134,10 @@ def _normalize_codex_mcp_config(value: Any) -> dict[str, Any] | None:
     raise ValueError("unsupported_mcp_config: CodexProvider v1 does not support MCP config")
 
 
-def _build_exec_options(task: dict[str, Any]) -> CodingExecOptions:
+def _build_exec_options(task: dict[str, Any], project: dict[str, Any]) -> CodingExecOptions:
     cwd = task.get("workspace_path") or task.get("cwd")
     if not cwd:
         raise ValueError("workspace_path is required to run coding task")
-    project = {"id": task["project_id"], "default_workspace_path": cwd}
     cwd = str(resolve_coding_workspace_path(task, project))
 
     return CodingExecOptions(
@@ -250,13 +257,19 @@ async def run_codex_task(
         raise ValueError(f"Coding task not found: {task_id}")
 
     try:
-        options = _build_exec_options(task)
+        project = await db.get_project(task["project_id"])
+        if project is None:
+            raise ValueError(f"Project not found: {task['project_id']}")
+        options = _build_exec_options(task, project)
         prompt = task.get("user_prompt")
         if not prompt:
             raise ValueError("user_prompt is required to run coding task")
     except ValueError as exc:
         failure_text = str(exc)
-        if "workspace_path escapes workspace root" in failure_text:
+        if (
+            "workspace_path escapes workspace root" in failure_text
+            or "workspace_path escapes project workspace root" in failure_text
+        ):
             failure_reason = "workspace_path_escaped"
         elif "workspace_path is required" in failure_text or "Project not found" in failure_text:
             failure_reason = "workspace_unavailable"
@@ -367,14 +380,19 @@ async def create_manifest_jobs(manifest_id: UUID) -> list[dict[str, Any]]:
         raise ValueError("accepted manifest is required before job expansion")
 
     manifest_json = manifest.get("manifest_json", {})
-    expanded_jobs = expand_manifest_jobs(manifest_json)
-    resources = manifest_json.get("resources") if isinstance(manifest_json, dict) else {}
-    resources = resources if isinstance(resources, dict) else {}
-    remote_host_id = resources.get("remote_host_id")
-    executor_type = resources.get("executor_type")
+    manifest_payload = ExperimentManifestPayload.model_validate(manifest_json)
+    expanded_jobs = expand_manifest_jobs(manifest_payload)
+    resources = manifest_payload.resources
+    remote_host_id = resources.remote_host_id
+    executor_type = resources.executor_type
     if executor_type is None:
-        executor_type = "ssh" if remote_host_id and resources.get("local_first") is False else "local"
-    remote_host_uuid = UUID(str(remote_host_id)) if executor_type == "ssh" and remote_host_id else None
+        if remote_host_id and resources.local_first is False:
+            executor_type = "ssh"
+        elif resources.gpu_required is True:
+            executor_type = "docker_gpu"
+        else:
+            executor_type = "local"
+    remote_host_uuid = remote_host_id if executor_type == "ssh" and remote_host_id else None
     if executor_type == "ssh" and remote_host_uuid is None:
         raise ValueError("remote_host_id is required for ssh manifest resources")
     if remote_host_uuid is not None:
@@ -408,6 +426,11 @@ async def create_manifest_jobs(manifest_id: UUID) -> list[dict[str, Any]]:
                     "job_index": job.job_index,
                     "oom_retry": job.oom_retry,
                     "phase_dependencies": list(job.phase_dependencies),
+                    "gpu_count": resources.gpu_count,
+                    "job_image": resources.job_image,
+                    "memory": resources.memory,
+                    "cpus": resources.cpus,
+                    "network": resources.network,
                 },
             }
         )
@@ -1041,6 +1064,27 @@ async def run_local_job(
         )
         artifact_dir = str(local_artifact_dir)
         executor = executor or SSHExperimentExecutor()
+    elif executor_type == "docker_gpu":
+        cwd = Path(str(job.get("cwd") or "."))
+        resolved_cwd = _resolve_job_cwd(job.get("cwd"), root)
+        metrics = job.get("metrics_json") if isinstance(job.get("metrics_json"), dict) else {}
+        docker_metrics = validate_docker_job_metrics(metrics, require_all=True)
+        spec = DockerJobSpec(
+            job_id=str(job_id),
+            workspace_root=root,
+            cwd=cwd,
+            command=job["cmd"],
+            image=str(docker_metrics["job_image"]),
+            log_dir=log_dir,
+            expected_outputs=_expected_output_paths(job),
+            timeout_sec=_job_timeout(job),
+            gpu_count=int(docker_metrics["gpu_count"]),
+            memory=str(docker_metrics["memory"]),
+            cpus=str(docker_metrics["cpus"]),
+            network=str(docker_metrics["network"]),
+        )
+        artifact_dir = str(resolved_cwd)
+        executor = executor or DockerExperimentExecutor()
     elif executor_type == "local":
         cwd = _resolve_job_cwd(job.get("cwd"), root)
         spec = LocalJobSpec(

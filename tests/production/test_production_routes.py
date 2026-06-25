@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
@@ -19,6 +19,7 @@ from libs.schemas.production import (
     CodingEventCreate,
     CodingTaskCreate,
     ExperimentJobCreate,
+    ExperimentJobPatch,
     ExperimentManifestCreate,
     ManuscriptPackageCreate,
     ProjectCreate,
@@ -145,7 +146,31 @@ async def test_create_project_route_calls_db_helper(monkeypatch: pytest.MonkeyPa
     assert payload["title"] == "Durable project"
     assert payload["status"] == "active"
     assert payload["owner_user_id"] == TEST_USER_ID
+    assert payload["workspace_id"] == TEST_USER["workspace_id"]
     assert result["id"] == project_id
+
+
+@pytest.mark.asyncio
+async def test_list_projects_route_filters_by_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apps.api.routes_production as routes_production
+
+    list_projects = AsyncMock(return_value=[])
+    monkeypatch.setattr(routes_production.db, "list_projects", list_projects)
+
+    result = await routes_production.list_projects(
+        status="active",
+        limit=10,
+        offset=5,
+        user=TEST_USER,
+    )
+
+    list_projects.assert_awaited_once_with(
+        status="active",
+        workspace_id=TEST_USER["workspace_id"],
+        limit=10,
+        offset=5,
+    )
+    assert result == []
 
 
 @pytest.mark.asyncio
@@ -803,6 +828,124 @@ async def test_manual_run_routes_return_conflict_when_claim_fails(
 
 
 @pytest.mark.asyncio
+async def test_patch_experiment_job_rejects_unsafe_docker_metrics_with_existing_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.routes_production as routes_production
+
+    job_id = uuid4()
+    project_id = uuid4()
+    existing_job = {
+        "id": job_id,
+        "project_id": project_id,
+        "executor_type": "docker_gpu",
+        "remote_host_id": None,
+        "metrics_json": {
+            "gpu_count": 1,
+            "job_image": "research-os-job-runtime:latest",
+            "memory": "16g",
+            "cpus": "4",
+            "network": "none",
+        },
+    }
+    update_experiment_job = AsyncMock(return_value={})
+    monkeypatch.setattr(routes_production.db, "get_experiment_job", AsyncMock(return_value=existing_job))
+    monkeypatch.setattr(
+        routes_production.db,
+        "get_project",
+        AsyncMock(return_value={"id": project_id, "owner_user_id": TEST_USER_ID}),
+    )
+    monkeypatch.setattr(routes_production.db, "update_experiment_job", update_experiment_job)
+
+    with pytest.raises(Exception, match="docker network"):
+        await routes_production.patch_experiment_job(
+            job_id,
+            ExperimentJobPatch(metrics_json={"network": "host"}),
+            user=TEST_USER,
+        )
+
+    update_experiment_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_experiment_job_rejects_null_metrics_for_explicit_docker_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.routes_production as routes_production
+
+    job_id = uuid4()
+    project_id = uuid4()
+    existing_job = {
+        "id": job_id,
+        "project_id": project_id,
+        "executor_type": "local",
+        "remote_host_id": None,
+        "metrics_json": {"memory": "avg_peak_by_phase"},
+    }
+    update_experiment_job = AsyncMock(return_value={})
+    monkeypatch.setattr(routes_production.db, "get_experiment_job", AsyncMock(return_value=existing_job))
+    monkeypatch.setattr(
+        routes_production.db,
+        "get_project",
+        AsyncMock(return_value={"id": project_id, "owner_user_id": TEST_USER_ID}),
+    )
+    monkeypatch.setattr(routes_production.db, "update_experiment_job", update_experiment_job)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await routes_production.patch_experiment_job(
+            job_id,
+            ExperimentJobPatch(executor_type="docker_gpu", metrics_json=None),
+            user=TEST_USER,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "metrics_json" in str(exc_info.value.detail)
+    update_experiment_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_experiment_job_rejects_null_metrics_for_existing_docker_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.routes_production as routes_production
+
+    job_id = uuid4()
+    project_id = uuid4()
+    existing_job = {
+        "id": job_id,
+        "project_id": project_id,
+        "executor_type": "docker_gpu",
+        "remote_host_id": None,
+        "metrics_json": {
+            "gpu_count": 1,
+            "job_image": "research-os-job-runtime:latest",
+            "memory": "16g",
+            "cpus": "4",
+            "network": "none",
+        },
+    }
+    update_experiment_job = AsyncMock(return_value={})
+    monkeypatch.setattr(routes_production.db, "get_experiment_job", AsyncMock(return_value=existing_job))
+    monkeypatch.setattr(
+        routes_production.db,
+        "get_project",
+        AsyncMock(return_value={"id": project_id, "owner_user_id": TEST_USER_ID}),
+    )
+    monkeypatch.setattr(routes_production.db, "update_experiment_job", update_experiment_job)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await routes_production.patch_experiment_job(
+            job_id,
+            ExperimentJobPatch(metrics_json=None),
+            user=TEST_USER,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "metrics_json" in str(exc_info.value.detail)
+    update_experiment_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_generate_claims_and_gate_routes_call_orchestrator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -967,6 +1110,7 @@ async def test_remote_host_routes_are_owner_scoped(
         "id": remote_host_id,
         "name": "gpu-box",
         "owner_user_id": TEST_USER_ID,
+        "workspace_id": TEST_USER["workspace_id"],
         "host": "gpu.example.test",
         "port": 22,
         "username": None,
@@ -990,13 +1134,16 @@ async def test_remote_host_routes_are_owner_scoped(
 
     assert created["id"] == remote_host_id
     assert create_remote_host.call_args.args[0]["owner_user_id"] == TEST_USER_ID
+    assert create_remote_host.call_args.args[0]["workspace_id"] == TEST_USER["workspace_id"]
     list_remote_hosts.assert_awaited_once_with(
         status="unknown",
         owner_user_id=TEST_USER_ID,
+        workspace_id=TEST_USER["workspace_id"],
         limit=50,
         offset=0,
     )
     assert listed[0]["owner_user_id"] == TEST_USER_ID
+    assert listed[0]["workspace_id"] == TEST_USER["workspace_id"]
 
 
 def test_workspace_relative_payloads_reject_unsafe_paths() -> None:

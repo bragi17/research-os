@@ -12,6 +12,7 @@ import {
   searchLibrary,
   removeFromLibrary,
   analyzeLibraryPaper,
+  uploadLibraryFile,
   getLibraryStats,
   uploadToLibrary,
   type LibraryDuplicateCandidate,
@@ -168,17 +169,7 @@ export default function LibraryPage() {
     setUploading(true);
     setUploadError("");
     try {
-      const formData = new FormData();
-      formData.append("file", selectedFile);
-      if (activePoolId) formData.append("pool_ids", activePoolId);
-      const res = await fetch("/api/v1/library/upload-file", {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) {
-        const err = await res.text();
-        throw new Error(err);
-      }
+      await uploadLibraryFile(selectedFile, activePoolId);
       setSelectedFile(null);
       setShowUpload(false);
       fetchPapers();

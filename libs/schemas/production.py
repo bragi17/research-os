@@ -7,16 +7,20 @@ claim, writing, and submission contracts.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 
 NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+SAFE_DOCKER_IMAGE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$")
+SAFE_DOCKER_MEMORY = re.compile(r"^[1-9][0-9]*[bkmgBKMG]?$")
+SAFE_DOCKER_CPUS = re.compile(r"^(?:[1-9][0-9]*|[1-9][0-9]*\.[0-9]+|0\.[0-9]*[1-9][0-9]*)$")
 
 
 def _validate_workspace_relative_path(value: str | None, field_name: str) -> str | None:
@@ -49,6 +53,91 @@ def _validate_terminal_shell(value: str | None) -> str | None:
     if not path.is_absolute() and "/" in raw:
         raise ValueError("unsafe shell value")
     return raw
+
+
+def _validate_docker_image_reference(value: str) -> str:
+    raw = str(value).strip()
+    if (
+        not raw
+        or raw.startswith("-")
+        or any(character.isspace() or ord(character) < 32 for character in raw)
+        or SAFE_DOCKER_IMAGE_REFERENCE.fullmatch(raw) is None
+    ):
+        raise ValueError("docker image reference is unsafe")
+    return raw
+
+
+def _validate_docker_memory(value: str) -> str:
+    raw = str(value).strip()
+    if (
+        not raw
+        or raw.startswith("-")
+        or any(character.isspace() or ord(character) < 32 for character in raw)
+        or SAFE_DOCKER_MEMORY.fullmatch(raw) is None
+    ):
+        raise ValueError("docker memory value is unsafe")
+    unit = raw[-1].lower() if raw[-1].isalpha() else "b"
+    amount = int(raw[:-1] if raw[-1].isalpha() else raw)
+    multiplier_by_unit = {
+        "b": 1,
+        "k": 1024,
+        "m": 1024**2,
+        "g": 1024**3,
+    }
+    if amount * multiplier_by_unit[unit] > 1024**4:
+        raise ValueError("docker memory value is outside allowed range")
+    return raw
+
+
+def _validate_docker_cpus(value: str) -> str:
+    raw = str(value).strip()
+    if (
+        not raw
+        or raw.startswith("-")
+        or any(character.isspace() or ord(character) < 32 for character in raw)
+        or SAFE_DOCKER_CPUS.fullmatch(raw) is None
+    ):
+        raise ValueError("docker cpus value is unsafe")
+    cpus = float(raw)
+    if cpus <= 0 or cpus > 256:
+        raise ValueError("docker cpus value is outside allowed range")
+    return raw
+
+
+def validate_docker_job_metrics(
+    metrics: dict[str, Any],
+    *,
+    require_all: bool = False,
+) -> dict[str, Any]:
+    """Validate Docker executor metadata carried in experiment job metrics."""
+
+    values = dict(metrics)
+    if require_all or "gpu_count" in values:
+        gpu_count = values.get("gpu_count", 1)
+        try:
+            gpu_count_int = int(gpu_count)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("docker gpu_count must be an integer") from exc
+        if gpu_count_int < 1:
+            raise ValueError("docker gpu_count must be at least 1")
+        values["gpu_count"] = gpu_count_int
+
+    if require_all or "job_image" in values:
+        job_image = values["job_image"] if "job_image" in values else "research-os-job-runtime:latest"
+        values["job_image"] = _validate_docker_image_reference(str(job_image))
+    if require_all or "memory" in values:
+        memory = values["memory"] if "memory" in values else "16g"
+        values["memory"] = _validate_docker_memory(str(memory))
+    if require_all or "cpus" in values:
+        cpus = values["cpus"] if "cpus" in values else "4"
+        values["cpus"] = _validate_docker_cpus(str(cpus))
+    if require_all or "network" in values:
+        network_value = values["network"] if "network" in values else "none"
+        network = str(network_value).strip()
+        if network != "none":
+            raise ValueError("docker network must be none")
+        values["network"] = network
+    return values
 
 
 class ProjectStatus(str, Enum):
@@ -171,6 +260,7 @@ class ExperimentJobExecutorType(str, Enum):
 
     LOCAL = "local"
     SSH = "ssh"
+    DOCKER_GPU = "docker_gpu"
 
 
 class ExperimentJobStatus(str, Enum):
@@ -302,6 +392,7 @@ class ProjectCreate(BaseModel):
     primary_topic: NonBlankStr
     status: ProjectStatus = ProjectStatus.ACTIVE
     owner_user_id: UUID | None = None
+    workspace_id: UUID | None = None
     default_library_pool_ids: list[UUID] = Field(default_factory=list)
     default_workspace_path: str | None = None
     metadata_json: dict[str, Any] = Field(default_factory=dict)
@@ -364,7 +455,42 @@ class ExperimentResources(BaseModel):
     local_first: bool = True
     gpu_required: bool = False
     remote_host_id: UUID | None = None
+    executor_type: Literal["local", "ssh", "docker_gpu"] | None = None
+    gpu_count: int = Field(default=1, ge=1)
+    job_image: str = "research-os-job-runtime:latest"
+    memory: str = "16g"
+    cpus: str = "4"
+    network: Literal["none"] = "none"
     max_parallel: int = Field(default=1, ge=1)
+
+    @field_validator("job_image")
+    @classmethod
+    def validate_job_image(cls, value: str) -> str:
+        return _validate_docker_image_reference(value)
+
+    @field_validator("memory")
+    @classmethod
+    def validate_memory(cls, value: str) -> str:
+        return _validate_docker_memory(value)
+
+    @field_validator("cpus")
+    @classmethod
+    def validate_cpus(cls, value: str) -> str:
+        return _validate_docker_cpus(value)
+
+    @model_validator(mode="after")
+    def validate_docker_metrics(self) -> ExperimentResources:
+        validate_docker_job_metrics(
+            {
+                "gpu_count": self.gpu_count,
+                "job_image": self.job_image,
+                "memory": self.memory,
+                "cpus": self.cpus,
+                "network": self.network,
+            },
+            require_all=True,
+        )
+        return self
 
 
 class ExperimentEnvironment(BaseModel):
@@ -625,9 +751,11 @@ class ExperimentJobCreate(BaseModel):
     failure_reason: str | None = None
 
     @model_validator(mode="after")
-    def validate_attempts(self) -> ExperimentJobCreate:
+    def validate_job(self) -> ExperimentJobCreate:
         if self.attempt > self.max_attempts:
             raise ValueError("attempt must be less than or equal to max_attempts")
+        if self.executor_type == ExperimentJobExecutorType.DOCKER_GPU:
+            validate_docker_job_metrics(self.metrics_json, require_all=True)
         return self
 
     @field_validator("cwd")
@@ -756,6 +884,8 @@ class ExperimentJobPatch(BaseModel):
     def validate_attempt_bounds(self) -> ExperimentJobPatch:
         if self.attempt is not None and self.max_attempts is not None and self.attempt > self.max_attempts:
             raise ValueError("attempt must be less than or equal to max_attempts")
+        if self.metrics_json is not None and self.executor_type == ExperimentJobExecutorType.DOCKER_GPU:
+            validate_docker_job_metrics(self.metrics_json, require_all=True)
         return self
 
 
@@ -880,6 +1010,7 @@ class RemoteHostCreate(BaseModel):
 
     name: NonBlankStr
     owner_user_id: UUID | None = None
+    workspace_id: UUID | None = None
     host: NonBlankStr
     port: int = Field(default=22, ge=1, le=65535)
     username: str | None = None

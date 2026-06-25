@@ -2,10 +2,11 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const isFormData = typeof FormData !== "undefined" && options?.body instanceof FormData;
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers,
     },
@@ -41,6 +42,15 @@ export const resumeRun = (id: string) =>
 
 export const cancelRun = (id: string) =>
   apiFetch(`/api/v1/runs/${id}/cancel`, { method: "POST" });
+
+export const updateRun = (id: string, data: Record<string, unknown>) =>
+  apiFetch<Run>(`/api/v1/runs/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
+export const deleteRun = (id: string) =>
+  apiFetch(`/api/v1/runs/${id}`, { method: "DELETE" });
 
 // Events & data
 export const getRunEvents = (id: string) =>
@@ -324,6 +334,16 @@ export const getLibraryStats = () =>
 
 export const uploadToLibrary = (data: Record<string, unknown>) =>
   apiFetch<LibraryPaper>("/api/v1/library/upload", { method: "POST", body: JSON.stringify(data) });
+
+export const uploadLibraryFile = (file: File, poolId?: string | null) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (poolId) formData.append("pool_ids", poolId);
+  return apiFetch<LibraryPaper>("/api/v1/library/upload-file", {
+    method: "POST",
+    body: formData,
+  });
+};
 
 export const listLibraryPools = () =>
   apiFetch<{ items: LibraryPool[]; total: number }>("/api/v1/library/pools");

@@ -353,7 +353,7 @@ CREATE TABLE IF NOT EXISTS experiment_job (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT experiment_job_executor_type_check
-        CHECK (executor_type IN ('local', 'ssh')),
+        CHECK (executor_type IN ('local', 'ssh', 'docker_gpu')),
     CONSTRAINT experiment_job_status_check
         CHECK (status IN ('pending', 'running', 'completed', 'failed', 'failed_oom', 'timeout', 'stuck', 'cancelled')),
     CONSTRAINT experiment_job_attempt_check

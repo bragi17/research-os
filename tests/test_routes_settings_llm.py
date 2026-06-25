@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
@@ -14,11 +15,38 @@ from services.llm_settings import (
     DEFAULT_WORKSPACE_ID,
     LLMProfile,
 )
+from services.workspace_context import current_workspace_id
 
 
-def _client() -> TestClient:
+WORKSPACE_A = UUID("11111111-1111-1111-1111-111111111111")
+USER_A = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+
+def _user(workspace_id: UUID = WORKSPACE_A) -> dict[str, Any]:
+    return {
+        "id": USER_A,
+        "email": "user-a@example.test",
+        "username": "user-a",
+        "role": "research_user",
+        "workspace_id": workspace_id,
+    }
+
+
+def _operator_user(workspace_id: UUID = WORKSPACE_A) -> dict[str, Any]:
+    user = _user(workspace_id)
+    user["role"] = "admin"
+    return user
+
+
+def _client(user: dict[str, Any] | None = None) -> TestClient:
     app = FastAPI()
     app.include_router(routes_settings.router)
+    dependency = getattr(routes_settings, "get_current_user", None)
+    if user is not None and dependency is not None:
+        async def fake_get_current_user() -> dict[str, Any]:
+            return user
+
+        app.dependency_overrides[dependency] = fake_get_current_user
     return TestClient(app)
 
 
@@ -79,7 +107,7 @@ def test_get_models_exposes_deepseek_llm_settings_without_openai_or_secret(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
 
@@ -122,6 +150,35 @@ def test_get_models_exposes_deepseek_llm_settings_without_openai_or_secret(
     assert "LEGACY_LLM_MODEL" not in response_text
 
 
+def test_get_models_constructs_repository_for_authenticated_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("")
+    workspace_ids: list[UUID | str | None] = []
+
+    class CapturingRepository:
+        def __init__(self, workspace_id: UUID | str | None = None) -> None:
+            workspace_ids.append(workspace_id)
+            self.get_active_profile = AsyncMock(
+                return_value=_profile(workspace_id=str(workspace_id))
+            )
+
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        CapturingRepository,
+        raising=False,
+    )
+
+    response = _client(user=_user()).get("/api/v1/settings/models")
+
+    assert response.status_code == 200
+    assert workspace_ids == [WORKSPACE_A]
+
+
 def test_get_models_falls_back_when_llm_settings_store_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -134,7 +191,7 @@ def test_get_models_falls_back_when_llm_settings_store_is_unavailable(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
 
@@ -161,16 +218,47 @@ def test_get_models_falls_back_when_llm_settings_store_is_unavailable(
     assert storage_items["RESEARCH_OS_WORKSPACE_ROOT"]["is_set"] is True
 
 
+def test_get_models_fallback_does_not_expose_env_key_for_authenticated_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("DEEPSEEK_API_KEY=operator-global-secret\n")
+    repo = FakeRepository(None)
+    repo.get_active_profile.side_effect = RuntimeError("settings table missing")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "operator-global-secret")
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda *args, **kwargs: repo,
+        raising=False,
+    )
+
+    response = _client(user=_user()).get("/api/v1/settings/models")
+
+    assert response.status_code == 200
+    llm_category = next(
+        category for category in response.json()["categories"] if category["id"] == "llm"
+    )
+    llm_items = {item["key"]: item for item in llm_category["items"]}
+    assert llm_category["profile"]["api_key_preview"] == ""
+    assert llm_category["profile"]["is_key_set"] is False
+    assert llm_items["DEEPSEEK_API_KEY"]["display_value"] == ""
+    assert llm_items["DEEPSEEK_API_KEY"]["is_set"] is False
+    assert "operator-global-secret" not in response.text
+
+
 def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = FakeRepository(_profile(label="Primary DeepSeek"))
     invalidate = Mock()
-    reset_gateway = Mock()
+    reset_gateway = AsyncMock()
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr(
@@ -179,7 +267,7 @@ def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
         invalidate,
         raising=False,
     )
-    monkeypatch.setattr("apps.worker.llm_gateway.reset_gateway", reset_gateway)
+    monkeypatch.setattr("apps.worker.llm_gateway.reset_gateway_async", reset_gateway)
 
     response = _client().put(
         "/api/v1/settings/llm",
@@ -200,13 +288,132 @@ def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
         clear_api_key=False,
     )
     invalidate.assert_called_once_with()
-    reset_gateway.assert_called_once_with()
+    reset_gateway.assert_awaited_once_with()
     body = response.json()
     assert body["label"] == "Primary DeepSeek"
     assert body["api_key_preview"] == "test****-key"
     assert body["is_key_set"] is True
     assert "api_key" not in body
     assert "test-secret-key" not in response.text
+
+
+def test_put_models_rejects_non_operator_global_settings_update(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("DASHSCOPE_API_KEY=existing-key\n")
+    write_env = Mock()
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(routes_settings, "_write_env", write_env)
+
+    response = _client(user=_user()).put(
+        "/api/v1/settings/models",
+        json={"DASHSCOPE_API_KEY": "tenant-should-not-write-global-key"},
+    )
+
+    assert response.status_code == 403
+    write_env.assert_not_called()
+    assert "tenant-should-not-write-global-key" not in env_path.read_text()
+
+
+def test_put_models_allows_operator_global_settings_update(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("DASHSCOPE_API_KEY=existing-key\n")
+    reset_runtime = AsyncMock()
+    reset_embedding = Mock()
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(routes_settings, "_reset_llm_runtime", reset_runtime)
+    monkeypatch.setattr(routes_settings, "_reset_embedding_runtime", reset_embedding)
+
+    response = _client(user=_operator_user()).put(
+        "/api/v1/settings/models",
+        json={"DASHSCOPE_API_KEY": "operator-global-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "updated", "keys": ["DASHSCOPE_API_KEY"]}
+    assert "DASHSCOPE_API_KEY=operator-global-key" in env_path.read_text()
+    reset_runtime.assert_awaited_once_with()
+    reset_embedding.assert_called_once_with()
+
+
+def test_embedding_test_rejects_non_operator_global_credential_probe() -> None:
+    response = _client(user=_user()).post("/api/v1/settings/models/test-embedding")
+
+    assert response.status_code == 403
+
+
+def test_put_llm_awaits_async_gateway_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepository(_profile(label="Primary DeepSeek"))
+    reset_gateway_async = AsyncMock()
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda *args, **kwargs: repo,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "apps.worker.llm_gateway.reset_gateway_async",
+        reset_gateway_async,
+    )
+
+    response = _client().put(
+        "/api/v1/settings/llm",
+        json={
+            "label": "Primary DeepSeek",
+            "base_url": DEFAULT_DEEPSEEK_BASE_URL,
+            "model": DEFAULT_DEEPSEEK_MODEL,
+            "api_key": "test-secret-key",
+        },
+    )
+
+    assert response.status_code == 200
+    reset_gateway_async.assert_awaited_once_with()
+
+
+def test_put_llm_logs_async_gateway_reset_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api_key = "test-secret-key-1"
+    repo = FakeRepository(_profile(label="Primary DeepSeek"))
+    reset_gateway_async = AsyncMock(
+        side_effect=RuntimeError(f"reset failed for {api_key}")
+    )
+    log_warning = Mock()
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda *args, **kwargs: repo,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "apps.worker.llm_gateway.reset_gateway_async",
+        reset_gateway_async,
+    )
+    monkeypatch.setattr(routes_settings.logger, "warning", log_warning)
+
+    response = _client().put(
+        "/api/v1/settings/llm",
+        json={
+            "label": "Primary DeepSeek",
+            "base_url": DEFAULT_DEEPSEEK_BASE_URL,
+            "model": DEFAULT_DEEPSEEK_MODEL,
+            "api_key": "test-secret-key",
+        },
+    )
+
+    assert response.status_code == 200
+    assert api_key not in response.text
+    reset_gateway_async.assert_awaited_once_with()
+    log_warning.assert_called_once()
+    assert log_warning.call_args.args[0] == "settings.llm_runtime_reset_failed"
+    assert api_key not in str(log_warning.call_args.kwargs)
 
 
 def test_put_llm_missing_credential_encryption_key_returns_configuration_error(
@@ -219,7 +426,7 @@ def test_put_llm_missing_credential_encryption_key_returns_configuration_error(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
 
@@ -243,11 +450,11 @@ def test_delete_llm_api_key_clears_repository_key_and_resets_runtime(
 ) -> None:
     repo = FakeRepository(_profile(api_key_preview="", is_key_set=False))
     invalidate = Mock()
-    reset_gateway = Mock()
+    reset_gateway = AsyncMock()
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr(
@@ -256,14 +463,14 @@ def test_delete_llm_api_key_clears_repository_key_and_resets_runtime(
         invalidate,
         raising=False,
     )
-    monkeypatch.setattr("apps.worker.llm_gateway.reset_gateway", reset_gateway)
+    monkeypatch.setattr("apps.worker.llm_gateway.reset_gateway_async", reset_gateway)
 
     response = _client().delete("/api/v1/settings/llm/api-key")
 
     assert response.status_code == 200
     repo.clear_api_key.assert_awaited_once_with()
     invalidate.assert_called_once_with()
-    reset_gateway.assert_called_once_with()
+    reset_gateway.assert_awaited_once_with()
     body = response.json()
     assert body["api_key_preview"] == ""
     assert body["is_key_set"] is False
@@ -283,7 +490,7 @@ def test_legacy_test_llm_delegates_to_gateway_and_records_result(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
@@ -303,6 +510,39 @@ def test_legacy_test_llm_delegates_to_gateway_and_records_result(
     repo.record_test_result.assert_awaited_once_with("ok", None)
 
 
+def test_llm_test_runs_gateway_call_inside_authenticated_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_workspace_ids: list[UUID] = []
+
+    async def fake_chat(*args: Any, **kwargs: Any) -> dict[str, str]:
+        seen_workspace_ids.append(current_workspace_id())
+        return {"model": DEFAULT_DEEPSEEK_MODEL, "content": "OK"}
+
+    gateway = Mock()
+    gateway.chat = AsyncMock(side_effect=fake_chat)
+    repo = FakeRepository(
+        _profile(
+            workspace_id=str(WORKSPACE_A),
+            api_key="test-secret-key",
+        )
+    )
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda *args, **kwargs: repo,
+        raising=False,
+    )
+    monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
+
+    response = _client(user=_user()).post("/api/v1/settings/llm/test")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert seen_workspace_ids == [WORKSPACE_A]
+    repo.record_test_result.assert_awaited_once_with("ok", None)
+
+
 def test_llm_test_redacts_provider_error_before_response_and_persist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -318,7 +558,7 @@ def test_llm_test_redacts_provider_error_before_response_and_persist(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
@@ -353,7 +593,7 @@ def test_llm_test_redacts_unstructured_saved_api_key_errors(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
@@ -390,7 +630,7 @@ def test_llm_test_requires_saved_active_profile_with_key_without_persisting(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)

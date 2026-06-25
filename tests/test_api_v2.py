@@ -36,14 +36,15 @@ _mock_reading_paths: dict[str, dict[str, Any]] = {}
 _mock_context_bundles: dict[str, dict[str, Any]] = {}
 _mock_projects: dict[str, dict[str, Any]] = {}
 DEFAULT_USER_ID = UUID("00000000-0000-0000-0000-000000000000")
+DEFAULT_WORKSPACE_ID = UUID("00000000-0000-0000-0000-000000000000")
 
 
 def _make_mock_run(run_data: dict[str, Any]) -> dict[str, Any]:
     """Create a mock run record with sensible defaults."""
     now = datetime.utcnow()
     base: dict[str, Any] = {
-        "workspace_id": UUID("00000000-0000-0000-0000-000000000000"),
-        "created_by": UUID("00000000-0000-0000-0000-000000000000"),
+        "workspace_id": DEFAULT_WORKSPACE_ID,
+        "created_by": DEFAULT_USER_ID,
         "title": "Test Research Run",
         "topic": "Multi-agent coordination with shared memory",
         "status": "queued",
@@ -89,8 +90,16 @@ async def mock_create_run(run_data: dict[str, Any]) -> dict[str, Any]:
     return run
 
 
-async def mock_get_run(run_id: UUID) -> dict[str, Any] | None:
-    return _mock_runs.get(str(run_id))
+async def mock_get_run(
+    run_id: UUID,
+    workspace_id: UUID | None = None,
+) -> dict[str, Any] | None:
+    run = _mock_runs.get(str(run_id))
+    if run is None:
+        return None
+    if workspace_id is not None and str(run.get("workspace_id")) != str(workspace_id):
+        return None
+    return run
 
 
 async def mock_list_runs(
@@ -488,6 +497,13 @@ class TestCreateRunV2:
 
     def test_create_run_with_parent(self, client: TestClient):
         parent_id = str(uuid4())
+        _mock_runs[parent_id] = _make_mock_run({
+            "id": UUID(parent_id),
+            "workspace_id": DEFAULT_WORKSPACE_ID,
+            "created_by": DEFAULT_USER_ID,
+            "title": "Parent Research",
+        })
+
         r = client.post(
             "/api/v1/runs/multimode",
             json={
@@ -501,6 +517,34 @@ class TestCreateRunV2:
         data = r.json()
         assert data["mode"] == "divergent"
         assert data["parent_run_id"] == parent_id
+
+    def test_create_run_rejects_foreign_workspace_parent_without_creating_child(
+        self,
+        client: TestClient,
+    ):
+        parent_id = str(uuid4())
+        other_workspace_id = uuid4()
+        _mock_runs[parent_id] = _make_mock_run({
+            "id": UUID(parent_id),
+            "workspace_id": other_workspace_id,
+            "created_by": DEFAULT_USER_ID,
+            "title": "Foreign Parent Research",
+        })
+        before_ids = set(_mock_runs)
+
+        r = client.post(
+            "/api/v1/runs/multimode",
+            json={
+                "title": "Leaky Child Research",
+                "topic": "Multi-agent coordination with shared memory",
+                "mode": "divergent",
+                "parent_run_id": parent_id,
+            },
+        )
+
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Run not found"
+        assert set(_mock_runs) == before_ids
 
     def test_create_run_invalid_mode(self, client: TestClient):
         r = client.post(
@@ -541,6 +585,43 @@ class TestCreateRunV2:
         assert r.status_code == 201
         assert r.json()["current_stage"] == "init"
 
+    def test_create_run_rejects_foreign_workspace_context_bundle(
+        self,
+        client: TestClient,
+    ):
+        foreign_run_id = uuid4()
+        bundle_id = uuid4()
+        _mock_runs[str(foreign_run_id)] = _make_mock_run(
+            {
+                "id": foreign_run_id,
+                "workspace_id": uuid4(),
+                "created_by": uuid4(),
+                "title": "Foreign Bundle Source",
+                "topic": "Multi-agent coordination with shared memory",
+            }
+        )
+        _mock_context_bundles[str(bundle_id)] = {
+            "id": bundle_id,
+            "source_run_id": foreign_run_id,
+            "name": "Foreign Bundle",
+        }
+        runs_before = set(_mock_runs)
+        events_before = list(_mock_events)
+
+        r = client.post(
+            "/api/v1/runs/multimode",
+            json={
+                "title": "Foreign Bundle Run",
+                "topic": "Multi-agent coordination with shared memory",
+                "context_bundle_id": str(bundle_id),
+            },
+        )
+
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Context bundle not found"
+        assert set(_mock_runs) == runs_before
+        assert _mock_events == events_before
+
 
 # ===================================================================
 # Spawn Run
@@ -564,13 +645,11 @@ class TestSpawnRun:
 
     def test_spawn_child_run(self, client: TestClient):
         parent_id = self._create_parent(client)
-        bundle_id = str(uuid4())
 
         r = client.post(
             f"/api/v1/runs/{parent_id}/spawn",
             json={
                 "target_mode": "atlas",
-                "context_bundle_id": bundle_id,
             },
         )
         assert r.status_code == 201
@@ -585,7 +664,6 @@ class TestSpawnRun:
             f"/api/v1/runs/{parent_id}/spawn",
             json={
                 "target_mode": "frontier",
-                "context_bundle_id": str(uuid4()),
             },
         )
         assert r.status_code == 201
@@ -612,19 +690,48 @@ class TestSpawnRun:
             f"/api/v1/runs/{parent_id}/spawn",
             json={
                 "target_mode": "frontier",
-                "context_bundle_id": str(uuid4()),
             },
         )
 
         assert r.status_code == 403
         assert r.json()["detail"] == "Project access denied"
 
+    def test_spawn_rejects_foreign_workspace_parent_without_creating_child(
+        self,
+        client: TestClient,
+    ):
+        parent_id = str(uuid4())
+        foreign_workspace_id = uuid4()
+        _mock_runs[parent_id] = _make_mock_run(
+            {
+                "id": UUID(parent_id),
+                "workspace_id": foreign_workspace_id,
+                "created_by": uuid4(),
+                "title": "Foreign Workspace Parent",
+                "topic": "Multi-agent coordination with shared memory",
+                "project_id": None,
+            }
+        )
+        runs_before = set(_mock_runs)
+        events_before = list(_mock_events)
+
+        r = client.post(
+            f"/api/v1/runs/{parent_id}/spawn",
+            json={
+                "target_mode": "frontier",
+            },
+        )
+
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Run not found"
+        assert set(_mock_runs) == runs_before
+        assert _mock_events == events_before
+
     def test_spawn_nonexistent_parent(self, client: TestClient):
         r = client.post(
             f"/api/v1/runs/{uuid4()}/spawn",
             json={
                 "target_mode": "atlas",
-                "context_bundle_id": str(uuid4()),
             },
         )
         assert r.status_code == 404
@@ -635,7 +742,6 @@ class TestSpawnRun:
             f"/api/v1/runs/{parent_id}/spawn",
             json={
                 "target_mode": "divergent",
-                "context_bundle_id": str(uuid4()),
             },
         )
         # Check events on parent (uses v1 event endpoint)
@@ -645,6 +751,43 @@ class TestSpawnRun:
         ]
         assert len(found) == 1
         assert found[0]["payload"]["target_mode"] == "divergent"
+
+    def test_spawn_rejects_foreign_workspace_context_bundle_without_side_effects(
+        self,
+        client: TestClient,
+    ):
+        parent_id = self._create_parent(client)
+        foreign_run_id = uuid4()
+        bundle_id = uuid4()
+        _mock_runs[str(foreign_run_id)] = _make_mock_run(
+            {
+                "id": foreign_run_id,
+                "workspace_id": uuid4(),
+                "created_by": uuid4(),
+                "title": "Foreign Bundle Source",
+                "topic": "Multi-agent coordination with shared memory",
+            }
+        )
+        _mock_context_bundles[str(bundle_id)] = {
+            "id": bundle_id,
+            "source_run_id": foreign_run_id,
+            "name": "Foreign Bundle",
+        }
+        runs_before = set(_mock_runs)
+        events_before = list(_mock_events)
+
+        r = client.post(
+            f"/api/v1/runs/{parent_id}/spawn",
+            json={
+                "target_mode": "frontier",
+                "context_bundle_id": str(bundle_id),
+            },
+        )
+
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Context bundle not found"
+        assert set(_mock_runs) == runs_before
+        assert _mock_events == events_before
 
 
 class TestCreateRunV1ProjectAccess:
@@ -799,6 +942,41 @@ class TestGetEndpoints:
         assert data["run_id"] == run_id
         assert data["context_bundle"] is None
 
+    def test_context_bundle_hides_foreign_workspace_bundle(
+        self,
+        client: TestClient,
+    ):
+        run_id = uuid4()
+        foreign_run_id = uuid4()
+        bundle_id = uuid4()
+        _mock_runs[str(run_id)] = _make_mock_run(
+            {
+                "id": run_id,
+                "title": "Visible Run",
+                "topic": "Multi-agent coordination with shared memory",
+                "context_bundle_id": bundle_id,
+            }
+        )
+        _mock_runs[str(foreign_run_id)] = _make_mock_run(
+            {
+                "id": foreign_run_id,
+                "workspace_id": uuid4(),
+                "created_by": uuid4(),
+                "title": "Foreign Bundle Source",
+                "topic": "Multi-agent coordination with shared memory",
+            }
+        )
+        _mock_context_bundles[str(bundle_id)] = {
+            "id": bundle_id,
+            "source_run_id": foreign_run_id,
+            "name": "Foreign Bundle",
+        }
+
+        r = client.get(f"/api/v1/runs/{run_id}/context-bundle")
+
+        assert r.status_code == 200
+        assert r.json() == {"run_id": str(run_id), "context_bundle": None}
+
     def test_timeline_empty(self, client: TestClient):
         run_id = self._create_run(client)
         r = client.get(f"/api/v1/runs/{run_id}/timeline")
@@ -889,6 +1067,33 @@ class TestUserActions:
         assert r.status_code == 200
         # Verify mode was updated on the run
         assert _mock_runs[run_id]["mode"] == "frontier"
+
+    def test_switch_mode_rejects_foreign_workspace_run_without_mutation(
+        self,
+        client: TestClient,
+    ):
+        run_id = str(uuid4())
+        _mock_runs[run_id] = _make_mock_run(
+            {
+                "id": UUID(run_id),
+                "workspace_id": uuid4(),
+                "created_by": uuid4(),
+                "title": "Foreign Workspace Action Run",
+                "topic": "Multi-agent coordination with shared memory",
+                "mode": "intake",
+            }
+        )
+        events_before = list(_mock_events)
+
+        r = client.post(
+            f"/api/v1/runs/{run_id}/actions/switch_mode",
+            json={"payload": {"target_mode": "frontier"}},
+        )
+
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Run not found"
+        assert _mock_runs[run_id]["mode"] == "intake"
+        assert _mock_events == events_before
 
     def test_request_more_figures_action(self, client: TestClient):
         run_id = self._create_run(client)

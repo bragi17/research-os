@@ -5,6 +5,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential \
         curl \
+        docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -12,7 +13,12 @@ WORKDIR /app
 # ---------- dependencies ----------
 FROM base AS deps
 
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
+COPY apps/api ./apps/api
+COPY apps/worker ./apps/worker
+COPY libs/adapters ./libs/adapters
+COPY libs/prompts ./libs/prompts
+COPY libs/schemas ./libs/schemas
 RUN pip install --no-cache-dir . || \
     pip install --no-cache-dir -e .
 

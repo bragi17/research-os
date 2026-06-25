@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { listRuns, getLibraryStats, type Run } from "@/lib/api";
+import { deleteRun, getLibraryStats, listRuns, updateRun, type Run } from "@/lib/api";
 
 const MODE_LABELS: Record<string, string> = {
   atlas: "Atlas", frontier: "Frontier", divergent: "Divergent", review: "Review",
@@ -203,11 +203,7 @@ export default function Sidebar() {
       renameProject(id, renameValue.trim());
     } else {
       try {
-        await fetch(`/api/v1/runs/${id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: renameValue.trim() }),
-        });
+        await updateRun(id, { title: renameValue.trim() });
         fetchRuns();
       } catch { /* silent */ }
       setRenamingId(null);
@@ -221,7 +217,7 @@ export default function Sidebar() {
       onConfirm: async () => {
         setConfirmModal(null);
         try {
-          await fetch(`/api/v1/runs/${run.id}`, { method: "DELETE" });
+          await deleteRun(run.id);
           fetchRuns();
           if (activeRunId === run.id) router.push("/");
         } catch { /* silent */ }

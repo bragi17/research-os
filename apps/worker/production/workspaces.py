@@ -146,11 +146,68 @@ def resolve_path_reference(
     return candidate
 
 
-def _default_workspace_path(project_id: UUID, run_id: UUID | None = None) -> Path:
-    path = workspace_base() / "projects" / str(project_id)
+def _project_workspace_root(
+    project_id: UUID,
+    workspace_id: UUID | None = None,
+) -> Path:
+    workspace_segment = str(workspace_id) if workspace_id is not None else "legacy"
+    return workspace_base() / "workspaces" / workspace_segment / "projects" / str(project_id)
+
+
+def _default_workspace_path(
+    project_id: UUID,
+    workspace_id: UUID | None = None,
+    run_id: UUID | None = None,
+) -> Path:
+    path = _project_workspace_root(project_id, workspace_id)
     if run_id is not None:
         path = path / "runs" / str(run_id)
     return path
+
+
+def _validate_project_path_candidate(
+    project: dict[str, Any],
+    candidate: Path,
+    *,
+    field_name: str,
+) -> None:
+    project_root = _project_workspace_root(
+        project["id"],
+        workspace_id=project.get("workspace_id"),
+    ).resolve()
+    if project.get("workspace_id") is None:
+        base = workspace_base()
+        workspace_segment_root = (base / "workspaces").resolve()
+        if not _is_relative_to(candidate, base):
+            raise ValueError(f"{field_name} escapes workspace root")
+        if _is_relative_to(candidate, workspace_segment_root) and not _is_relative_to(candidate, project_root):
+            raise ValueError(f"{field_name} escapes project workspace root")
+        return
+
+    if not _is_relative_to(candidate, project_root):
+        raise ValueError(f"{field_name} escapes project workspace root")
+
+
+def _resolve_explicit_project_path(
+    project: dict[str, Any],
+    raw_path: str | Path,
+    *,
+    field_name: str,
+) -> Path:
+    project_root = _project_workspace_root(
+        project["id"],
+        workspace_id=project.get("workspace_id"),
+    ).resolve()
+    raw = Path(str(raw_path)).expanduser()
+    if project.get("workspace_id") is None:
+        base = workspace_base()
+        candidate = raw.resolve() if raw.is_absolute() else (base / _safe_relative_path(raw, field_name=field_name)).resolve()
+        _validate_project_path_candidate(project, candidate, field_name=field_name)
+        return candidate
+
+    candidate = raw.resolve() if raw.is_absolute() else (project_root / _safe_relative_path(raw, field_name=field_name)).resolve()
+    _validate_project_path_candidate(project, candidate, field_name=field_name)
+    return candidate
 
 
 def resolve_project_workspace_path(
@@ -160,15 +217,26 @@ def resolve_project_workspace_path(
 ) -> Path:
     """Resolve a project's trusted local workspace path under the configured base."""
 
-    base = workspace_base()
+    project_root = _project_workspace_root(
+        project["id"],
+        workspace_id=project.get("workspace_id"),
+    ).resolve()
     configured = project.get("default_workspace_path")
     if configured:
-        raw = Path(str(configured)).expanduser()
-        candidate = raw.resolve() if raw.is_absolute() else (base / _safe_relative_path(raw, field_name="default_workspace_path")).resolve()
+        candidate = _resolve_explicit_project_path(
+            project,
+            configured,
+            field_name="default_workspace_path",
+        )
     else:
-        candidate = _default_workspace_path(project["id"], run_id=run_id).resolve()
-    if not _is_relative_to(candidate, base):
-        raise ValueError("default_workspace_path escapes workspace root")
+        candidate = project_root
+    if run_id is not None:
+        candidate = (candidate / "runs" / str(run_id)).resolve()
+    _validate_project_path_candidate(
+        project,
+        candidate,
+        field_name="default_workspace_path",
+    )
     candidate.mkdir(parents=True, exist_ok=True)
     return candidate
 
@@ -181,11 +249,11 @@ def resolve_coding_workspace_path(
 
     configured = task_or_payload.get("workspace_path")
     if configured:
-        base = workspace_base()
-        raw = Path(str(configured)).expanduser()
-        candidate = raw.resolve() if raw.is_absolute() else (base / _safe_relative_path(raw, field_name="workspace_path")).resolve()
-        if not _is_relative_to(candidate, base):
-            raise ValueError("workspace_path escapes workspace root")
+        candidate = _resolve_explicit_project_path(
+            project,
+            configured,
+            field_name="workspace_path",
+        )
         candidate.mkdir(parents=True, exist_ok=True)
         return candidate
     return resolve_project_workspace_path(project, run_id=task_or_payload.get("run_id"))

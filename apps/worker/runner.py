@@ -24,6 +24,7 @@ load_dotenv()
 from structlog import get_logger
 
 from services.research_memory import persist_run_memory
+from services.workspace_context import workspace_context
 
 logger = get_logger(__name__)
 
@@ -132,159 +133,12 @@ class WorkerRunner:
                 logger.error("worker.run_not_found", run_id=str(run_id))
                 return
 
-            # Determine mode from job payload (backward-compat: default "frontier")
-            mode = job.get("mode", run.get("mode", "frontier"))
+            workspace_id = run.get("workspace_id")
+            if workspace_id is None:
+                raise ValueError("Run workspace_id is required")
 
-            # Update status to running
-            now = datetime.utcnow()
-            await update_run(run_id, {
-                "status": "running",
-                "started_at": run.get("started_at") or now,
-                "updated_at": now,
-                "current_step": f"{mode}_init",
-            })
-
-            await create_event(
-                run_id=run_id,
-                event_type="run.started",
-                severity="info",
-                payload={"worker": "runner", "mode": mode},
-            )
-            await publish_event(run_id, {"event_type": "run.started", "mode": mode})
-
-            # Extract config from run and job
-            topic = run["topic"]
-            budget = run.get("budget_json", {})
-            policy = run.get("policy_json", {})
-            keywords = job.get("keywords", [])
-            seed_paper_ids = job.get("seed_paper_ids", [])
-            library_pool_ids = job.get(
-                "library_pool_ids",
-                policy.get("library_pool_ids", []),
-            )
-            context_bundle = job.get("context_bundle", {})
-
-            # -----------------------------------------------------------------
-            # Route to mode-specific graph or fall back to v1
-            # -----------------------------------------------------------------
-            if mode == "intake":
-                # Route first, then create child run
-                from apps.worker.modes.router import classify_mode, build_mode_config
-                mode_config = build_mode_config(
-                    user_input=topic,
-                    keywords=keywords,
-                    seed_paper_ids=seed_paper_ids,
-                )
-                # Re-dispatch as the classified mode
-                mode = mode_config.mode.value
-                logger.info("worker.intake_routed", run_id=str(run_id), routed_mode=mode)
-                # Fall through to the resolved mode below
-
-            from apps.worker.llm_gateway import get_gateway
-            gateway = get_gateway()
-
-            # ── Library Prefetch ──
-            library_seeds = []
-            try:
-                from services.library.prefetch import library_prefetch
-                library_seeds = await library_prefetch(
-                    topic,
-                    keywords,
-                    pool_ids=library_pool_ids,
-                    limit=10,
-                )
-                if library_seeds:
-                    from apps.worker.modes.base import emit_progress
-                    await emit_progress(run_id, "library_prefetch", "matched",
-                                        f"Found {len(library_seeds)} relevant papers in library")
-            except Exception as exc:
-                logger.debug("library_prefetch_skipped", error=str(exc))
-
-            result_state = await self._run_mode_graph(
-                mode=mode,
-                run_id=run_id,
-                topic=topic,
-                keywords=keywords,
-                seed_paper_ids=seed_paper_ids,
-                context_bundle=context_bundle,
-                budget=budget,
-                run_record=run,
-                library_seeds=library_seeds,
-            )
-
-            # Determine final status
-            if result_state.should_pause:
-                final_status = "paused"
-                final_step = result_state.current_step
-                await create_event(
-                    run_id=run_id,
-                    event_type="run.paused",
-                    severity="info",
-                    payload={
-                        "reason": result_state.pause_reason or "budget_or_policy",
-                        "papers_read": result_state.papers_read,
-                        "cost": result_state.current_cost_usd,
-                        "mode": mode,
-                    },
-                )
-            elif result_state.should_stop and result_state.stop_reason == "completed":
-                final_status = "completed"
-                final_step = result_state.current_step
-                await create_event(
-                    run_id=run_id,
-                    event_type="run.completed",
-                    severity="info",
-                    payload={
-                        "mode": mode,
-                        "papers_discovered": result_state.papers_discovered,
-                        "papers_read": result_state.papers_read,
-                        "hypotheses": len(result_state.hypotheses),
-                        "verified": len(result_state.verified_hypothesis_ids),
-                        "iterations": result_state.iteration_count,
-                        "cost": result_state.current_cost_usd,
-                        "report_length": len(result_state.report_markdown),
-                        "total_tokens": gateway.total_tokens if gateway else 0,
-                        "llm_calls": gateway.call_count if gateway else 0,
-                    },
-                )
-            else:
-                final_status = "completed"
-                final_step = result_state.current_step
-
-            now = datetime.utcnow()
-            update_fields: dict[str, Any] = {
-                "status": final_status,
-                "current_step": final_step,
-                "updated_at": now,
-                "progress_pct": 100 if final_status == "completed" else
-                    min(95, int((result_state.papers_read / max(result_state.max_fulltext_reads, 1)) * 100)),
-            }
-            if final_status == "completed":
-                update_fields["completed_at"] = now
-            if result_state.pause_reason:
-                update_fields["pause_reason"] = result_state.pause_reason
-
-            await update_run(run_id, update_fields)
-
-            # ── Persist results to database ──
-            await self._persist_results(run_id, result_state)
-            self._write_workspace_outputs(run_id, run, result_state)
-
-            await publish_event(run_id, {
-                "event_type": f"run.{final_status}",
-                "mode": mode,
-                "papers_read": result_state.papers_read,
-                "cost": result_state.current_cost_usd,
-            })
-
-            logger.info(
-                "worker.run_finished",
-                run_id=str(run_id),
-                mode=mode,
-                status=final_status,
-                papers=result_state.papers_read,
-                cost=f"${result_state.current_cost_usd:.2f}",
-            )
+            with workspace_context(workspace_id):
+                await self._execute_run_in_workspace(run_id, job, run)
 
         except Exception as exc:
             import traceback
@@ -311,6 +165,172 @@ class WorkerRunner:
                 logger.error("worker.status_update_failed", error=str(inner))
         finally:
             await mark_inactive(run_id)
+
+    async def _execute_run_in_workspace(
+        self,
+        run_id: UUID,
+        job: dict[str, Any],
+        run: dict[str, Any],
+    ) -> None:
+        """Execute a loaded run inside its workspace context."""
+        from apps.api.database import (
+            update_run, create_event,
+        )
+        from apps.worker.task_queue import publish_event
+
+        # Determine mode from job payload (backward-compat: default "frontier")
+        mode = job.get("mode", run.get("mode", "frontier"))
+
+        # Update status to running
+        now = datetime.utcnow()
+        await update_run(run_id, {
+            "status": "running",
+            "started_at": run.get("started_at") or now,
+            "updated_at": now,
+            "current_step": f"{mode}_init",
+        })
+
+        await create_event(
+            run_id=run_id,
+            event_type="run.started",
+            severity="info",
+            payload={"worker": "runner", "mode": mode},
+        )
+        await publish_event(run_id, {"event_type": "run.started", "mode": mode})
+
+        # Extract config from run and job
+        topic = run["topic"]
+        budget = run.get("budget_json", {})
+        policy = run.get("policy_json", {})
+        keywords = job.get("keywords", [])
+        seed_paper_ids = job.get("seed_paper_ids", [])
+        library_pool_ids = job.get(
+            "library_pool_ids",
+            policy.get("library_pool_ids", []),
+        )
+        context_bundle = job.get("context_bundle", {})
+
+        # -----------------------------------------------------------------
+        # Route to mode-specific graph or fall back to v1
+        # -----------------------------------------------------------------
+        if mode == "intake":
+            # Route first, then create child run
+            from apps.worker.modes.router import classify_mode, build_mode_config
+            mode_config = build_mode_config(
+                user_input=topic,
+                keywords=keywords,
+                seed_paper_ids=seed_paper_ids,
+            )
+            # Re-dispatch as the classified mode
+            mode = mode_config.mode.value
+            logger.info("worker.intake_routed", run_id=str(run_id), routed_mode=mode)
+            # Fall through to the resolved mode below
+
+        from apps.worker.llm_gateway import get_gateway
+        gateway = get_gateway()
+
+        # ── Library Prefetch ──
+        library_seeds = []
+        try:
+            from services.library.prefetch import library_prefetch
+            library_seeds = await library_prefetch(
+                topic,
+                keywords,
+                pool_ids=library_pool_ids,
+                limit=10,
+            )
+            if library_seeds:
+                from apps.worker.modes.base import emit_progress
+                await emit_progress(run_id, "library_prefetch", "matched",
+                                    f"Found {len(library_seeds)} relevant papers in library")
+        except Exception as exc:
+            logger.debug("library_prefetch_skipped", error=str(exc))
+
+        result_state = await self._run_mode_graph(
+            mode=mode,
+            run_id=run_id,
+            topic=topic,
+            keywords=keywords,
+            seed_paper_ids=seed_paper_ids,
+            context_bundle=context_bundle,
+            budget=budget,
+            run_record=run,
+            library_seeds=library_seeds,
+        )
+
+        # Determine final status
+        if result_state.should_pause:
+            final_status = "paused"
+            final_step = result_state.current_step
+            await create_event(
+                run_id=run_id,
+                event_type="run.paused",
+                severity="info",
+                payload={
+                    "reason": result_state.pause_reason or "budget_or_policy",
+                    "papers_read": result_state.papers_read,
+                    "cost": result_state.current_cost_usd,
+                    "mode": mode,
+                },
+            )
+        elif result_state.should_stop and result_state.stop_reason == "completed":
+            final_status = "completed"
+            final_step = result_state.current_step
+            await create_event(
+                run_id=run_id,
+                event_type="run.completed",
+                severity="info",
+                payload={
+                    "mode": mode,
+                    "papers_discovered": result_state.papers_discovered,
+                    "papers_read": result_state.papers_read,
+                    "hypotheses": len(result_state.hypotheses),
+                    "verified": len(result_state.verified_hypothesis_ids),
+                    "iterations": result_state.iteration_count,
+                    "cost": result_state.current_cost_usd,
+                    "report_length": len(result_state.report_markdown),
+                    "total_tokens": gateway.total_tokens if gateway else 0,
+                    "llm_calls": gateway.call_count if gateway else 0,
+                },
+            )
+        else:
+            final_status = "completed"
+            final_step = result_state.current_step
+
+        now = datetime.utcnow()
+        update_fields: dict[str, Any] = {
+            "status": final_status,
+            "current_step": final_step,
+            "updated_at": now,
+            "progress_pct": 100 if final_status == "completed" else
+                min(95, int((result_state.papers_read / max(result_state.max_fulltext_reads, 1)) * 100)),
+        }
+        if final_status == "completed":
+            update_fields["completed_at"] = now
+        if result_state.pause_reason:
+            update_fields["pause_reason"] = result_state.pause_reason
+
+        await update_run(run_id, update_fields)
+
+        # ── Persist results to database ──
+        await self._persist_results(run_id, result_state)
+        self._write_workspace_outputs(run_id, run, result_state)
+
+        await publish_event(run_id, {
+            "event_type": f"run.{final_status}",
+            "mode": mode,
+            "papers_read": result_state.papers_read,
+            "cost": result_state.current_cost_usd,
+        })
+
+        logger.info(
+            "worker.run_finished",
+            run_id=str(run_id),
+            mode=mode,
+            status=final_status,
+            papers=result_state.papers_read,
+            cost=f"${result_state.current_cost_usd:.2f}",
+        )
 
     async def _persist_results(self, run_id: UUID, state) -> None:
         """Persist workflow results (pain points, comparison, context bundle) to DB."""

@@ -57,6 +57,7 @@ from libs.schemas.production import (
     TerminalResizeRequest,
     TerminalSessionPatch,
     TerminalSessionResponse,
+    validate_docker_job_metrics,
 )
 
 try:
@@ -207,6 +208,11 @@ async def _project_for_access(project_id: UUID, user: dict[str, Any]) -> dict[st
     project = await db.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    workspace_id = project.get("workspace_id")
+    if workspace_id is not None:
+        if _same_id(workspace_id, user["workspace_id"]):
+            return project
+        raise HTTPException(status_code=403, detail="Project access denied")
     owner_user_id = project.get("owner_user_id")
     if owner_user_id is None or not _same_id(owner_user_id, user["id"]):
         raise HTTPException(status_code=403, detail="Project access denied")
@@ -265,6 +271,9 @@ async def _remote_host_for_access(remote_host_id: UUID, user: dict[str, Any]) ->
     remote_host = await db.get_remote_host(remote_host_id)
     if remote_host is None:
         raise HTTPException(status_code=404, detail="Remote host not found")
+    workspace_id = remote_host.get("workspace_id")
+    if workspace_id is not None and not _same_id(workspace_id, user["workspace_id"]):
+        raise HTTPException(status_code=403, detail="Remote host access denied")
     owner_user_id = remote_host.get("owner_user_id")
     if owner_user_id is None or not _same_id(owner_user_id, user["id"]):
         raise HTTPException(status_code=403, detail="Remote host access denied")
@@ -475,6 +484,7 @@ async def create_project(
 ) -> dict[str, Any]:
     payload = _payload(request)
     payload["owner_user_id"] = user["id"]
+    payload["workspace_id"] = user["workspace_id"]
     return await db.create_project(payload)
 
 
@@ -487,7 +497,7 @@ async def list_projects(
 ) -> list[dict[str, Any]]:
     return await db.list_projects(
         status=status,
-        owner_user_id=user["id"],
+        workspace_id=user["workspace_id"],
         limit=limit,
         offset=offset,
     )
@@ -872,6 +882,14 @@ async def patch_experiment_job(
     remote_host_id = updates.get("remote_host_id", existing.get("remote_host_id"))
     if executor_type == "ssh" and remote_host_id is None:
         raise HTTPException(status_code=400, detail="remote_host_id is required for ssh jobs")
+    effective_metrics = updates.get("metrics_json", existing.get("metrics_json") or {})
+    if executor_type == "docker_gpu":
+        if "metrics_json" in updates and updates["metrics_json"] is None:
+            raise HTTPException(status_code=400, detail="docker metrics_json cannot be null")
+        try:
+            validate_docker_job_metrics(effective_metrics, require_all=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     row = await db.update_experiment_job(job_id, updates)
     if row is None:
         raise HTTPException(status_code=404, detail="Experiment job not found")
@@ -963,6 +981,7 @@ async def create_remote_host(
 ) -> dict[str, Any]:
     payload = _payload(request)
     payload["owner_user_id"] = user["id"]
+    payload["workspace_id"] = user["workspace_id"]
     return await db.create_remote_host(payload)
 
 
@@ -976,6 +995,7 @@ async def list_remote_hosts(
     return await db.list_remote_hosts(
         status=status,
         owner_user_id=user["id"],
+        workspace_id=user["workspace_id"],
         limit=limit,
         offset=offset,
     )
