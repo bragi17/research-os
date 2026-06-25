@@ -402,6 +402,24 @@ async def test_reset_gateway_async_attempts_all_client_closes_after_failure(
 
 
 @pytest.mark.asyncio
+async def test_background_reset_failure_log_redacts_bare_api_key() -> None:
+    api_key = "test-secret-key-1"
+
+    async def fail_with_key() -> None:
+        raise RuntimeError(f"reset failed for {api_key}")
+
+    task = asyncio.create_task(fail_with_key())
+    with pytest.raises(RuntimeError):
+        await task
+
+    with patch("apps.worker.llm_gateway.logger.warning") as log_warning:
+        llm_gateway_module._log_reset_task_failure(task)
+
+    log_warning.assert_called_once()
+    assert api_key not in str(log_warning.call_args)
+
+
+@pytest.mark.asyncio
 async def test_profile_cache_evicts_least_recently_used_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -519,7 +537,9 @@ async def test_profile_cache_eviction_close_failure_still_cleans_profile_state(
     monkeypatch.setenv("LLM_GATEWAY_MAX_PROFILES", "1")
     profiles = [_workspace_profile(1), _workspace_profile(2)]
     first_client = MagicMock()
-    first_client.aclose = AsyncMock(side_effect=RuntimeError("close failed secret"))
+    first_client.aclose = AsyncMock(
+        side_effect=RuntimeError(f"close failed {profiles[0].api_key}")
+    )
     first_client.chat.completions.create = AsyncMock(return_value=_response("FIRST"))
     second_client = MagicMock()
     second_client.aclose = AsyncMock()
@@ -561,6 +581,83 @@ async def test_profile_cache_eviction_close_failure_still_cleans_profile_state(
     assert first_cache_key not in gw._cache
     assert first_cache_key not in gw._cache_profiles
     log_warning.assert_called()
+    assert profiles[0].api_key not in str(log_warning.call_args)
+
+
+@pytest.mark.asyncio
+async def test_eviction_close_await_does_not_clear_reentered_active_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_GATEWAY_MAX_PROFILES", "1")
+    profile_a = _workspace_profile(1)
+    profile_b = _workspace_profile(2)
+    old_close_started = asyncio.Event()
+    release_old_close = asyncio.Event()
+    new_a_started = asyncio.Event()
+    release_new_a = asyncio.Event()
+
+    old_a_client = MagicMock()
+    old_a_client.chat.completions.create = AsyncMock(return_value=_response("OLD-A"))
+
+    async def close_old_a() -> None:
+        old_close_started.set()
+        await release_old_close.wait()
+
+    old_a_client.aclose = AsyncMock(side_effect=close_old_a)
+
+    b_client = MagicMock()
+    b_client.chat.completions.create = AsyncMock(return_value=_response("B"))
+    b_client.aclose = AsyncMock()
+
+    new_a_client = MagicMock()
+
+    async def wait_new_a(**_: object) -> MagicMock:
+        new_a_started.set()
+        await release_new_a.wait()
+        return _response("NEW-A")
+
+    new_a_client.chat.completions.create = AsyncMock(side_effect=wait_new_a)
+    new_a_client.aclose = AsyncMock()
+
+    c_client = MagicMock()
+    c_client.chat.completions.create = AsyncMock(return_value=_response("C"))
+    c_client.aclose = AsyncMock()
+
+    with (
+        patch(
+            "apps.worker.llm_gateway.get_active_llm_profile",
+            AsyncMock(side_effect=[profile_a, profile_b, profile_a, profile_b]),
+        ),
+        patch(
+            "apps.worker.llm_gateway.AsyncOpenAI",
+            side_effect=[old_a_client, b_client, new_a_client, c_client],
+        ),
+    ):
+        gw = LLMGateway()
+        await gw.chat([{"role": "user", "content": "old a"}], use_cache=False)
+
+        evict_old_a_task = asyncio.create_task(
+            gw.chat([{"role": "user", "content": "b"}], use_cache=False)
+        )
+        await old_close_started.wait()
+
+        new_a_task = asyncio.create_task(
+            gw.chat([{"role": "user", "content": "new a"}], use_cache=False)
+        )
+        await new_a_started.wait()
+
+        release_old_close.set()
+        assert (await evict_old_a_task)["content"] == "B"
+        assert gw._profile_active_counts[gw._profile_key(profile_a)] == 1
+        assert gw._clients[gw._profile_key(profile_a)] is new_a_client
+
+        await gw.chat([{"role": "user", "content": "c"}], use_cache=False)
+        new_a_client.aclose.assert_not_called()
+
+        release_new_a.set()
+        assert (await new_a_task)["content"] == "NEW-A"
+
+    old_a_client.aclose.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

@@ -66,6 +66,7 @@ class LLMGateway:
         self._clients: dict[ProfileKey, AsyncOpenAI] = {}
         self._profile_usage: OrderedDict[ProfileKey, None] = OrderedDict()
         self._profile_active_counts: dict[ProfileKey, int] = {}
+        self._profile_api_keys: dict[ProfileKey, str] = {}
 
         # LangChain ChatOpenAI instances (lazy-init per profile + tier)
         self._langchain_models: dict[tuple[ProfileKey, str], ChatOpenAI] = {}
@@ -112,6 +113,7 @@ class LLMGateway:
     async def _get_client(self) -> tuple[AsyncOpenAI, LLMProfile, ProfileKey]:
         profile = await self._get_profile()
         profile_key = self._profile_key(profile)
+        self._profile_api_keys[profile_key] = profile.api_key
         client = self._clients.get(profile_key)
         if client is None:
             client = AsyncOpenAI(
@@ -171,6 +173,8 @@ class LLMGateway:
 
     async def _evict_profile(self, profile_key: ProfileKey) -> None:
         client = self._clients.pop(profile_key, None)
+        api_key = self._profile_api_keys.pop(profile_key, None)
+        self._clear_profile_state(profile_key)
         try:
             if client is not None:
                 await self._close_client(client)
@@ -178,25 +182,28 @@ class LLMGateway:
             logger.warning(
                 "llm_gateway.client_close_failed",
                 workspace_id=profile_key[0],
-                error=redact_secret_text(str(exc))[:200],
+                error=redact_secret_text(str(exc), secrets=[api_key])[:200],
             )
-        finally:
-            self._profile_active_counts.pop(profile_key, None)
-            self._langchain_models = {
-                key: model
-                for key, model in self._langchain_models.items()
-                if key[0] != profile_key
-            }
-            for cache_key, cache_profile_key in list(self._cache_profiles.items()):
-                if cache_profile_key == profile_key:
-                    self._cache_profiles.pop(cache_key, None)
-                    self._cache.pop(cache_key, None)
+
+    def _clear_profile_state(self, profile_key: ProfileKey) -> None:
+        self._profile_active_counts.pop(profile_key, None)
+        self._langchain_models = {
+            key: model
+            for key, model in self._langchain_models.items()
+            if key[0] != profile_key
+        }
+        for cache_key, cache_profile_key in list(self._cache_profiles.items()):
+            if cache_profile_key == profile_key:
+                self._cache_profiles.pop(cache_key, None)
+                self._cache.pop(cache_key, None)
 
     async def aclose(self) -> None:
         clients = list(self._clients.items())
+        api_keys = dict(self._profile_api_keys)
         self._clients.clear()
         self._profile_usage.clear()
         self._profile_active_counts.clear()
+        self._profile_api_keys.clear()
         self._langchain_models.clear()
         self._cache.clear()
         self._cache_profiles.clear()
@@ -207,7 +214,10 @@ class LLMGateway:
                 logger.warning(
                     "llm_gateway.client_close_failed",
                     workspace_id=profile_key[0],
-                    error=redact_secret_text(str(exc))[:200],
+                    error=redact_secret_text(
+                        str(exc),
+                        secrets=[api_keys.get(profile_key)],
+                    )[:200],
                 )
 
     def _get_langchain_model(
@@ -392,6 +402,7 @@ class LLMGateway:
         self._call_count += 1
         profile = await self._get_profile()
         profile_key = self._profile_key(profile)
+        self._profile_api_keys[profile_key] = profile.api_key
         await self._checkout_profile(profile_key)
 
         try:
@@ -621,7 +632,7 @@ def _log_reset_task_failure(task: asyncio.Task) -> None:
     try:
         task.result()
     except Exception as exc:
-        logger.warning("llm_gateway.reset_failed", error=str(exc))
+        logger.warning("llm_gateway.reset_failed", error_type=type(exc).__name__)
 
 
 def reset_gateway() -> None:
