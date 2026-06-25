@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
@@ -16,9 +17,29 @@ from services.llm_settings import (
 )
 
 
-def _client() -> TestClient:
+WORKSPACE_A = UUID("11111111-1111-1111-1111-111111111111")
+USER_A = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+
+def _user(workspace_id: UUID = WORKSPACE_A) -> dict[str, Any]:
+    return {
+        "id": USER_A,
+        "email": "user-a@example.test",
+        "username": "user-a",
+        "role": "research_user",
+        "workspace_id": workspace_id,
+    }
+
+
+def _client(user: dict[str, Any] | None = None) -> TestClient:
     app = FastAPI()
     app.include_router(routes_settings.router)
+    dependency = getattr(routes_settings, "get_current_user", None)
+    if user is not None and dependency is not None:
+        async def fake_get_current_user() -> dict[str, Any]:
+            return user
+
+        app.dependency_overrides[dependency] = fake_get_current_user
     return TestClient(app)
 
 
@@ -79,7 +100,7 @@ def test_get_models_exposes_deepseek_llm_settings_without_openai_or_secret(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
 
@@ -122,6 +143,35 @@ def test_get_models_exposes_deepseek_llm_settings_without_openai_or_secret(
     assert "LEGACY_LLM_MODEL" not in response_text
 
 
+def test_get_models_constructs_repository_for_authenticated_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("")
+    workspace_ids: list[UUID | str | None] = []
+
+    class CapturingRepository:
+        def __init__(self, workspace_id: UUID | str | None = None) -> None:
+            workspace_ids.append(workspace_id)
+            self.get_active_profile = AsyncMock(
+                return_value=_profile(workspace_id=str(workspace_id))
+            )
+
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        CapturingRepository,
+        raising=False,
+    )
+
+    response = _client(user=_user()).get("/api/v1/settings/models")
+
+    assert response.status_code == 200
+    assert workspace_ids == [WORKSPACE_A]
+
+
 def test_get_models_falls_back_when_llm_settings_store_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -134,7 +184,7 @@ def test_get_models_falls_back_when_llm_settings_store_is_unavailable(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
 
@@ -170,7 +220,7 @@ def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr(
@@ -219,7 +269,7 @@ def test_put_llm_missing_credential_encryption_key_returns_configuration_error(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
 
@@ -247,7 +297,7 @@ def test_delete_llm_api_key_clears_repository_key_and_resets_runtime(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr(
@@ -283,7 +333,7 @@ def test_legacy_test_llm_delegates_to_gateway_and_records_result(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
@@ -318,7 +368,7 @@ def test_llm_test_redacts_provider_error_before_response_and_persist(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
@@ -353,7 +403,7 @@ def test_llm_test_redacts_unstructured_saved_api_key_errors(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)
@@ -390,7 +440,7 @@ def test_llm_test_requires_saved_active_profile_with_key_without_persisting(
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
-        lambda: repo,
+        lambda *args, **kwargs: repo,
         raising=False,
     )
     monkeypatch.setattr("apps.worker.llm_gateway.get_gateway", lambda: gateway)

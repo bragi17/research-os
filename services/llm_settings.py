@@ -11,9 +11,11 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
+from uuid import UUID
 
+from services.workspace_context import DEFAULT_WORKSPACE_UUID, current_workspace_id
 
-DEFAULT_WORKSPACE_ID = "00000000-0000-0000-0000-000000000000"
+DEFAULT_WORKSPACE_ID = str(DEFAULT_WORKSPACE_UUID)
 DEEPSEEK_PROVIDER = "deepseek"
 DEFAULT_DEEPSEEK_LABEL = "DeepSeek"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
@@ -115,8 +117,15 @@ def _get_fernet() -> Any:
 
 
 class LLMSettingsRepository:
-    def __init__(self, pool_getter: PoolGetter | None = None) -> None:
+    def __init__(
+        self,
+        pool_getter: PoolGetter | None = None,
+        workspace_id: UUID | str | None = None,
+    ) -> None:
         self._pool_getter = pool_getter
+        self.workspace_id = (
+            UUID(str(workspace_id)) if workspace_id is not None else current_workspace_id()
+        )
 
     async def get_active_profile(self, include_secret: bool = False) -> LLMProfile:
         row = await self._fetch_active_row()
@@ -198,7 +207,7 @@ class LLMSettingsRepository:
               AND is_active
             RETURNING *
             """,
-            DEFAULT_WORKSPACE_ID,
+            self.workspace_id,
             DEEPSEEK_PROVIDER,
             status,
             safe_error,
@@ -220,7 +229,7 @@ class LLMSettingsRepository:
               AND is_active
             LIMIT 1
             """,
-            DEFAULT_WORKSPACE_ID,
+            self.workspace_id,
             DEEPSEEK_PROVIDER,
         )
 
@@ -257,7 +266,7 @@ class LLMSettingsRepository:
                 updated_at = NOW()
             RETURNING *
             """,
-            DEFAULT_WORKSPACE_ID,
+            self.workspace_id,
             DEEPSEEK_PROVIDER,
             label,
             base_url,
@@ -324,20 +333,27 @@ async def _default_pool_getter() -> Any:
     return await get_pool()
 
 
-_llm_config_cache: dict[bool, tuple[float, LLMProfile]] = {}
+_llm_config_cache: dict[tuple[str, bool], tuple[float, LLMProfile]] = {}
 
 
-async def get_active_llm_profile(include_secret: bool = False) -> LLMProfile:
+async def get_active_llm_profile(
+    include_secret: bool = False,
+    workspace_id: UUID | str | None = None,
+) -> LLMProfile:
+    resolved_workspace_id = (
+        UUID(str(workspace_id)) if workspace_id is not None else current_workspace_id()
+    )
+    cache_key = (str(resolved_workspace_id), include_secret)
     now = time.monotonic()
-    cached = _llm_config_cache.get(include_secret)
+    cached = _llm_config_cache.get(cache_key)
     if cached is not None:
         expires_at, profile = cached
         if now < expires_at:
             return profile
-    profile = await LLMSettingsRepository().get_active_profile(
+    profile = await LLMSettingsRepository(workspace_id=resolved_workspace_id).get_active_profile(
         include_secret=include_secret,
     )
-    _llm_config_cache[include_secret] = (
+    _llm_config_cache[cache_key] = (
         now + LLM_CONFIG_CACHE_TTL_SECONDS,
         profile,
     )

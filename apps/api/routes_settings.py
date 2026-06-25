@@ -5,9 +5,11 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from structlog import get_logger
 
+from apps.api.auth import get_current_user
+from apps.api.tenancy import WorkspaceContext
 from libs.schemas.settings import LLMSettingsUpdate, LLMTestRequest
 from services.llm_settings import (
     DEFAULT_DEEPSEEK_BASE_URL,
@@ -131,11 +133,15 @@ def _llm_settings_error_status(error: str) -> int:
     return 500
 
 
-def _fallback_llm_profile(env: dict[str, str], error: Exception | None = None) -> LLMProfile:
+def _fallback_llm_profile(
+    env: dict[str, str],
+    error: Exception | None = None,
+    workspace_id: Any = DEFAULT_WORKSPACE_ID,
+) -> LLMProfile:
     api_key = _effective_setting_value("DEEPSEEK_API_KEY", env)
     return LLMProfile(
         id=None,
-        workspace_id=DEFAULT_WORKSPACE_ID,
+        workspace_id=str(workspace_id),
         provider=DEEPSEEK_PROVIDER,
         label=DEFAULT_DEEPSEEK_LABEL,
         base_url=_effective_setting_value("DEEPSEEK_BASE_URL", env)
@@ -217,17 +223,22 @@ def _reset_embedding_runtime() -> None:
 
 
 @router.get("/models")
-async def get_model_settings() -> dict[str, Any]:
+async def get_model_settings(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get all model configuration grouped by category."""
+    ctx = WorkspaceContext.from_user(user)
     env = _read_env()
     try:
-        profile = await LLMSettingsRepository().get_active_profile(include_secret=False)
+        profile = await LLMSettingsRepository(
+            workspace_id=ctx.workspace_id,
+        ).get_active_profile(include_secret=False)
     except Exception as exc:
         logger.warning(
             "settings.llm_profile_fallback",
             error=redact_secret_text(str(exc))[:200],
         )
-        profile = _fallback_llm_profile(env, exc)
+        profile = _fallback_llm_profile(env, exc, workspace_id=ctx.workspace_id)
     categories: list[dict[str, Any]] = [_llm_category(profile)]
 
     for cat_id, cat_info in MODEL_CATEGORIES.items():
@@ -293,10 +304,16 @@ async def update_model_settings(body: dict[str, str]) -> dict[str, Any]:
 
 
 @router.put("/llm")
-async def update_llm_settings(body: LLMSettingsUpdate) -> dict[str, Any]:
+async def update_llm_settings(
+    body: LLMSettingsUpdate,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Update active DeepSeek LLM profile without returning plaintext secrets."""
+    ctx = WorkspaceContext.from_user(user)
     try:
-        profile = await LLMSettingsRepository().upsert_active_profile(
+        profile = await LLMSettingsRepository(
+            workspace_id=ctx.workspace_id,
+        ).upsert_active_profile(
             label=body.label,
             base_url=body.base_url,
             model=body.model,
@@ -312,10 +329,15 @@ async def update_llm_settings(body: LLMSettingsUpdate) -> dict[str, Any]:
 
 
 @router.delete("/llm/api-key")
-async def delete_llm_api_key() -> dict[str, Any]:
+async def delete_llm_api_key(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Clear the active DeepSeek API key."""
+    ctx = WorkspaceContext.from_user(user)
     try:
-        profile = await LLMSettingsRepository().clear_api_key()
+        profile = await LLMSettingsRepository(
+            workspace_id=ctx.workspace_id,
+        ).clear_api_key()
         _reset_llm_runtime()
         return _profile_response(profile)
     except Exception as exc:
@@ -324,9 +346,9 @@ async def delete_llm_api_key() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=error)
 
 
-async def _test_saved_llm_connection() -> dict[str, Any]:
+async def _test_saved_llm_connection(workspace_id: Any) -> dict[str, Any]:
     """Test LLM API connection with current settings."""
-    repo = LLMSettingsRepository()
+    repo = LLMSettingsRepository(workspace_id=workspace_id)
     profile = await repo.peek_active_profile(include_secret=True)
     if profile is None or not profile.is_key_set:
         return {
@@ -352,20 +374,27 @@ async def _test_saved_llm_connection() -> dict[str, Any]:
 
 
 @router.post("/llm/test")
-async def test_llm_settings(body: LLMTestRequest | None = None) -> dict[str, Any]:
+async def test_llm_settings(
+    body: LLMTestRequest | None = None,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Test the saved active DeepSeek profile."""
+    ctx = WorkspaceContext.from_user(user)
     if body and (body.base_url or body.model or body.api_key):
         raise HTTPException(
             status_code=400,
             detail="Only saved active profile testing is supported",
         )
-    return await _test_saved_llm_connection()
+    return await _test_saved_llm_connection(ctx.workspace_id)
 
 
 @router.post("/models/test-llm")
-async def test_llm_connection() -> dict[str, Any]:
+async def test_llm_connection(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Legacy compatibility alias for testing the saved LLM profile."""
-    return await _test_saved_llm_connection()
+    ctx = WorkspaceContext.from_user(user)
+    return await _test_saved_llm_connection(ctx.workspace_id)
 
 
 @router.post("/models/test-embedding")

@@ -56,11 +56,11 @@ class LLMGateway:
         self.models = models or DEFAULT_MODELS
 
         # AsyncOpenAI client for raw chat calls, built from the active profile.
-        self._client_profile_key: tuple[str, str, str, str] | None = None
+        self._client_profile_key: tuple[str, str, str, str, str] | None = None
         self._client: AsyncOpenAI | None = None
 
         # LangChain ChatOpenAI instances (lazy-init per tier)
-        self._langchain_profile_key: tuple[str, str, str, str] | None = None
+        self._langchain_profile_key: tuple[str, str, str, str, str] | None = None
         self._langchain_models: dict[str, ChatOpenAI] = {}
 
         # Cost / token tracking
@@ -71,8 +71,9 @@ class LLMGateway:
         # Simple response cache
         self._cache: dict[str, tuple[Any, float]] = {}
 
-    def _profile_key(self, profile: LLMProfile) -> tuple[str, str, str, str]:
+    def _profile_key(self, profile: LLMProfile) -> tuple[str, str, str, str, str]:
         return (
+            profile.workspace_id,
             profile.provider,
             profile.base_url,
             profile.model,

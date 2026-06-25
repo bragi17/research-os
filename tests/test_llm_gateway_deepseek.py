@@ -238,3 +238,47 @@ async def test_profile_change_rebuilds_client_and_clears_response_cache() -> Non
     assert openai_cls.call_count == 2
     first_client.chat.completions.create.assert_awaited_once()
     second_client.chat.completions.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_workspace_change_rebuilds_client_even_with_same_credentials() -> None:
+    first_profile = _profile()
+    second_profile = LLMProfile(
+        id="profile-2",
+        workspace_id="11111111-1111-1111-1111-111111111111",
+        provider=first_profile.provider,
+        label=first_profile.label,
+        base_url=first_profile.base_url,
+        model=first_profile.model,
+        api_key=first_profile.api_key,
+        api_key_preview=first_profile.api_key_preview,
+        is_key_set=first_profile.is_key_set,
+        last_test_status=None,
+        last_test_error=None,
+        last_test_at=None,
+    )
+
+    first_client = MagicMock()
+    first_client.chat.completions.create = AsyncMock(return_value=_response("FIRST"))
+    second_client = MagicMock()
+    second_client.chat.completions.create = AsyncMock(return_value=_response("SECOND"))
+
+    with (
+        patch(
+            "apps.worker.llm_gateway.get_active_llm_profile",
+            AsyncMock(side_effect=[first_profile, second_profile]),
+        ),
+        patch(
+            "apps.worker.llm_gateway.AsyncOpenAI",
+            side_effect=[first_client, second_client],
+        ) as openai_cls,
+    ):
+        gw = LLMGateway()
+        first = await gw.chat([{"role": "user", "content": "hi"}], temperature=0)
+        second = await gw.chat([{"role": "user", "content": "hi"}], temperature=0)
+
+    assert first["content"] == "FIRST"
+    assert second["content"] == "SECOND"
+    assert openai_cls.call_count == 2
+    first_client.chat.completions.create.assert_awaited_once()
+    second_client.chat.completions.create.assert_awaited_once()

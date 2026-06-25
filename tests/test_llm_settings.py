@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 from collections.abc import Callable
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -21,6 +22,7 @@ from services.llm_settings import (
     mask_api_key,
     redact_secret_text,
 )
+from services.workspace_context import workspace_context
 
 
 class FakePool:
@@ -230,12 +232,32 @@ async def test_clear_api_key_removes_secret_and_preview(
 
 
 @pytest.mark.asyncio
+async def test_repository_uses_explicit_workspace_id_in_queries() -> None:
+    workspace_id = UUID("11111111-1111-1111-1111-111111111111")
+
+    def handler(sql: str, args: tuple[Any, ...]) -> dict[str, Any] | None:
+        return _row(workspace_id=args[0])
+
+    pool = FakePool(handler)
+    repo = LLMSettingsRepository(pool_getter=lambda: pool, workspace_id=workspace_id)
+
+    profile = await repo.peek_active_profile()
+
+    assert profile is not None
+    assert profile.workspace_id == str(workspace_id)
+    assert pool.fetchrow_calls[0][1][0] == workspace_id
+
+
+@pytest.mark.asyncio
 async def test_get_active_llm_profile_hides_secret_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[bool] = []
 
     class FakeRepository:
+        def __init__(self, workspace_id: UUID | str | None = None) -> None:
+            self.workspace_id = workspace_id
+
         async def get_active_profile(
             self,
             include_secret: bool = False,
@@ -267,4 +289,59 @@ async def test_get_active_llm_profile_hides_secret_by_default(
     assert hidden.api_key is None
     assert secret.api_key == "test-secret-key"
     assert calls == [False, True]
+    invalidate_llm_config()
+
+
+@pytest.mark.asyncio
+async def test_get_active_llm_profile_cache_is_scoped_by_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_workspace_id = UUID("11111111-1111-1111-1111-111111111111")
+    second_workspace_id = UUID("22222222-2222-2222-2222-222222222222")
+    calls: list[tuple[str, bool]] = []
+
+    class FakeRepository:
+        def __init__(self, workspace_id: UUID | str | None = None) -> None:
+            self.workspace_id = workspace_id
+
+        async def get_active_profile(
+            self,
+            include_secret: bool = False,
+        ) -> LLMProfile:
+            workspace_id = str(self.workspace_id)
+            calls.append((workspace_id, include_secret))
+            return LLMProfile(
+                id="profile-1",
+                workspace_id=workspace_id,
+                provider="deepseek",
+                label="DeepSeek",
+                base_url=DEFAULT_DEEPSEEK_BASE_URL,
+                model=DEFAULT_DEEPSEEK_MODEL,
+                api_key=None,
+                api_key_preview="",
+                is_key_set=False,
+                last_test_status=None,
+                last_test_error=None,
+                last_test_at=None,
+            )
+
+    import services.llm_settings as llm_settings
+
+    invalidate_llm_config()
+    monkeypatch.setattr(llm_settings, "LLMSettingsRepository", FakeRepository)
+
+    with workspace_context(first_workspace_id):
+        first = await get_active_llm_profile()
+    with workspace_context(second_workspace_id):
+        second = await get_active_llm_profile()
+    with workspace_context(first_workspace_id):
+        cached_first = await get_active_llm_profile()
+
+    assert first.workspace_id == str(first_workspace_id)
+    assert second.workspace_id == str(second_workspace_id)
+    assert cached_first.workspace_id == str(first_workspace_id)
+    assert calls == [
+        (str(first_workspace_id), False),
+        (str(second_workspace_id), False),
+    ]
     invalidate_llm_config()
