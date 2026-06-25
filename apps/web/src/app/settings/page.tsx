@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { SettingsCategoryCard } from "@/features/settings/SettingsCategoryCard";
 import { DEFAULT_LLM_EDIT, isDirtyLlmEdit, llmEditFromProfile } from "@/features/settings/llmProfile";
-import type { Category, LLMEdit, TestResult } from "@/features/settings/types";
+import type { Category, LiteratureSourceProfile, LLMEdit, TestResult } from "@/features/settings/types";
 
 export default function SettingsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
@@ -16,6 +16,7 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState<string | null>(null);
   const [llmEdit, setLlmEdit] = useState<LLMEdit>(DEFAULT_LLM_EDIT);
   const [savedLlmEdit, setSavedLlmEdit] = useState<LLMEdit>(DEFAULT_LLM_EDIT);
+  const [literatureEdits, setLiteratureEdits] = useState<Record<string, LiteratureSourceProfile>>({});
   const savedLlmEditRef = useRef<LLMEdit>(DEFAULT_LLM_EDIT);
   const llmDirtyRef = useRef(false);
 
@@ -164,6 +165,59 @@ export default function SettingsPage() {
     }
   };
 
+  const handleLiteratureEdit = (source: string, value: LiteratureSourceProfile) => {
+    setLiteratureEdits((prev) => ({ ...prev, [source]: value }));
+    setSaveResult(null);
+  };
+
+  const handleSaveLiterature = async (source: string) => {
+    const draft = literatureEdits[source];
+    if (!draft) return;
+
+    setSaving(true);
+    setSaveResult(null);
+    try {
+      const newCredentials = String(draft.options["new_credentials"] || "")
+        .split(/\s+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const clearCredentialIds = Array.isArray(draft.options["clear_credential_ids"])
+        ? draft.options["clear_credential_ids"].filter((item): item is string => typeof item === "string")
+        : [];
+      const cleanOptions = { ...draft.options };
+      delete cleanOptions.new_credentials;
+      delete cleanOptions.clear_credential_ids;
+
+      const res = await fetch(`/api/v1/settings/literature/${source}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: draft.enabled,
+          options: cleanOptions,
+          new_credentials: newCredentials,
+          clear_credential_ids: clearCredentialIds,
+        }),
+      });
+
+      if (res.ok) {
+        setLiteratureEdits((prev) => {
+          const next = { ...prev };
+          delete next[source];
+          return next;
+        });
+        setSaveResult("Literature source settings saved.");
+        fetchSettings();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setSaveResult(`Error: ${err.detail || res.statusText}`);
+      }
+    } catch (error) {
+      setSaveResult(`Error: ${String(error)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const isLlmDirty = isDirtyLlmEdit(llmEdit, savedLlmEdit);
 
   const handleTest = async (type: "llm" | "embedding") => {
@@ -197,6 +251,33 @@ export default function SettingsPage() {
       }));
     } catch (e) {
       setTestResults((prev) => ({ ...prev, [type]: { status: "error", detail: String(e) } }));
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  const handleTestLiterature = async (source: string) => {
+    setTesting(source);
+    try {
+      const res = await fetch(`/api/v1/settings/literature/${source}/test`, { method: "POST" });
+      if (!res.ok) {
+        setTestResults((prev) => ({ ...prev, [source]: { status: "error", detail: `HTTP ${res.status}` } }));
+        return;
+      }
+      const data = await res.json();
+      setTestResults((prev) => ({
+        ...prev,
+        [source]: {
+          status: data.status,
+          detail: data.status === "ok" ? "Connection test passed." : data.error || "Unknown error",
+        },
+      }));
+      fetchSettings();
+    } catch (error) {
+      setTestResults((prev) => ({
+        ...prev,
+        [source]: { status: "error", detail: String(error) },
+      }));
     } finally {
       setTesting(null);
     }
@@ -250,14 +331,19 @@ export default function SettingsPage() {
           category={cat}
           edits={edits}
           llmEdit={llmEdit}
+          literatureEdits={literatureEdits}
           saving={saving}
           testing={testing}
           testResult={testResults[cat.id]}
+          literatureTestResults={testResults}
           onEdit={handleEdit}
           onLlmEdit={handleLlmEdit}
+          onLiteratureEdit={handleLiteratureEdit}
           onSaveLlm={handleSaveLlm}
+          onSaveLiterature={handleSaveLiterature}
           onClearLlmKey={handleClearLlmKey}
           onTest={handleTest}
+          onTestLiterature={handleTestLiterature}
         />
       )) : (
         <div className="card-static p-6 text-center text-[13px] text-[var(--text-muted)]">

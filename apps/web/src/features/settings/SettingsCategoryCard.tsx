@@ -1,5 +1,6 @@
-import type { Category, LLMEdit, TestResult } from "./types";
+import type { Category, LiteratureSourceProfile, LLMEdit, TestResult } from "./types";
 import { CATEGORY_DESC } from "./metadata";
+import { LiteratureSourcesPanel } from "./LiteratureSourcesPanel";
 import {
   BrainCircuit,
   CheckCircle2,
@@ -7,6 +8,7 @@ import {
   GraduationCap,
   RotateCw,
   Ruler,
+  Search,
   Settings,
   XCircle,
   type LucideIcon,
@@ -16,14 +18,19 @@ interface SettingsCategoryCardProps {
   category: Category;
   edits: Record<string, string>;
   llmEdit: LLMEdit;
+  literatureEdits: Record<string, LiteratureSourceProfile>;
   saving: boolean;
   testing: string | null;
   testResult?: TestResult;
+  literatureTestResults: Record<string, TestResult>;
   onEdit: (key: string, value: string) => void;
   onLlmEdit: (key: keyof LLMEdit, value: string) => void;
+  onLiteratureEdit: (source: string, value: LiteratureSourceProfile) => void;
   onSaveLlm: () => void;
+  onSaveLiterature: (source: string) => void;
   onClearLlmKey: (category: Category) => void;
   onTest: (type: "llm" | "embedding") => void;
+  onTestLiterature: (source: string) => void;
 }
 
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
@@ -31,6 +38,7 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
   embedding: Ruler,
   rerank: RotateCw,
   academic: GraduationCap,
+  literature_sources: Search,
   storage: Database,
 };
 
@@ -38,14 +46,19 @@ export function SettingsCategoryCard({
   category,
   edits,
   llmEdit,
+  literatureEdits,
   saving,
   testing,
   testResult,
+  literatureTestResults,
   onEdit,
   onLlmEdit,
+  onLiteratureEdit,
   onSaveLlm,
+  onSaveLiterature,
   onClearLlmKey,
   onTest,
+  onTestLiterature,
 }: SettingsCategoryCardProps) {
   const CategoryIcon = CATEGORY_ICONS[category.id] || Settings;
 
@@ -72,7 +85,7 @@ export function SettingsCategoryCard({
             </button>
           )}
         </div>
-        {testResult && (
+        {testResult && category.id !== "literature_sources" && (
           <div className={`mt-2 flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-lg ${
             testResult.status === "ok"
               ? "bg-[var(--accent-green-soft)] text-[var(--accent-green)]"
@@ -88,7 +101,18 @@ export function SettingsCategoryCard({
         )}
       </div>
 
-      {category.id === "llm" ? (
+      {category.id === "literature_sources" ? (
+        <LiteratureSourcesPanel
+          sources={category.sources || []}
+          edits={literatureEdits}
+          saving={saving}
+          testing={testing}
+          testResults={literatureTestResults}
+          onEdit={onLiteratureEdit}
+          onSave={onSaveLiterature}
+          onTest={onTestLiterature}
+        />
+      ) : category.id === "llm" ? (
         <div className="px-5 py-4 space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-[160px_1fr] gap-3 items-center">
             <span className="text-[12px] text-[var(--text-secondary)] font-medium">Provider</span>
