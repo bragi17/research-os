@@ -227,7 +227,7 @@ async def test_update_source_encrypts_inserts_clears_and_hides_plaintext(
             _setting_row(
                 LiteratureSource.WEB_SEARCH,
                 enabled=False,
-                options_json={"provider": "tavily"},
+                options_json={"limit": 5, "provider": "exa"},
             )
         ],
         credentials=[
@@ -244,13 +244,13 @@ async def test_update_source_encrypts_inserts_clears_and_hides_plaintext(
     updated = await repo.update_source(
         LiteratureSource.WEB_SEARCH,
         enabled=True,
-        options={"provider": "brave"},
+        options={"provider": "tavily"},
         new_credentials=[plaintext],
         clear_credential_ids=[str(clear_id)],
     )
 
     assert updated.enabled is True
-    assert updated.options == {"provider": "brave"}
+    assert updated.options == {"limit": 5, "provider": "tavily"}
     assert len(updated.credentials) == 1
     assert updated.credentials[0].preview == mask_api_key(plaintext)
     settings_write = [
@@ -260,7 +260,7 @@ async def test_update_source_encrypts_inserts_clears_and_hides_plaintext(
     ][0]
     assert settings_write[1] == LiteratureSource.WEB_SEARCH.value
     assert settings_write[2] is True
-    assert settings_write[3] == {"provider": "brave"}
+    assert settings_write[3] == {"limit": 5, "provider": "tavily"}
     clear_write = [
         args
         for sql, args in pool.execute_calls
@@ -279,7 +279,7 @@ async def test_update_source_encrypts_inserts_clears_and_hides_plaintext(
 
 
 @pytest.mark.asyncio
-async def test_update_source_options_none_preserves_and_empty_dict_clears() -> None:
+async def test_update_source_options_none_and_empty_dict_preserve_existing() -> None:
     pool = FakePool(
         settings=[
             _setting_row(
@@ -307,13 +307,13 @@ async def test_update_source_options_none_preserves_and_empty_dict_clears() -> N
     )
 
     assert preserved.options == {"provider": "tavily", "limit": 5}
-    assert cleared.options == {}
+    assert cleared.options == {"provider": "tavily", "limit": 5}
     settings_writes = [
         args
         for sql, args in pool.fetchrow_calls
         if "INSERT INTO literature_source_settings" in sql
     ]
     assert settings_writes[0][3] == {"provider": "tavily", "limit": 5}
-    assert settings_writes[1][3] == {}
+    assert settings_writes[1][3] == {"provider": "tavily", "limit": 5}
     assert isinstance(settings_writes[0][2], bool)
     assert isinstance(UUID(str(settings_writes[0][0])), UUID)

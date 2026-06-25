@@ -109,18 +109,11 @@ class LiteratureSettingsRepository:
         clear_credential_ids: Iterable[str | UUID] | None = None,
     ) -> LiteratureSourceSettings:
         parsed_source = _coerce_source(source)
-        existing = await self._fetch_source_settings(parsed_source)
-        existing_options = _options_from_row(existing)
-        if existing is None:
-            existing_options = _env_options(parsed_source)
-        next_options = existing_options if options is None else dict(options)
-        next_enabled = (
-            bool(existing["enabled"])
-            if enabled is None and existing is not None
-            else DEFAULT_ENABLED[parsed_source]
-            if enabled is None
-            else enabled
-        )
+        current = await self.get_source(parsed_source)
+        next_options = dict(current.options)
+        if options is not None:
+            next_options.update(options)
+        next_enabled = current.enabled if enabled is None else enabled
 
         await self._upsert_source_settings(
             parsed_source,
