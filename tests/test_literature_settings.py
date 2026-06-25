@@ -231,6 +231,91 @@ async def test_env_bootstrap_for_s2_and_openalex_hides_plaintext(
 
 
 @pytest.mark.asyncio
+async def test_env_fallbacks_cover_non_openalex_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("S2_API_KEY", raising=False)
+    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "semantic-secret-key-123456")
+    monkeypatch.setenv("ZOTERO_LIBRARY_PATH", "/data/zotero/library.sqlite")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "/notes/research-vault")
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily")
+    monkeypatch.setenv("WEB_SEARCH_API_KEY", "web-secret-key-123456")
+    monkeypatch.setenv("DEEPXIV_COMMAND", "deepxiv search --json")
+    pool = FakePool()
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    sources = await repo.list_sources()
+
+    by_source = {settings.source: settings for settings in sources}
+    assert by_source[LiteratureSource.SEMANTIC_SCHOLAR].credentials[0].preview == (
+        mask_api_key("semantic-secret-key-123456")
+    )
+    assert by_source[LiteratureSource.ZOTERO].options == {
+        "library_path": "/data/zotero/library.sqlite"
+    }
+    assert by_source[LiteratureSource.OBSIDIAN].options == {
+        "vault_path": "/notes/research-vault"
+    }
+    assert by_source[LiteratureSource.WEB_SEARCH].options == {"provider": "tavily"}
+    assert by_source[LiteratureSource.WEB_SEARCH].credentials[0].preview == (
+        mask_api_key("web-secret-key-123456")
+    )
+    assert by_source[LiteratureSource.DEEPXIV].options == {
+        "command": "deepxiv search --json"
+    }
+
+
+@pytest.mark.asyncio
+async def test_db_source_rows_take_precedence_over_env_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "env-provider")
+    monkeypatch.setenv("WEB_SEARCH_API_KEY", "env-secret-key-123456")
+    pool = FakePool(
+        settings=[
+            _setting_row(
+                LiteratureSource.WEB_SEARCH,
+                enabled=True,
+                options_json={"provider": "db-provider"},
+            )
+        ],
+        credentials=[
+            _credential_row(
+                LiteratureSource.WEB_SEARCH,
+                secret_encrypted="encrypted-db-secret",
+                secret_preview="db-s****3456",
+            )
+        ],
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    settings = await repo.get_source(LiteratureSource.WEB_SEARCH)
+
+    assert settings.options == {"provider": "db-provider"}
+    assert len(settings.credentials) == 1
+    assert settings.credentials[0].preview == "db-s****3456"
+    assert settings.credentials[0].preview != mask_api_key("env-secret-key-123456")
+
+
+@pytest.mark.asyncio
+async def test_async_pool_getter_is_awaited_for_repository_calls() -> None:
+    getter_calls = 0
+    pool = FakePool()
+
+    async def get_pool() -> FakePool:
+        nonlocal getter_calls
+        getter_calls += 1
+        return pool
+
+    repo = LiteratureSettingsRepository(pool_getter=get_pool)
+
+    settings = await repo.get_source(LiteratureSource.WEB_SEARCH)
+
+    assert settings.source == LiteratureSource.WEB_SEARCH
+    assert getter_calls > 0
+
+
+@pytest.mark.asyncio
 async def test_list_sources_rejects_include_secrets() -> None:
     pool = FakePool()
     repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
@@ -608,6 +693,52 @@ async def test_record_source_test_redacts_exact_env_secret(
     ][0]
     assert update_args[3] == "provider echoed [redacted]"
     assert "s2-secret-key-123456" not in repr(pool.fetchrow_calls)
+
+
+@pytest.mark.asyncio
+async def test_record_source_test_redacts_exact_db_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decrypt_calls: list[str] = []
+
+    def fake_decrypt(secret: str | None) -> str | None:
+        assert secret is not None
+        decrypt_calls.append(secret)
+        return "db-secret-key"
+
+    monkeypatch.setattr(literature_settings, "decrypt_api_key", fake_decrypt)
+    pool = FakePool(
+        settings=[
+            _setting_row(
+                LiteratureSource.SEMANTIC_SCHOLAR,
+                enabled=True,
+            )
+        ],
+        credentials=[
+            _credential_row(
+                LiteratureSource.SEMANTIC_SCHOLAR,
+                secret_encrypted="encrypted-db-secret",
+                secret_preview="db-s****-key",
+            )
+        ],
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    settings = await repo.record_source_test(
+        LiteratureSource.SEMANTIC_SCHOLAR,
+        status="error",
+        error="provider echoed db-secret-key",
+    )
+
+    assert settings.last_test_error == "provider echoed [redacted]"
+    update_args = [
+        args
+        for sql, args in pool.fetchrow_calls
+        if "UPDATE literature_source_settings" in sql
+    ][0]
+    assert update_args[3] == "provider echoed [redacted]"
+    assert "db-secret-key" not in update_args[3]
+    assert decrypt_calls == ["encrypted-db-secret"]
 
 
 @pytest.mark.asyncio
