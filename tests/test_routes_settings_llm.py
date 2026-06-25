@@ -122,6 +122,45 @@ def test_get_models_exposes_deepseek_llm_settings_without_openai_or_secret(
     assert "LEGACY_LLM_MODEL" not in response_text
 
 
+def test_get_models_falls_back_when_llm_settings_store_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("DASHSCOPE_EMBEDDING_MODEL=text-embedding-v4\n")
+    repo = FakeRepository(None)
+    repo.get_active_profile.side_effect = RuntimeError("settings table missing")
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda: repo,
+        raising=False,
+    )
+
+    response = _client().get("/api/v1/settings/models")
+
+    assert response.status_code == 200
+    body = response.json()
+    llm_category = next(
+        category for category in body["categories"] if category["id"] == "llm"
+    )
+    assert llm_category["profile"]["base_url"] == DEFAULT_DEEPSEEK_BASE_URL
+    assert llm_category["profile"]["model"] == DEFAULT_DEEPSEEK_MODEL
+    assert llm_category["profile"]["is_key_set"] is False
+    assert llm_category["profile"]["last_test_status"] == "error"
+    assert "settings table missing" in llm_category["profile"]["last_test_error"]
+
+    storage = next(
+        category for category in body["categories"] if category["id"] == "storage"
+    )
+    storage_items = {item["key"]: item for item in storage["items"]}
+    assert storage_items["RESEARCH_OS_WORKSPACE_ROOT"]["value"] == (
+        "/data/research-os/experiments"
+    )
+    assert storage_items["RESEARCH_OS_WORKSPACE_ROOT"]["is_set"] is True
+
+
 def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

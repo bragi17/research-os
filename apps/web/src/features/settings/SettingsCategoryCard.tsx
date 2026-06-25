@@ -1,5 +1,16 @@
 import type { Category, LLMEdit, TestResult } from "./types";
-import { CATEGORY_DESC, CATEGORY_ICONS } from "./metadata";
+import { CATEGORY_DESC } from "./metadata";
+import {
+  BrainCircuit,
+  CheckCircle2,
+  Database,
+  GraduationCap,
+  RotateCw,
+  Ruler,
+  Settings,
+  XCircle,
+  type LucideIcon,
+} from "lucide-react";
 
 interface SettingsCategoryCardProps {
   category: Category;
@@ -15,6 +26,14 @@ interface SettingsCategoryCardProps {
   onTest: (type: "llm" | "embedding") => void;
 }
 
+const CATEGORY_ICONS: Record<string, LucideIcon> = {
+  llm: BrainCircuit,
+  embedding: Ruler,
+  rerank: RotateCw,
+  academic: GraduationCap,
+  storage: Database,
+};
+
 export function SettingsCategoryCard({
   category,
   edits,
@@ -28,12 +47,16 @@ export function SettingsCategoryCard({
   onClearLlmKey,
   onTest,
 }: SettingsCategoryCardProps) {
+  const CategoryIcon = CATEGORY_ICONS[category.id] || Settings;
+
   return (
     <div className="card-static overflow-hidden">
       <div className="px-5 py-4 border-b border-[var(--border-subtle)]">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <span className="text-base">{CATEGORY_ICONS[category.id] || "⚙"}</span>
+            <span className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-secondary)] text-[var(--text-secondary)]">
+              <CategoryIcon size={15} strokeWidth={1.8} />
+            </span>
             <div>
               <h2 className="text-[14px] font-semibold text-[var(--text-primary)]">{category.label}</h2>
               <p className="text-[11px] text-[var(--text-muted)] mt-0.5">{CATEGORY_DESC[category.id] || ""}</p>
@@ -50,12 +73,16 @@ export function SettingsCategoryCard({
           )}
         </div>
         {testResult && (
-          <div className={`mt-2 text-[12px] px-3 py-1.5 rounded-lg ${
+          <div className={`mt-2 flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-lg ${
             testResult.status === "ok"
               ? "bg-[var(--accent-green-soft)] text-[var(--accent-green)]"
               : "bg-[var(--accent-red-soft)] text-[var(--accent-red)]"
           }`}>
-            {testResult.status === "ok" ? "✓ " : "✗ "}
+            {testResult.status === "ok" ? (
+              <CheckCircle2 size={13} strokeWidth={2} />
+            ) : (
+              <XCircle size={13} strokeWidth={2} />
+            )}
             {testResult.detail}
           </div>
         )}

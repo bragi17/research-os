@@ -11,6 +11,7 @@ export default function SettingsPage() {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
   const [testing, setTesting] = useState<string | null>(null);
   const [llmEdit, setLlmEdit] = useState<LLMEdit>(DEFAULT_LLM_EDIT);
@@ -20,25 +21,35 @@ export default function SettingsPage() {
 
   const fetchSettings = useCallback(async (options?: { forceLlmReset?: boolean }) => {
     try {
+      setLoadError(null);
       const res = await fetch("/api/v1/settings/models");
-      if (res.ok) {
-        const data = await res.json();
-        const loadedCategories = data.categories as Category[];
-        setCategories(loadedCategories);
-        const llmProfile = loadedCategories.find((cat) => cat.id === "llm")?.profile;
-        const nextSavedLlmEdit = llmEditFromProfile(llmProfile);
-        setSavedLlmEdit(nextSavedLlmEdit);
-        savedLlmEditRef.current = nextSavedLlmEdit;
-        setLlmEdit((prev) => {
-          if (options?.forceLlmReset || !llmDirtyRef.current) {
-            llmDirtyRef.current = false;
-            return nextSavedLlmEdit;
-          }
-          llmDirtyRef.current = isDirtyLlmEdit(prev, nextSavedLlmEdit);
-          return prev;
-        });
+      if (!res.ok) {
+        setLoadError(`Settings failed to load: HTTP ${res.status}`);
+        setCategories([]);
+        return;
       }
-    } catch { /* silent */ }
+      const data = await res.json();
+      const loadedCategories = Array.isArray(data.categories) ? data.categories as Category[] : [];
+      setCategories(loadedCategories);
+      const llmProfile = loadedCategories.find((cat) => cat.id === "llm")?.profile;
+      const nextSavedLlmEdit = llmEditFromProfile(llmProfile);
+      setSavedLlmEdit(nextSavedLlmEdit);
+      savedLlmEditRef.current = nextSavedLlmEdit;
+      setLlmEdit((prev) => {
+        if (options?.forceLlmReset || !llmDirtyRef.current) {
+          llmDirtyRef.current = false;
+          return nextSavedLlmEdit;
+        }
+        llmDirtyRef.current = isDirtyLlmEdit(prev, nextSavedLlmEdit);
+        return prev;
+      });
+      if (loadedCategories.length === 0) {
+        setLoadError("Settings loaded, but no categories were returned.");
+      }
+    } catch (error) {
+      setLoadError(`Settings failed to load: ${String(error)}`);
+      setCategories([]);
+    }
     finally { setLoading(false); }
   }, []);
 
@@ -226,8 +237,14 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {loadError && (
+        <div className="card-static border-[var(--accent-red)]/30 bg-[var(--accent-red-soft)] p-3 text-[13px] text-[var(--accent-red)]">
+          {loadError}
+        </div>
+      )}
+
       {/* Categories */}
-      {categories.map((cat) => (
+      {categories.length > 0 ? categories.map((cat) => (
         <SettingsCategoryCard
           key={cat.id}
           category={cat}
@@ -242,7 +259,11 @@ export default function SettingsPage() {
           onClearLlmKey={handleClearLlmKey}
           onTest={handleTest}
         />
-      ))}
+      )) : (
+        <div className="card-static p-6 text-center text-[13px] text-[var(--text-muted)]">
+          No settings categories are available.
+        </div>
+      )}
     </div>
   );
 }

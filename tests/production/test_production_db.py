@@ -426,12 +426,16 @@ async def test_scheduler_claim_helpers_use_row_locks_and_state_transitions(
     assert "status = 'running'" in task_sql
     assert "scheduler_lease" in task_sql
     assert "- 'scheduler_heartbeat'" in task_sql
+    assert "$3::int::text || ' seconds'" in task_sql
+    assert "'lease_seconds', $3::int" in task_sql
     assert task_args == (2, "scheduler-a", 120)
     assert "FOR UPDATE SKIP LOCKED" in job_sql
     assert "UPDATE experiment_job" in job_sql
     assert "status = 'running'" in job_sql
     assert "scheduler_lease" in job_sql
     assert "- 'scheduler_heartbeat'" in job_sql
+    assert "$4::int::text || ' seconds'" in job_sql
+    assert "'lease_seconds', $4::int" in job_sql
     assert job_args == ([job_id], 1, "scheduler-a", 120)
     assert tasks[0]["id"] == task_id
     assert jobs[0]["id"] == job_id
@@ -469,11 +473,15 @@ async def test_manual_claim_helpers_claim_single_rows_by_id(
     assert "AND status = 'queued'" in task_sql
     assert "scheduler_lease" in task_sql
     assert "- 'scheduler_heartbeat'" in task_sql
+    assert "$3::int::text || ' seconds'" in task_sql
+    assert "'lease_seconds', $3::int" in task_sql
     assert task_args == (task_id, "manual-user", 60)
     assert "WHERE id = $1" in job_sql
     assert "AND status = 'pending'" in job_sql
     assert "scheduler_lease" in job_sql
     assert "- 'scheduler_heartbeat'" in job_sql
+    assert "$3::int::text || ' seconds'" in job_sql
+    assert "'lease_seconds', $3::int" in job_sql
     assert job_args == (job_id, "manual-user", 60)
     assert task["id"] == task_id
     assert job["id"] == job_id

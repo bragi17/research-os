@@ -83,6 +83,20 @@ def test_prepare_coding_workspace_serializes_all_context_before_writing(
     assert not task_root.exists()
 
 
+def test_workspace_base_defaults_to_data_experiment_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from apps.worker.production import workspaces
+
+    monkeypatch.delenv("RESEARCH_OS_WORKSPACE_ROOT", raising=False)
+    expected = tmp_path / "experiments"
+    monkeypatch.setattr(workspaces, "DEFAULT_WORKSPACE_ROOT", expected)
+
+    assert workspaces.workspace_base() == expected.resolve()
+    assert expected.is_dir()
+
+
 def test_expand_manifest_jobs_preserves_phase_and_job_order() -> None:
     manifest = {
         "project": "demo",

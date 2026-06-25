@@ -52,6 +52,27 @@ export const getRunHypotheses = (id: string) =>
 export const getRunPapers = (id: string) =>
   apiFetch<Paper[]>(`/api/v1/runs/${id}/papers`);
 
+export interface SettingsItem {
+  key: string;
+  value: string;
+  display_value?: string;
+  is_set: boolean;
+  is_sensitive: boolean;
+}
+
+export interface SettingsCategory {
+  id: string;
+  label: string;
+  items: SettingsItem[];
+}
+
+export interface SettingsModelsResponse {
+  categories: SettingsCategory[];
+}
+
+export const getModelSettings = () =>
+  apiFetch<SettingsModelsResponse>("/api/v1/settings/models");
+
 // Auth
 export const login = (email: string, password: string) =>
   apiFetch<{ access_token: string }>("/api/v1/auth/login", {
