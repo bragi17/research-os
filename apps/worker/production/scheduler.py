@@ -65,6 +65,8 @@ class ProductionScheduler:
         idle_sleep_sec: float = 5.0,
         max_concurrent_tasks: int = 1,
         max_concurrent_jobs: int = 1,
+        enable_coding_tasks: bool = True,
+        enable_experiment_jobs: bool = True,
         stale_after_sec: int = 3600,
         worker_id: str | None = None,
         lease_seconds: int = 3600,
@@ -90,6 +92,8 @@ class ProductionScheduler:
         self.idle_sleep_sec = idle_sleep_sec
         self.max_concurrent_tasks = max_concurrent_tasks
         self.max_concurrent_jobs = max_concurrent_jobs
+        self.enable_coding_tasks = enable_coding_tasks
+        self.enable_experiment_jobs = enable_experiment_jobs
         self.stale_after_sec = stale_after_sec
         self.worker_id = worker_id or _default_worker_id()
         self.lease_seconds = lease_seconds
@@ -117,11 +121,16 @@ class ProductionScheduler:
 
         errors: list[SchedulerError] = []
         await self._recover_stale_work(errors)
-        await self._prepare_retryable_experiment_jobs(errors)
-        await self._expand_accepted_manifests(errors)
+        if self.enable_experiment_jobs:
+            await self._prepare_retryable_experiment_jobs(errors)
+            await self._expand_accepted_manifests(errors)
 
-        coding_tasks = await self._claim_queued_coding_tasks(errors)
-        experiment_jobs = await self._claim_eligible_experiment_jobs(errors)
+        coding_tasks = await self._claim_queued_coding_tasks(errors) if self.enable_coding_tasks else []
+        experiment_jobs = (
+            await self._claim_eligible_experiment_jobs(errors)
+            if self.enable_experiment_jobs
+            else []
+        )
 
         work: list[Awaitable[SchedulerError | None]] = []
         work.extend(self._run_coding_task(task) for task in coding_tasks)
@@ -130,7 +139,8 @@ class ProductionScheduler:
         if work:
             results = await asyncio.gather(*work)
             errors.extend(error for error in results if error is not None)
-        await self._advance_completed_experiments(errors)
+        if self.enable_experiment_jobs:
+            await self._advance_completed_experiments(errors)
 
         idle = not coding_tasks and not experiment_jobs
         if idle and sleep_when_idle and self.idle_sleep_sec > 0:
@@ -349,10 +359,13 @@ class ProductionScheduler:
 
     async def _recover_stale_work(self, errors: list[SchedulerError]) -> None:
         stale_before = _utcnow() - timedelta(seconds=self.stale_after_sec)
-        for kind, method_name in (
-            ("coding_task_recovery", "recover_stale_coding_tasks"),
-            ("experiment_job_recovery", "recover_stale_experiment_jobs"),
-        ):
+        recovery_methods = []
+        if self.enable_coding_tasks:
+            recovery_methods.append(("coding_task_recovery", "recover_stale_coding_tasks"))
+        if self.enable_experiment_jobs:
+            recovery_methods.append(("experiment_job_recovery", "recover_stale_experiment_jobs"))
+
+        for kind, method_name in recovery_methods:
             method = getattr(self.db, method_name, None)
             if not callable(method):
                 continue

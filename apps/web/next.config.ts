@@ -1,5 +1,7 @@
 import type { NextConfig } from "next";
 
+const internalApiUrl = process.env.INTERNAL_API_URL || "http://localhost:8000";
+
 const nextConfig: NextConfig = {
   devIndicators: {
     position: "bottom-right",
@@ -8,7 +10,7 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/api/:path*",
-        destination: "http://localhost:8000/api/:path*",
+        destination: `${internalApiUrl}/api/:path*`,
       },
     ];
   },

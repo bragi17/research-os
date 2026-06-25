@@ -4,9 +4,9 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_DB: research_os
-      POSTGRES_USER: ros_user
-      POSTGRES_PASSWORD: ros_pass
+      POSTGRES_DB: ${POSTGRES_DB:-research_os}
+      POSTGRES_USER: ${POSTGRES_USER:-ros_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.saas}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../../scripts/migration:/docker-entrypoint-initdb.d:ro
@@ -53,10 +53,10 @@ services:
       context: ../..
       dockerfile: infra/docker/Dockerfile
     env_file:
-      - ../../.env
+      - ../../.env.saas
     environment:
       AUTH_REQUIRED: "true"
-      DATABASE_URL: postgresql://ros_user:ros_pass@postgres:5432/research_os
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env.saas}
       REDIS_URL: redis://redis:6379/0
       STORAGE_BACKEND: minio
       MINIO_ENDPOINT: minio:9000
@@ -65,9 +65,9 @@ services:
       MINIO_BUCKET: research-os
       MINIO_USE_SSL: "false"
       GROBID_URL: http://grobid:8070
-      RESEARCH_OS_WORKSPACE_ROOT: /data/research-os/workspaces
+      RESEARCH_OS_WORKSPACE_ROOT: ${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}
     volumes:
-      - workspace_data:/data/research-os/workspaces
+      - ${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}:${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}
     ports:
       - "8000:8000"
     depends_on:
@@ -85,6 +85,10 @@ services:
       dockerfile: infra/docker/Dockerfile.web
       args:
         NEXT_PUBLIC_API_URL: ""
+        INTERNAL_API_URL: http://api:8000
+    environment:
+      NEXT_PUBLIC_API_URL: ""
+      INTERNAL_API_URL: http://api:8000
     ports:
       - "3000:3000"
     depends_on:
@@ -96,10 +100,10 @@ services:
       context: ../..
       dockerfile: infra/docker/Dockerfile
     env_file:
-      - ../../.env
+      - ../../.env.saas
     environment:
       AUTH_REQUIRED: "true"
-      DATABASE_URL: postgresql://ros_user:ros_pass@postgres:5432/research_os
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env.saas}
       REDIS_URL: redis://redis:6379/0
       STORAGE_BACKEND: minio
       MINIO_ENDPOINT: minio:9000
@@ -108,9 +112,9 @@ services:
       MINIO_BUCKET: research-os
       MINIO_USE_SSL: "false"
       GROBID_URL: http://grobid:8070
-      RESEARCH_OS_WORKSPACE_ROOT: /data/research-os/workspaces
+      RESEARCH_OS_WORKSPACE_ROOT: ${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}
     volumes:
-      - workspace_data:/data/research-os/workspaces
+      - ${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}:${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}
     command: python -m apps.worker.runner
     depends_on:
       postgres:
@@ -124,14 +128,14 @@ services:
       context: ../..
       dockerfile: infra/docker/Dockerfile
     env_file:
-      - ../../.env
+      - ../../.env.saas
     environment:
-      DATABASE_URL: postgresql://ros_user:ros_pass@postgres:5432/research_os
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env.saas}
       REDIS_URL: redis://redis:6379/0
-      RESEARCH_OS_WORKSPACE_ROOT: /data/research-os/workspaces
+      RESEARCH_OS_WORKSPACE_ROOT: ${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}
     volumes:
-      - workspace_data:/data/research-os/workspaces
-    command: python scripts/run_production_scheduler.py --idle-sleep-sec 5 --max-concurrent-tasks 1 --max-concurrent-jobs 1
+      - ${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}:${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}
+    command: python scripts/run_production_scheduler.py --idle-sleep-sec 5 --max-concurrent-tasks 1 --max-concurrent-jobs 1 --disable-experiment-jobs
     depends_on:
       postgres:
         condition: service_healthy
@@ -144,16 +148,16 @@ services:
       context: ../..
       dockerfile: infra/docker/Dockerfile
     env_file:
-      - ../../.env
+      - ../../.env.saas
     environment:
       NVIDIA_VISIBLE_DEVICES: all
-      DATABASE_URL: postgresql://ros_user:ros_pass@postgres:5432/research_os
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env.saas}
       REDIS_URL: redis://redis:6379/0
-      RESEARCH_OS_WORKSPACE_ROOT: /data/research-os/workspaces
+      RESEARCH_OS_WORKSPACE_ROOT: ${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}
     volumes:
-      - workspace_data:/data/research-os/workspaces
+      - ${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}:${RESEARCH_OS_WORKSPACE_ROOT:-/data/research-os/workspaces}
       - /var/run/docker.sock:/var/run/docker.sock
-    command: python scripts/run_production_scheduler.py --idle-sleep-sec 5 --max-concurrent-tasks 0 --max-concurrent-jobs 1
+    command: python scripts/run_production_scheduler.py --idle-sleep-sec 5 --max-concurrent-tasks 1 --max-concurrent-jobs 1 --disable-coding-tasks
     depends_on:
       postgres:
         condition: service_healthy
@@ -161,8 +165,16 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  job-runtime:
+    image: research-os-job-runtime:latest
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.job-runtime
+    profiles:
+      - build
+    command: ["true"]
+
 volumes:
   postgres_data:
   redis_data:
   minio_data:
-  workspace_data:

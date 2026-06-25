@@ -43,6 +43,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Maximum pending experiment jobs to start per tick.",
     )
     parser.add_argument(
+        "--disable-coding-tasks",
+        action="store_false",
+        dest="enable_coding_tasks",
+        default=True,
+        help="Do not claim or run queued coding tasks.",
+    )
+    parser.add_argument(
+        "--disable-experiment-jobs",
+        action="store_false",
+        dest="enable_experiment_jobs",
+        default=True,
+        help="Do not claim, run, recover, retry, expand, or advance experiment jobs.",
+    )
+    parser.add_argument(
         "--worker-id",
         default=None,
         help="Scheduler worker id written into task/job leases.",
@@ -73,6 +87,8 @@ async def _run(args: argparse.Namespace) -> int:
         idle_sleep_sec=args.idle_sleep_sec,
         max_concurrent_tasks=args.max_concurrent_tasks,
         max_concurrent_jobs=args.max_concurrent_jobs,
+        enable_coding_tasks=args.enable_coding_tasks,
+        enable_experiment_jobs=args.enable_experiment_jobs,
         worker_id=args.worker_id,
         lease_seconds=args.lease_seconds,
         heartbeat_interval_sec=args.heartbeat_interval_sec,
