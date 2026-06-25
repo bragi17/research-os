@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import inspect
 import json
@@ -325,7 +324,9 @@ async def test_workspace_switch_does_not_close_previous_client() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reset_gateway_closes_owned_async_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reset_gateway_async_closes_owned_async_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     first_client = MagicMock()
     first_client.aclose = AsyncMock()
     second_client = MagicMock()
@@ -350,13 +351,72 @@ async def test_reset_gateway_closes_owned_async_clients(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(llm_gateway_module, "_gateway", gw)
 
-    llm_gateway_module.reset_gateway()
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await llm_gateway_module.reset_gateway_async()
 
     first_client.aclose.assert_awaited_once_with()
     second_client.aclose.assert_awaited_once_with()
     assert llm_gateway_module._gateway is None
+
+
+@pytest.mark.asyncio
+async def test_profile_cache_evicts_least_recently_used_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_GATEWAY_MAX_PROFILES", "2")
+    messages = [{"role": "user", "content": "bounded cache"}]
+    profiles = [
+        LLMProfile(
+            id=f"profile-{index}",
+            workspace_id=f"00000000-0000-0000-0000-00000000000{index}",
+            provider="deepseek",
+            label="DeepSeek",
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-pro",
+            api_key=f"test-secret-key-{index}",
+            api_key_preview=f"test****key-{index}",
+            is_key_set=True,
+            last_test_status=None,
+            last_test_error=None,
+            last_test_at=None,
+        )
+        for index in range(1, 4)
+    ]
+    clients = [MagicMock() for _ in profiles]
+    for index, client in enumerate(clients, start=1):
+        client.aclose = AsyncMock()
+        client.chat.completions.create = AsyncMock(return_value=_response(f"R{index}"))
+
+    with (
+        patch(
+            "apps.worker.llm_gateway.get_active_llm_profile",
+            AsyncMock(side_effect=profiles),
+        ),
+        patch("apps.worker.llm_gateway.AsyncOpenAI", side_effect=clients),
+    ):
+        gw = LLMGateway()
+        first_key = gw._profile_key(profiles[0])
+        await gw.chat(messages, temperature=0, max_tokens=5)
+        first_cache_key = gw._get_cache_key(
+            profiles[0],
+            messages,
+            profiles[0].model,
+            0,
+            5,
+            None,
+            None,
+        )
+        gw._langchain_models[(first_key, "sentinel")] = MagicMock()
+
+        await gw.chat(messages, temperature=0, max_tokens=5)
+        await gw.chat(messages, temperature=0, max_tokens=5)
+
+    clients[0].aclose.assert_awaited_once_with()
+    clients[1].aclose.assert_not_called()
+    clients[2].aclose.assert_not_called()
+    assert first_key not in gw._clients
+    assert all(key[0] != first_key for key in gw._langchain_models)
+    assert first_cache_key not in gw._cache
+    assert len(gw._clients) == 2
 
 
 @pytest.mark.asyncio

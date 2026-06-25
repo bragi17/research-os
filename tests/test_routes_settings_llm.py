@@ -248,7 +248,7 @@ def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
 ) -> None:
     repo = FakeRepository(_profile(label="Primary DeepSeek"))
     invalidate = Mock()
-    reset_gateway = Mock()
+    reset_gateway = AsyncMock()
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
@@ -261,7 +261,7 @@ def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
         invalidate,
         raising=False,
     )
-    monkeypatch.setattr("apps.worker.llm_gateway.reset_gateway", reset_gateway)
+    monkeypatch.setattr("apps.worker.llm_gateway.reset_gateway_async", reset_gateway)
 
     response = _client().put(
         "/api/v1/settings/llm",
@@ -282,13 +282,43 @@ def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
         clear_api_key=False,
     )
     invalidate.assert_called_once_with()
-    reset_gateway.assert_called_once_with()
+    reset_gateway.assert_awaited_once_with()
     body = response.json()
     assert body["label"] == "Primary DeepSeek"
     assert body["api_key_preview"] == "test****-key"
     assert body["is_key_set"] is True
     assert "api_key" not in body
     assert "test-secret-key" not in response.text
+
+
+def test_put_llm_awaits_async_gateway_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepository(_profile(label="Primary DeepSeek"))
+    reset_gateway_async = AsyncMock()
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda *args, **kwargs: repo,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "apps.worker.llm_gateway.reset_gateway_async",
+        reset_gateway_async,
+    )
+
+    response = _client().put(
+        "/api/v1/settings/llm",
+        json={
+            "label": "Primary DeepSeek",
+            "base_url": DEFAULT_DEEPSEEK_BASE_URL,
+            "model": DEFAULT_DEEPSEEK_MODEL,
+            "api_key": "test-secret-key",
+        },
+    )
+
+    assert response.status_code == 200
+    reset_gateway_async.assert_awaited_once_with()
 
 
 def test_put_llm_missing_credential_encryption_key_returns_configuration_error(
@@ -325,7 +355,7 @@ def test_delete_llm_api_key_clears_repository_key_and_resets_runtime(
 ) -> None:
     repo = FakeRepository(_profile(api_key_preview="", is_key_set=False))
     invalidate = Mock()
-    reset_gateway = Mock()
+    reset_gateway = AsyncMock()
     monkeypatch.setattr(
         routes_settings,
         "LLMSettingsRepository",
@@ -338,14 +368,14 @@ def test_delete_llm_api_key_clears_repository_key_and_resets_runtime(
         invalidate,
         raising=False,
     )
-    monkeypatch.setattr("apps.worker.llm_gateway.reset_gateway", reset_gateway)
+    monkeypatch.setattr("apps.worker.llm_gateway.reset_gateway_async", reset_gateway)
 
     response = _client().delete("/api/v1/settings/llm/api-key")
 
     assert response.status_code == 200
     repo.clear_api_key.assert_awaited_once_with()
     invalidate.assert_called_once_with()
-    reset_gateway.assert_called_once_with()
+    reset_gateway.assert_awaited_once_with()
     body = response.json()
     assert body["api_key_preview"] == ""
     assert body["is_key_set"] is False

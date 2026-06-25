@@ -208,12 +208,12 @@ def _llm_category(profile: LLMProfile) -> dict[str, Any]:
     }
 
 
-def _reset_llm_runtime() -> None:
+async def _reset_llm_runtime() -> None:
     invalidate_llm_config()
     try:
-        from apps.worker.llm_gateway import reset_gateway
+        from apps.worker.llm_gateway import reset_gateway_async
 
-        reset_gateway()
+        await reset_gateway_async()
     except Exception:
         pass
 
@@ -298,7 +298,7 @@ async def update_model_settings(body: dict[str, str]) -> dict[str, Any]:
             os.environ[key] = value
 
         # Preserve existing runtime refresh behavior after model updates.
-        _reset_llm_runtime()
+        await _reset_llm_runtime()
         _reset_embedding_runtime()
 
         logger.info("settings.updated", keys=list(body.keys()))
@@ -325,7 +325,7 @@ async def update_llm_settings(
             api_key=body.api_key,
             clear_api_key=body.clear_api_key,
         )
-        _reset_llm_runtime()
+        await _reset_llm_runtime()
         return _profile_response(profile)
     except Exception as exc:
         error = redact_secret_text(str(exc), secrets=[body.api_key])[:200]
@@ -343,7 +343,7 @@ async def delete_llm_api_key(
         profile = await LLMSettingsRepository(
             workspace_id=ctx.workspace_id,
         ).clear_api_key()
-        _reset_llm_runtime()
+        await _reset_llm_runtime()
         return _profile_response(profile)
     except Exception as exc:
         error = redact_secret_text(str(exc))[:200]
