@@ -271,6 +271,7 @@ async def search_academic_sources(
     keywords: list[str] | None = None,
     existing_titles: set[str] | None = None,
     return_report: Literal[False] = False,
+    coordinator: Any | None = None,
 ) -> LiteratureSearchResult:
     ...
 
@@ -282,6 +283,7 @@ async def search_academic_sources(
     keywords: list[str] | None = None,
     existing_titles: set[str] | None = None,
     return_report: Literal[True] = True,
+    coordinator: Any | None = None,
 ) -> LiteratureSearchResultWithReport:
     ...
 
@@ -292,6 +294,7 @@ async def search_academic_sources(
     keywords: list[str] | None = None,
     existing_titles: set[str] | None = None,
     return_report: bool = False,
+    coordinator: Any | None = None,
 ) -> LiteratureSearchResult | LiteratureSearchResultWithReport:
     """
     Unified search across configured literature sources.
@@ -300,23 +303,25 @@ async def search_academic_sources(
         (new_candidate_ids, executed_query_texts, error_messages, id_to_title_map)
     """
     executed = _executed_query_texts(topic, queries)
-    try:
-        coordinator = await _build_literature_search_coordinator()
-    except Exception as exc:
-        if not _is_missing_literature_settings_table(exc):
-            raise
-        logger.warning(
-            "search_academic.literature_settings_unavailable",
-            error=str(exc),
-        )
-        result = await _legacy_search_academic_sources(
-            topic=topic,
-            queries=queries,
-            existing_titles=existing_titles,
-        )
-        if return_report:
-            return (*result, None)
-        return result
+    owns_coordinator = coordinator is None
+    if coordinator is None:
+        try:
+            coordinator = await _build_literature_search_coordinator()
+        except Exception as exc:
+            if not _is_missing_literature_settings_table(exc):
+                raise
+            logger.warning(
+                "search_academic.literature_settings_unavailable",
+                error=str(exc),
+            )
+            result = await _legacy_search_academic_sources(
+                topic=topic,
+                queries=queries,
+                existing_titles=existing_titles,
+            )
+            if return_report:
+                return (*result, None)
+            return result
 
     try:
         candidates, report = await coordinator.search(
@@ -325,14 +330,15 @@ async def search_academic_sources(
             limit_per_query=50,
         )
     finally:
-        await coordinator.close()
+        if owns_coordinator:
+            await coordinator.close()
 
     seen_titles: set[str] = set(existing_titles or set())
     new_candidates: list[str] = []
     id_to_title: dict[str, str] = {}
     for candidate in candidates:
         candidate_id = (
-            candidate.candidate_id
+            _verification_candidate_id(candidate)
             if return_report
             else _legacy_candidate_id(candidate)
         )
@@ -594,6 +600,34 @@ def _legacy_candidate_id(candidate: Any) -> str | None:
     if doi:
         return doi
     return _legacy_bare_doi(candidate_id)
+
+
+def _verification_candidate_id(candidate: Any) -> str | None:
+    doi = _legacy_bare_doi(getattr(candidate, "doi", None))
+    if doi:
+        return doi
+
+    arxiv_id = _clean_identifier(getattr(candidate, "arxiv_id", None))
+    if arxiv_id:
+        return (
+            arxiv_id
+            if arxiv_id.lower().startswith("arxiv:")
+            else f"arxiv:{arxiv_id}"
+        )
+
+    s2_id = _clean_identifier(getattr(candidate, "s2_id", None))
+    if s2_id:
+        return s2_id if s2_id.lower().startswith("s2:") else f"S2:{s2_id}"
+
+    openalex_id = _clean_identifier(getattr(candidate, "openalex_id", None))
+    if openalex_id:
+        return (
+            openalex_id
+            if openalex_id.lower().startswith(("oa:", "openalex:"))
+            else f"OPENALEX:{openalex_id}"
+        )
+
+    return _clean_identifier(getattr(candidate, "candidate_id", None))
 
 
 def _clean_identifier(value: object) -> str | None:

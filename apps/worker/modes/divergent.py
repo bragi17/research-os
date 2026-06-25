@@ -19,6 +19,8 @@ from structlog import get_logger
 from apps.worker.llm_gateway import ModelTier, get_gateway
 from apps.worker.modes.base import (
     ModeGraphState,
+    _build_literature_search_coordinator,
+    _is_missing_literature_settings_table,
     _normalize_title,
     check_should_continue,
     emit_progress,
@@ -1380,39 +1382,55 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     prior_art_records_by_key: dict[str, list[dict[str, Any]]] = {}
     literature_reports_by_key: dict[str, dict[str, Any]] = {}
     gated_searches_by_key: dict[str, str] = {}
-    for job in search_jobs:
-        search_result = await search_academic_sources(
-            topic=state.topic,
-            queries=[job["query"]],
-            existing_titles=existing_titles,
-            return_report=True,
-        )
-        found, _executed, search_errors, title_map, search_report = (
-            _unpack_literature_search_result(search_result)
-        )
-        errors.extend(search_errors)
-        if search_report is not None:
-            literature_reports_by_key[job["dedup_key"]] = search_report
-        gate_status = _literature_gate_status(search_report)
-        if gate_status in {"blocked", "pending"}:
-            gated_searches_by_key[job["dedup_key"]] = gate_status
-            prior_art_records_by_key[job["dedup_key"]] = []
-            continue
+    shared_coordinator: Any | None = None
+    if getattr(search_academic_sources, "__module__", "") == "apps.worker.modes.base":
+        try:
+            shared_coordinator = await _build_literature_search_coordinator()
+        except Exception as exc:
+            if not _is_missing_literature_settings_table(exc):
+                raise
+            logger.warning(
+                "prior_art_check.literature_settings_unavailable",
+                error=str(exc),
+            )
+    try:
+        for job in search_jobs:
+            search_result = await search_academic_sources(
+                topic=state.topic,
+                queries=[job["query"]],
+                existing_titles=existing_titles,
+                return_report=True,
+                coordinator=shared_coordinator,
+            )
+            found, _executed, search_errors, title_map, search_report = (
+                _unpack_literature_search_result(search_result)
+            )
+            errors.extend(search_errors)
+            if search_report is not None:
+                literature_reports_by_key[job["dedup_key"]] = search_report
+            gate_status = _literature_gate_status(search_report)
+            if gate_status in {"blocked", "pending"}:
+                gated_searches_by_key[job["dedup_key"]] = gate_status
+                prior_art_records_by_key[job["dedup_key"]] = []
+                continue
 
-        card_verification = await verify_paper_candidates_for_run(
-            state.run_id,
-            found,
-            title_map=title_map,
-            source="prior_art",
-        )
-        normalized_verification = {
-            candidate_id: _verification_record_to_dict(record)
-            for candidate_id, record in card_verification.items()
-        }
-        prior_art_records_by_key[job["dedup_key"]] = list(
-            normalized_verification.values()
-        )
-        prior_art_verification.update(normalized_verification)
+            card_verification = await verify_paper_candidates_for_run(
+                state.run_id,
+                found,
+                title_map=title_map,
+                source="prior_art",
+            )
+            normalized_verification = {
+                candidate_id: _verification_record_to_dict(record)
+                for candidate_id, record in card_verification.items()
+            }
+            prior_art_records_by_key[job["dedup_key"]] = list(
+                normalized_verification.values()
+            )
+            prior_art_verification.update(normalized_verification)
+    finally:
+        if shared_coordinator is not None:
+            await shared_coordinator.close()
 
     if (
         search_jobs
@@ -1437,7 +1455,10 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         updates["messages"] = [
             {
                 "role": "assistant",
-                "content": "Prior art retrieval is not available for the current literature sources.",
+                "content": (
+                    "Prior art retrieval is not available for the current "
+                    "literature sources."
+                ),
             }
         ]
         logger.info(

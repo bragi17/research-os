@@ -298,6 +298,83 @@ async def test_db_source_rows_take_precedence_over_env_fallbacks(
 
 
 @pytest.mark.asyncio
+async def test_configured_requires_source_specific_required_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("S2_API_KEY", raising=False)
+    monkeypatch.delenv("SEMANTIC_SCHOLAR_API_KEY", raising=False)
+    monkeypatch.delenv("WEB_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("OPENALEX_API_KEY", raising=False)
+    monkeypatch.delenv("OPENALEX_EMAIL", raising=False)
+    pool = FakePool(
+        settings=[
+            _setting_row(LiteratureSource.SEMANTIC_SCHOLAR),
+            _setting_row(
+                LiteratureSource.WEB_SEARCH,
+                options_json={"provider": "tavily"},
+            ),
+            _setting_row(LiteratureSource.OPENALEX),
+            _setting_row(
+                LiteratureSource.ZOTERO,
+                options_json={"library_path": "/data/zotero.json"},
+            ),
+            _setting_row(
+                LiteratureSource.OBSIDIAN,
+                options_json={"vault_path": "/notes/research"},
+            ),
+            _setting_row(
+                LiteratureSource.DEEPXIV,
+                options_json={"command": "deepxiv search"},
+            ),
+        ],
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    sources = {source.source: source for source in await repo.list_sources()}
+
+    assert sources[LiteratureSource.LOCAL_LIBRARY].configured is True
+    assert sources[LiteratureSource.SEMANTIC_SCHOLAR].configured is False
+    assert sources[LiteratureSource.WEB_SEARCH].configured is False
+    assert sources[LiteratureSource.OPENALEX].configured is False
+    assert sources[LiteratureSource.ZOTERO].configured is True
+    assert sources[LiteratureSource.OBSIDIAN].configured is True
+    assert sources[LiteratureSource.DEEPXIV].configured is True
+
+
+@pytest.mark.asyncio
+async def test_configured_uses_db_credentials_for_keyed_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        literature_settings,
+        "decrypt_api_key",
+        lambda secret: "db-secret-key-123456",
+    )
+    pool = FakePool(
+        settings=[
+            _setting_row(LiteratureSource.SEMANTIC_SCHOLAR),
+            _setting_row(
+                LiteratureSource.WEB_SEARCH,
+                options_json={"provider": "tavily"},
+            ),
+            _setting_row(LiteratureSource.OPENALEX),
+        ],
+        credentials=[
+            _credential_row(LiteratureSource.SEMANTIC_SCHOLAR),
+            _credential_row(LiteratureSource.WEB_SEARCH),
+            _credential_row(LiteratureSource.OPENALEX),
+        ],
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    sources = {source.source: source for source in await repo.list_sources()}
+
+    assert sources[LiteratureSource.SEMANTIC_SCHOLAR].configured is True
+    assert sources[LiteratureSource.WEB_SEARCH].configured is True
+    assert sources[LiteratureSource.OPENALEX].configured is True
+
+
+@pytest.mark.asyncio
 async def test_async_pool_getter_is_awaited_for_repository_calls() -> None:
     getter_calls = 0
     pool = FakePool()

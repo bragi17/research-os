@@ -503,12 +503,7 @@ def _source_settings_from_data(
     if settings_row is None:
         options = _env_options(source)
 
-    configured = (
-        settings_row is not None
-        or bool(options)
-        or bool(credentials)
-        or source is LiteratureSource.LOCAL_LIBRARY
-    )
+    configured = _source_configured(source, options, credentials)
 
     return LiteratureSourceSettings(
         source=source,
@@ -578,6 +573,36 @@ def _env_options(source: LiteratureSource) -> dict[str, Any]:
         command = _clean(os.getenv("DEEPXIV_COMMAND"))
         return {"command": command} if command else {}
     return {}
+
+
+def _source_configured(
+    source: LiteratureSource,
+    options: dict[str, Any],
+    credentials: list[LiteratureCredentialPreview],
+) -> bool:
+    if source is LiteratureSource.LOCAL_LIBRARY:
+        return True
+    if source is LiteratureSource.ZOTERO:
+        return _has_option(options, "path", "library_path")
+    if source is LiteratureSource.OBSIDIAN:
+        return _has_option(options, "path", "vault_path")
+    if source is LiteratureSource.WEB_SEARCH:
+        return _has_option(options, "provider") and bool(credentials)
+    if source is LiteratureSource.SEMANTIC_SCHOLAR:
+        return bool(credentials)
+    if source is LiteratureSource.OPENALEX:
+        return bool(credentials) or _has_option(options, "email")
+    if source is LiteratureSource.DEEPXIV:
+        return _has_option(options, "command")
+    return False
+
+
+def _has_option(options: dict[str, Any], *keys: str) -> bool:
+    return any(
+        _clean(str(options.get(key)))
+        for key in keys
+        if options.get(key) is not None
+    )
 
 
 def _env_credential_previews(

@@ -6,7 +6,12 @@ import pytest
 
 from apps.worker.modes import divergent
 from apps.worker.modes.base import ModeGraphState
-from libs.schemas.literature import LiteratureGateStatus, LiteratureSource
+from libs.schemas.literature import (
+    LiteratureCandidate,
+    LiteratureGateStatus,
+    LiteratureSearchReport,
+    LiteratureSource,
+)
 
 
 @pytest.mark.asyncio
@@ -434,3 +439,141 @@ async def test_prior_art_check_excludes_gated_cards_from_mixed_verifier_payload(
     assert cards["idea-beta"]["prior_art_check_status"] == "retrieval_failed"
     assert cards["idea-beta"]["prior_art_found"] is None
     assert set(updates["context_bundle"]["paper_verification"]) == {"S2:alpha"}
+
+
+@pytest.mark.asyncio
+async def test_prior_art_check_reuses_literature_coordinator_for_all_jobs(
+    monkeypatch,
+):
+    run_id = uuid4()
+    build_calls = 0
+
+    class FakeCoordinator:
+        def __init__(self) -> None:
+            self.closed = False
+            self.queries: list[str] = []
+
+        async def search(self, topic, queries, limit_per_query=50):
+            query_text = queries[0]["query"]
+            self.queries.append(query_text)
+            paper_id = "alpha" if "Alpha" in query_text else "beta"
+            return (
+                [
+                    LiteratureCandidate(
+                        candidate_id=f"S2:{paper_id}",
+                        title=f"{paper_id.title()} Prior Work",
+                        source=LiteratureSource.SEMANTIC_SCHOLAR,
+                        s2_id=paper_id,
+                    )
+                ],
+                LiteratureSearchReport(
+                    requested_sources=[LiteratureSource.SEMANTIC_SCHOLAR],
+                    enabled_sources=[LiteratureSource.SEMANTIC_SCHOLAR],
+                    contributing_sources=[LiteratureSource.SEMANTIC_SCHOLAR],
+                    contribution_counts={
+                        LiteratureSource.SEMANTIC_SCHOLAR.value: 1
+                    },
+                    source_errors=[],
+                    unavailable_sources={},
+                    candidate_count=1,
+                    gate_status=LiteratureGateStatus.PASS,
+                ),
+            )
+
+        async def close(self):
+            self.closed = True
+
+    coordinator = FakeCoordinator()
+
+    async def fake_build_literature_search_coordinator():
+        nonlocal build_calls
+        build_calls += 1
+        return coordinator
+
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_verify_paper_candidates_for_run(
+        run_id_arg,
+        candidate_ids,
+        title_map=None,
+        source=None,
+    ):
+        return {
+            candidate_id: {
+                "candidate_id": candidate_id,
+                "candidate_key": candidate_id.lower(),
+                "canonical_title": title_map[candidate_id],
+                "verification_status": "verified",
+                "source": source,
+            }
+            for candidate_id in candidate_ids
+        }
+
+    async def fake_generate_llm_json(*args, **kwargs):
+        return (
+            [
+                {
+                    "dedup_key": "idea-alpha",
+                    "idea_title": "Idea Alpha",
+                    "prior_art_found": False,
+                    "similar_works": [],
+                    "adjusted_novelty_score": 0.8,
+                },
+                {
+                    "dedup_key": "idea-beta",
+                    "idea_title": "Idea Beta",
+                    "prior_art_found": False,
+                    "similar_works": [],
+                    "adjusted_novelty_score": 0.8,
+                },
+            ],
+            0.01,
+            [],
+        )
+
+    monkeypatch.setattr(
+        divergent,
+        "_build_literature_search_coordinator",
+        fake_build_literature_search_coordinator,
+    )
+    monkeypatch.setattr(divergent, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(divergent, "get_gateway", lambda: object())
+    monkeypatch.setattr(
+        divergent,
+        "verify_paper_candidates_for_run",
+        fake_verify_paper_candidates_for_run,
+    )
+    monkeypatch.setattr(divergent, "generate_llm_json", fake_generate_llm_json)
+
+    state = ModeGraphState(
+        run_id=run_id,
+        topic="target task",
+        idea_cards=[
+            {
+                "id": "idea-alpha",
+                "title": "Idea Alpha",
+                "borrowed_method": "alpha method",
+                "dedup_key": "idea-alpha",
+            },
+            {
+                "id": "idea-beta",
+                "title": "Idea Beta",
+                "borrowed_method": "beta method",
+                "dedup_key": "idea-beta",
+            },
+        ],
+    )
+
+    updates = await divergent.prior_art_check(state)
+
+    assert build_calls == 1
+    assert coordinator.closed is True
+    assert coordinator.queries == [
+        "Idea Alpha alpha method",
+        "Idea Beta beta method",
+    ]
+    assert set(updates["context_bundle"]["paper_verification"]) == {
+        "S2:alpha",
+        "S2:beta",
+    }

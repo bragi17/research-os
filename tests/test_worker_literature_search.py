@@ -172,6 +172,59 @@ async def test_search_academic_sources_default_return_uses_legacy_ids(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_search_academic_sources_report_return_uses_verifiable_ids(monkeypatch):
+    coordinator = FakeCoordinator(
+        candidates=[
+            LiteratureCandidate(
+                candidate_id="ZOTERO:local",
+                title="DOI Paper",
+                source=LiteratureSource.ZOTERO,
+                doi="https://doi.org/10.1234/example",
+            ),
+            LiteratureCandidate(
+                candidate_id="OBSIDIAN:note.md",
+                title="Arxiv Paper",
+                source=LiteratureSource.OBSIDIAN,
+                arxiv_id="2401.12345v2",
+            ),
+            LiteratureCandidate(
+                candidate_id="LOCAL:no-external-id",
+                title="Local Paper",
+                source=LiteratureSource.LOCAL_LIBRARY,
+            ),
+        ]
+    )
+
+    async def fake_build_literature_search_coordinator():
+        return coordinator
+
+    monkeypatch.setattr(
+        base,
+        "_build_literature_search_coordinator",
+        fake_build_literature_search_coordinator,
+    )
+
+    new_candidates, _executed, _errors, title_map, report = await base.search_academic_sources(
+        topic="topic",
+        queries=[{"query": "query text"}],
+        return_report=True,
+    )
+
+    assert new_candidates == [
+        "10.1234/example",
+        "arxiv:2401.12345v2",
+        "LOCAL:no-external-id",
+    ]
+    assert title_map == {
+        "10.1234/example": "DOI Paper",
+        "arxiv:2401.12345v2": "Arxiv Paper",
+        "LOCAL:no-external-id": "Local Paper",
+    }
+    assert report is not None
+    assert coordinator.closed is True
+
+
+@pytest.mark.asyncio
 async def test_search_academic_sources_falls_back_when_settings_tables_missing(
     monkeypatch,
 ):
