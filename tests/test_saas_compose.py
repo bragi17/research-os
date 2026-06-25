@@ -147,7 +147,11 @@ def test_python_app_image_installs_docker_cli_for_gpu_worker() -> None:
     assert "README.md" in dockerfile
     assert dockerfile.index("README.md") < dockerfile.index("pip install --no-cache-dir .")
     assert "[tool.hatch.build.targets.wheel]" in pyproject
-    assert 'packages = ["apps", "libs"]' in pyproject
+    assert (
+        'packages = ["apps/api", "apps/worker", "libs/adapters", "libs/prompts", "libs/schemas"]'
+        in pyproject
+    )
+    assert 'packages = ["apps", "libs"]' not in pyproject
 
 
 def test_fresh_saas_migration_accepts_docker_gpu_jobs() -> None:
