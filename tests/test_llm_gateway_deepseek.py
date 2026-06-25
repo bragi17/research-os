@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -40,6 +41,23 @@ def _response(content: str, model: str = "deepseek-v4-pro") -> MagicMock:
     response.choices[0].message.tool_calls = None
     response.choices[0].finish_reason = "stop"
     return response
+
+
+def _workspace_profile(index: int) -> LLMProfile:
+    return LLMProfile(
+        id=f"profile-{index}",
+        workspace_id=f"00000000-0000-0000-0000-00000000000{index}",
+        provider="deepseek",
+        label="DeepSeek",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-pro",
+        api_key=f"test-secret-key-{index}",
+        api_key_preview=f"test****key-{index}",
+        is_key_set=True,
+        last_test_status=None,
+        last_test_error=None,
+        last_test_at=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -359,6 +377,31 @@ async def test_reset_gateway_async_closes_owned_async_clients(
 
 
 @pytest.mark.asyncio
+async def test_reset_gateway_async_attempts_all_client_closes_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_client = MagicMock()
+    first_client.aclose = AsyncMock(side_effect=RuntimeError("close failed secret"))
+    second_client = MagicMock()
+    second_client.aclose = AsyncMock()
+    gw = LLMGateway()
+    first_key = gw._profile_key(_workspace_profile(1))
+    second_key = gw._profile_key(_workspace_profile(2))
+    gw._clients[first_key] = first_client
+    gw._clients[second_key] = second_client
+
+    monkeypatch.setattr(llm_gateway_module, "_gateway", gw)
+
+    await llm_gateway_module.reset_gateway_async()
+
+    first_client.aclose.assert_awaited_once_with()
+    second_client.aclose.assert_awaited_once_with()
+    assert gw._clients == {}
+    assert gw._profile_usage == {}
+    assert llm_gateway_module._gateway is None
+
+
+@pytest.mark.asyncio
 async def test_profile_cache_evicts_least_recently_used_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -417,6 +460,107 @@ async def test_profile_cache_evicts_least_recently_used_profile(
     assert all(key[0] != first_key for key in gw._langchain_models)
     assert first_cache_key not in gw._cache
     assert len(gw._clients) == 2
+
+
+@pytest.mark.asyncio
+async def test_profile_cache_does_not_evict_active_raw_chat_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_GATEWAY_MAX_PROFILES", "2")
+    profiles = [_workspace_profile(index) for index in range(1, 5)]
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def wait_for_release(**_: object) -> MagicMock:
+        first_started.set()
+        await release_first.wait()
+        return _response("FIRST")
+
+    first_client = MagicMock()
+    first_client.aclose = AsyncMock()
+    first_client.chat.completions.create = AsyncMock(side_effect=wait_for_release)
+    other_clients = [MagicMock() for _ in range(3)]
+    for index, client in enumerate(other_clients, start=2):
+        client.aclose = AsyncMock()
+        client.chat.completions.create = AsyncMock(return_value=_response(f"R{index}"))
+    clients = [first_client, *other_clients]
+
+    with (
+        patch(
+            "apps.worker.llm_gateway.get_active_llm_profile",
+            AsyncMock(side_effect=profiles),
+        ),
+        patch("apps.worker.llm_gateway.AsyncOpenAI", side_effect=clients),
+    ):
+        gw = LLMGateway()
+        first_task = asyncio.create_task(
+            gw.chat([{"role": "user", "content": "first"}], use_cache=False)
+        )
+        await first_started.wait()
+
+        await gw.chat([{"role": "user", "content": "second"}], use_cache=False)
+        await gw.chat([{"role": "user", "content": "third"}], use_cache=False)
+
+        first_client.aclose.assert_not_called()
+        assert gw._profile_key(profiles[0]) in gw._clients
+
+        release_first.set()
+        assert (await first_task)["content"] == "FIRST"
+
+        await gw.chat([{"role": "user", "content": "fourth"}], use_cache=False)
+
+    first_client.aclose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_profile_cache_eviction_close_failure_still_cleans_profile_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_GATEWAY_MAX_PROFILES", "1")
+    profiles = [_workspace_profile(1), _workspace_profile(2)]
+    first_client = MagicMock()
+    first_client.aclose = AsyncMock(side_effect=RuntimeError("close failed secret"))
+    first_client.chat.completions.create = AsyncMock(return_value=_response("FIRST"))
+    second_client = MagicMock()
+    second_client.aclose = AsyncMock()
+    second_client.chat.completions.create = AsyncMock(return_value=_response("SECOND"))
+    messages = [{"role": "user", "content": "bounded cache"}]
+
+    with (
+        patch(
+            "apps.worker.llm_gateway.get_active_llm_profile",
+            AsyncMock(side_effect=profiles),
+        ),
+        patch(
+            "apps.worker.llm_gateway.AsyncOpenAI",
+            side_effect=[first_client, second_client],
+        ),
+        patch("apps.worker.llm_gateway.logger.warning") as log_warning,
+    ):
+        gw = LLMGateway()
+        first_key = gw._profile_key(profiles[0])
+        await gw.chat(messages, temperature=0, max_tokens=5)
+        first_cache_key = gw._get_cache_key(
+            profiles[0],
+            messages,
+            profiles[0].model,
+            0,
+            5,
+            None,
+            None,
+        )
+        gw._langchain_models[(first_key, "sentinel")] = MagicMock()
+
+        second = await gw.chat(messages, temperature=0, max_tokens=5)
+
+    assert second["content"] == "SECOND"
+    first_client.aclose.assert_awaited_once_with()
+    assert first_key not in gw._clients
+    assert first_key not in gw._profile_usage
+    assert all(key[0] != first_key for key in gw._langchain_models)
+    assert first_cache_key not in gw._cache
+    assert first_cache_key not in gw._cache_profiles
+    log_warning.assert_called()
 
 
 @pytest.mark.asyncio

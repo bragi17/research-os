@@ -214,8 +214,11 @@ async def _reset_llm_runtime() -> None:
         from apps.worker.llm_gateway import reset_gateway_async
 
         await reset_gateway_async()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "settings.llm_runtime_reset_failed",
+            error=redact_secret_text(str(exc))[:200],
+        )
 
 
 def _reset_embedding_runtime() -> None:

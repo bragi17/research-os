@@ -321,6 +321,44 @@ def test_put_llm_awaits_async_gateway_reset(
     reset_gateway_async.assert_awaited_once_with()
 
 
+def test_put_llm_logs_async_gateway_reset_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepository(_profile(label="Primary DeepSeek"))
+    reset_gateway_async = AsyncMock(
+        side_effect=RuntimeError("reset failed with api_key=test-secret-key")
+    )
+    log_warning = Mock()
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda *args, **kwargs: repo,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "apps.worker.llm_gateway.reset_gateway_async",
+        reset_gateway_async,
+    )
+    monkeypatch.setattr(routes_settings.logger, "warning", log_warning)
+
+    response = _client().put(
+        "/api/v1/settings/llm",
+        json={
+            "label": "Primary DeepSeek",
+            "base_url": DEFAULT_DEEPSEEK_BASE_URL,
+            "model": DEFAULT_DEEPSEEK_MODEL,
+            "api_key": "test-secret-key",
+        },
+    )
+
+    assert response.status_code == 200
+    reset_gateway_async.assert_awaited_once_with()
+    log_warning.assert_called_once()
+    assert log_warning.call_args.args[0] == "settings.llm_runtime_reset_failed"
+    assert "test-secret-key" not in log_warning.call_args.kwargs["error"]
+    assert "[redacted]" in log_warning.call_args.kwargs["error"]
+
+
 def test_put_llm_missing_credential_encryption_key_returns_configuration_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
