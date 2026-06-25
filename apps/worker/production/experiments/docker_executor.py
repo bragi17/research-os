@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,10 @@ from apps.worker.production.experiments.local_executor import (
     _terminate_process_group,
     looks_like_oom_failure,
 )
+
+
+DOCKER_CLEANUP_TIMEOUT_SEC = 10
+SAFE_CONTAINER_NAME_CHAR = re.compile(r"[^A-Za-z0-9_.-]")
 
 
 @dataclass(frozen=True)
@@ -42,20 +47,49 @@ def _resolve_inside_workspace(workspace_root: Path, relative: Path, field_name: 
     return candidate
 
 
+def _container_name(job_id: str) -> str:
+    return f"research-os-job-{SAFE_CONTAINER_NAME_CHAR.sub('-', job_id)}"
+
+
+def _resolve_expected_outputs(
+    workspace_root: Path,
+    cwd: Path,
+    outputs: list[Path],
+) -> tuple[list[Path], list[Path]]:
+    resolved_workspace_root = workspace_root.resolve()
+    resolved_outputs: list[Path] = []
+    invalid_outputs: list[Path] = []
+
+    for output in outputs:
+        if output.is_absolute() or ".." in output.parts:
+            invalid_outputs.append(output)
+            continue
+
+        candidate = (cwd / output).resolve()
+        try:
+            candidate.relative_to(resolved_workspace_root)
+        except ValueError:
+            invalid_outputs.append(output)
+            continue
+        resolved_outputs.append(candidate)
+
+    return resolved_outputs, invalid_outputs
+
+
 def build_docker_run_argv(spec: DockerJobSpec) -> list[str]:
+    if spec.gpu_count < 1:
+        raise ValueError("gpu_count must be at least 1")
+
     workspace_root = spec.workspace_root.resolve()
     cwd = _resolve_inside_workspace(workspace_root, spec.cwd, "cwd")
-    gpu_value = (
-        "all"
-        if spec.gpu_count < 1
-        else f"device={','.join(str(i) for i in range(spec.gpu_count))}"
-    )
     return [
         "docker",
         "run",
         "--rm",
+        "--name",
+        _container_name(spec.job_id),
         "--gpus",
-        gpu_value,
+        str(spec.gpu_count),
         "--network",
         spec.network,
         "--memory",
@@ -79,12 +113,29 @@ class DockerExperimentExecutor:
         stdout_log = spec.log_dir / "stdout.log"
         stderr_log = spec.log_dir / "stderr.log"
         started_at = time.monotonic()
-        argv = build_docker_run_argv(spec)
+        workspace_root = spec.workspace_root.resolve()
+        cwd = _resolve_inside_workspace(workspace_root, spec.cwd, "cwd")
 
-        expected_outputs = [
-            _resolve_inside_workspace(spec.workspace_root, output, "expected_outputs_json")
-            for output in spec.expected_outputs
-        ]
+        expected_outputs, invalid_expected_outputs = _resolve_expected_outputs(
+            workspace_root,
+            cwd,
+            spec.expected_outputs,
+        )
+        if invalid_expected_outputs:
+            return _build_result(
+                spec=spec,
+                status="failed",
+                returncode=None,
+                stdout_log=stdout_log,
+                stderr_log=stderr_log,
+                expected_outputs_found=[],
+                missing_expected_outputs=invalid_expected_outputs,
+                failure_reason="invalid_expected_outputs",
+                started_at=started_at,
+            )
+
+        argv = build_docker_run_argv(spec)
+        container_name = _container_name(spec.job_id)
 
         status = "completed"
         failure_reason: str | None = None
@@ -101,11 +152,13 @@ class DockerExperimentExecutor:
                 returncode = await asyncio.wait_for(process.wait(), timeout=spec.timeout_sec)
             except asyncio.TimeoutError:
                 await _terminate_process_group(process)
+                await _cleanup_container(container_name)
                 returncode = process.returncode
                 status = "timeout"
                 failure_reason = "timeout"
             except asyncio.CancelledError:
                 await _terminate_process_group(process)
+                await _cleanup_container(container_name)
                 raise
 
         expected_outputs_found: list[Path] = []
@@ -136,3 +189,19 @@ class DockerExperimentExecutor:
             failure_reason=failure_reason,
             started_at=started_at,
         )
+
+
+async def _cleanup_container(container_name: str) -> None:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "docker",
+            "rm",
+            "-f",
+            container_name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        await asyncio.wait_for(process.wait(), timeout=DOCKER_CLEANUP_TIMEOUT_SEC)
+    except (OSError, asyncio.TimeoutError):
+        return

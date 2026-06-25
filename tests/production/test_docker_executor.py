@@ -76,11 +76,29 @@ def test_build_docker_run_argv_uses_gpu_workspace_limits_and_network_none(tmp_pa
 
     assert argv[:3] == ["docker", "run", "--rm"]
     assert "--gpus" in argv
-    assert "device=0" in argv
+    assert argv[argv.index("--gpus") + 1] == "1"
+    assert "device=0" not in argv
+    assert "--name" in argv
+    assert argv[argv.index("--name") + 1] == "research-os-job-job-1"
     assert "--network" in argv
     assert "none" in argv
     assert str(workspace) + ":/workspace:rw" in argv
     assert argv[-3:] == ["/bin/bash", "-lc", "python train.py"]
+
+
+def test_build_docker_run_argv_rejects_zero_gpu_count(tmp_path: Path) -> None:
+    spec = _job_spec(tmp_path, gpu_count=0)
+
+    with pytest.raises(ValueError, match="gpu_count must be at least 1"):
+        build_docker_run_argv(spec)
+
+
+def test_build_docker_run_argv_uses_safe_container_name(tmp_path: Path) -> None:
+    spec = _job_spec(tmp_path, job_id="tenant/../job:1")
+
+    argv = build_docker_run_argv(spec)
+
+    assert argv[argv.index("--name") + 1] == "research-os-job-tenant-..-job-1"
 
 
 def test_build_docker_run_argv_rejects_cwd_escape(tmp_path: Path) -> None:
@@ -120,7 +138,9 @@ async def test_docker_executor_runs_docker_with_logs_and_expected_outputs(
             stdout.write(b"docker stdout\n")
         if stderr is not None:
             stderr.write(b"docker stderr\n")
-        (tmp_path / "workspace" / "metrics.json").write_text("{}", encoding="utf-8")
+        metrics = tmp_path / "workspace" / "experiments" / "smoke" / "metrics.json"
+        metrics.parent.mkdir(parents=True, exist_ok=True)
+        metrics.write_text("{}", encoding="utf-8")
         return FakeDockerProcess(0)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
@@ -133,9 +153,37 @@ async def test_docker_executor_runs_docker_with_logs_and_expected_outputs(
     assert result.failure_reason is None
     assert result.stdout_log.read_text() == "docker stdout\n"
     assert result.stderr_log.read_text() == "docker stderr\n"
-    assert result.expected_outputs_found == [tmp_path / "workspace" / "metrics.json"]
+    assert result.expected_outputs_found == [
+        tmp_path / "workspace" / "experiments" / "smoke" / "metrics.json"
+    ]
     assert result.missing_expected_outputs == []
     assert calls[0] == tuple(build_docker_run_argv(spec))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expected_output", [Path("/tmp/metrics.json"), Path("../metrics.json")])
+async def test_docker_executor_returns_failed_for_invalid_expected_outputs_without_process_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    expected_output: Path,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> FakeDockerProcess:
+        calls.append(tuple(argv))
+        return FakeDockerProcess(0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    spec = _job_spec(tmp_path, expected_outputs=[expected_output])
+    result = await DockerExperimentExecutor().run(spec)
+
+    assert result.status == "failed"
+    assert result.returncode is None
+    assert result.failure_reason == "invalid_expected_outputs"
+    assert result.expected_outputs_found == []
+    assert result.missing_expected_outputs == [expected_output]
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -143,14 +191,18 @@ async def test_docker_executor_times_out_and_terminates_process_group(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    calls: list[tuple[str, ...]] = []
     kill_calls: list[tuple[int, signal.Signals]] = []
 
-    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> HangingDockerProcess:
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> Any:
+        calls.append(tuple(argv))
+        if argv[:3] == ("docker", "rm", "-f"):
+            return FakeDockerProcess(0)
         return HangingDockerProcess()
 
     async def fake_wait_for(awaitable: Any, timeout: float) -> Any:
         awaitable.close()
-        if timeout == 2:
+        if timeout in (2, 10):
             return 143
         raise asyncio.TimeoutError
 
@@ -164,6 +216,41 @@ async def test_docker_executor_times_out_and_terminates_process_group(
     assert result.status == "timeout"
     assert result.failure_reason == "timeout"
     assert kill_calls == [(4321, signal.SIGTERM)]
+    assert calls[-1] == ("docker", "rm", "-f", "research-os-job-job-1")
+
+
+@pytest.mark.asyncio
+async def test_docker_executor_attempts_container_cleanup_on_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    kill_calls: list[tuple[int, signal.Signals]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> Any:
+        calls.append(tuple(argv))
+        if argv[:3] == ("docker", "rm", "-f"):
+            return FakeDockerProcess(0)
+        return HangingDockerProcess()
+
+    async def fake_wait_for(awaitable: Any, timeout: float) -> Any:
+        awaitable.close()
+        if timeout == 2:
+            return 143
+        if timeout == 10:
+            return 0
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr("os.killpg", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    spec = _job_spec(tmp_path, expected_outputs=[])
+    with pytest.raises(asyncio.CancelledError):
+        await DockerExperimentExecutor().run(spec)
+
+    assert kill_calls == [(4321, signal.SIGTERM)]
+    assert calls[-1] == ("docker", "rm", "-f", "research-os-job-job-1")
 
 
 @pytest.mark.asyncio
