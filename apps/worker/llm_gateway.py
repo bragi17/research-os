@@ -508,7 +508,7 @@ class LLMGateway:
         except Exception as e:
             logger.debug(
                 "structured_output_fallback",
-                error=str(e)[:100],
+                error_type=type(e).__name__,
                 reason="falling back to prompt-based JSON",
             )
 

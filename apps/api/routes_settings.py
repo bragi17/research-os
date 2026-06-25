@@ -217,7 +217,8 @@ async def _reset_llm_runtime() -> None:
     except Exception as exc:
         logger.warning(
             "settings.llm_runtime_reset_failed",
-            error=redact_secret_text(str(exc))[:200],
+            error_type=type(exc).__name__,
+            message="LLM runtime reset failed",
         )
 
 

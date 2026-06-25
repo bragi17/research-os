@@ -151,8 +151,11 @@ async def test_get_active_llm_profile_requested_with_secret() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_json_uses_one_prompt_fallback_when_structured_output_fails() -> None:
+    api_key = "test-secret-key-1"
     structured_llm = MagicMock()
-    structured_llm.ainvoke = AsyncMock(side_effect=RuntimeError("structured failed"))
+    structured_llm.ainvoke = AsyncMock(
+        side_effect=RuntimeError(f"structured failed for {api_key}")
+    )
     langchain_model = MagicMock()
     langchain_model.with_structured_output.return_value = structured_llm
 
@@ -162,6 +165,7 @@ async def test_chat_json_uses_one_prompt_fallback_when_structured_output_fails()
             AsyncMock(return_value=_profile()),
         ),
         patch("apps.worker.llm_gateway.ChatOpenAI", return_value=langchain_model),
+        patch("apps.worker.llm_gateway.logger.debug") as log_debug,
     ):
         gw = LLMGateway()
         gw.chat = AsyncMock(  # type: ignore[method-assign]
@@ -171,6 +175,8 @@ async def test_chat_json_uses_one_prompt_fallback_when_structured_output_fails()
             await gw.chat_json([{"role": "user", "content": "Return JSON"}])
 
     assert gw.chat.await_count == 1
+    assert log_debug.call_args.args[0] == "structured_output_fallback"
+    assert api_key not in str(log_debug.call_args.kwargs)
 
 
 @pytest.mark.parametrize(

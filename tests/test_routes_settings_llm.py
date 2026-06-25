@@ -324,9 +324,10 @@ def test_put_llm_awaits_async_gateway_reset(
 def test_put_llm_logs_async_gateway_reset_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    api_key = "test-secret-key-1"
     repo = FakeRepository(_profile(label="Primary DeepSeek"))
     reset_gateway_async = AsyncMock(
-        side_effect=RuntimeError("reset failed with api_key=test-secret-key")
+        side_effect=RuntimeError(f"reset failed for {api_key}")
     )
     log_warning = Mock()
     monkeypatch.setattr(
@@ -352,11 +353,11 @@ def test_put_llm_logs_async_gateway_reset_failure(
     )
 
     assert response.status_code == 200
+    assert api_key not in response.text
     reset_gateway_async.assert_awaited_once_with()
     log_warning.assert_called_once()
     assert log_warning.call_args.args[0] == "settings.llm_runtime_reset_failed"
-    assert "test-secret-key" not in log_warning.call_args.kwargs["error"]
-    assert "[redacted]" in log_warning.call_args.kwargs["error"]
+    assert api_key not in str(log_warning.call_args.kwargs)
 
 
 def test_put_llm_missing_credential_encryption_key_returns_configuration_error(
