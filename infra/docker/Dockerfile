@@ -13,7 +13,7 @@ WORKDIR /app
 # ---------- dependencies ----------
 FROM base AS deps
 
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 RUN pip install --no-cache-dir . || \
     pip install --no-cache-dir -e .
 

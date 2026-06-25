@@ -141,8 +141,19 @@ def test_saas_compose_web_routes_api_to_internal_service() -> None:
 
 def test_python_app_image_installs_docker_cli_for_gpu_worker() -> None:
     dockerfile = (ROOT / "infra/docker/Dockerfile").read_text()
+    pyproject = (ROOT / "pyproject.toml").read_text()
 
     assert "docker.io" in dockerfile
+    assert "README.md" in dockerfile
+    assert dockerfile.index("README.md") < dockerfile.index("pip install --no-cache-dir .")
+    assert "[tool.hatch.build.targets.wheel]" in pyproject
+    assert 'packages = ["apps", "libs"]' in pyproject
+
+
+def test_fresh_saas_migration_accepts_docker_gpu_jobs() -> None:
+    migration = (ROOT / "scripts/migration/008_research_production.sql").read_text()
+
+    assert "CHECK (executor_type IN ('local', 'ssh', 'docker_gpu'))" in migration
 
 
 def test_saas_env_example_requires_secrets() -> None:
