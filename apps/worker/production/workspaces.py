@@ -79,8 +79,13 @@ def resolve_path_reference(
     return candidate
 
 
-def _default_workspace_path(project_id: UUID, run_id: UUID | None = None) -> Path:
-    path = workspace_base() / "projects" / str(project_id)
+def _default_workspace_path(
+    project_id: UUID,
+    workspace_id: UUID | None = None,
+    run_id: UUID | None = None,
+) -> Path:
+    workspace_segment = str(workspace_id) if workspace_id is not None else "legacy"
+    path = workspace_base() / "workspaces" / workspace_segment / "projects" / str(project_id)
     if run_id is not None:
         path = path / "runs" / str(run_id)
     return path
@@ -99,7 +104,11 @@ def resolve_project_workspace_path(
         raw = Path(str(configured)).expanduser()
         candidate = raw.resolve() if raw.is_absolute() else (base / _safe_relative_path(raw, field_name="default_workspace_path")).resolve()
     else:
-        candidate = _default_workspace_path(project["id"], run_id=run_id).resolve()
+        candidate = _default_workspace_path(
+            project["id"],
+            workspace_id=project.get("workspace_id"),
+            run_id=run_id,
+        ).resolve()
     if not _is_relative_to(candidate, base):
         raise ValueError("default_workspace_path escapes workspace root")
     candidate.mkdir(parents=True, exist_ok=True)

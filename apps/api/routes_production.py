@@ -207,6 +207,11 @@ async def _project_for_access(project_id: UUID, user: dict[str, Any]) -> dict[st
     project = await db.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    workspace_id = project.get("workspace_id")
+    if workspace_id is not None:
+        if _same_id(workspace_id, user["workspace_id"]):
+            return project
+        raise HTTPException(status_code=403, detail="Project access denied")
     owner_user_id = project.get("owner_user_id")
     if owner_user_id is None or not _same_id(owner_user_id, user["id"]):
         raise HTTPException(status_code=403, detail="Project access denied")
@@ -475,6 +480,7 @@ async def create_project(
 ) -> dict[str, Any]:
     payload = _payload(request)
     payload["owner_user_id"] = user["id"]
+    payload["workspace_id"] = user["workspace_id"]
     return await db.create_project(payload)
 
 
@@ -487,7 +493,7 @@ async def list_projects(
 ) -> list[dict[str, Any]]:
     return await db.list_projects(
         status=status,
-        owner_user_id=user["id"],
+        workspace_id=user["workspace_id"],
         limit=limit,
         offset=offset,
     )

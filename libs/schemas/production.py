@@ -302,6 +302,7 @@ class ProjectCreate(BaseModel):
     primary_topic: NonBlankStr
     status: ProjectStatus = ProjectStatus.ACTIVE
     owner_user_id: UUID | None = None
+    workspace_id: UUID | None = None
     default_library_pool_ids: list[UUID] = Field(default_factory=list)
     default_workspace_path: str | None = None
     metadata_json: dict[str, Any] = Field(default_factory=dict)

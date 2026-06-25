@@ -145,7 +145,31 @@ async def test_create_project_route_calls_db_helper(monkeypatch: pytest.MonkeyPa
     assert payload["title"] == "Durable project"
     assert payload["status"] == "active"
     assert payload["owner_user_id"] == TEST_USER_ID
+    assert payload["workspace_id"] == TEST_USER["workspace_id"]
     assert result["id"] == project_id
+
+
+@pytest.mark.asyncio
+async def test_list_projects_route_filters_by_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apps.api.routes_production as routes_production
+
+    list_projects = AsyncMock(return_value=[])
+    monkeypatch.setattr(routes_production.db, "list_projects", list_projects)
+
+    result = await routes_production.list_projects(
+        status="active",
+        limit=10,
+        offset=5,
+        user=TEST_USER,
+    )
+
+    list_projects.assert_awaited_once_with(
+        status="active",
+        workspace_id=TEST_USER["workspace_id"],
+        limit=10,
+        offset=5,
+    )
+    assert result == []
 
 
 @pytest.mark.asyncio

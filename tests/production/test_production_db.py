@@ -32,11 +32,13 @@ def _patch_get_pool(mock_pool: AsyncMock):
 async def test_create_project_inserts_core_project_fields(mock_pool: AsyncMock) -> None:
     project_id = uuid4()
     owner_user_id = uuid4()
+    workspace_id = uuid4()
     mock_pool.fetchrow.return_value = FakeRecord({
         "id": project_id,
         "title": "Durable project",
         "primary_topic": "automatic research",
         "owner_user_id": owner_user_id,
+        "workspace_id": workspace_id,
     })
 
     from apps.api.database import create_project
@@ -46,6 +48,7 @@ async def test_create_project_inserts_core_project_fields(mock_pool: AsyncMock) 
         "description": "Production workspace",
         "primary_topic": "automatic research",
         "owner_user_id": owner_user_id,
+        "workspace_id": workspace_id,
         "metadata_json": {"priority": "high"},
     })
 
@@ -56,6 +59,7 @@ async def test_create_project_inserts_core_project_fields(mock_pool: AsyncMock) 
     assert "description" in sql
     assert "primary_topic" in sql
     assert "owner_user_id" in sql
+    assert "workspace_id" in sql
     assert "metadata_json" in sql
     assert result["id"] == project_id
 
@@ -71,6 +75,46 @@ async def test_create_project_requires_owner_user_id(mock_pool: AsyncMock) -> No
         })
 
     mock_pool.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_project_requires_workspace_id(mock_pool: AsyncMock) -> None:
+    from apps.api.database import create_project
+
+    with pytest.raises(ValueError, match="workspace_id is required for production projects"):
+        await create_project({
+            "title": "Durable project",
+            "primary_topic": "automatic research",
+            "owner_user_id": uuid4(),
+        })
+
+    mock_pool.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_projects_filters_by_workspace(mock_pool: AsyncMock) -> None:
+    workspace_id = uuid4()
+    project_id = uuid4()
+    mock_pool.fetch.return_value = [
+        FakeRecord({
+            "id": project_id,
+            "workspace_id": workspace_id,
+            "title": "Durable project",
+        })
+    ]
+
+    from apps.api.database import list_projects
+
+    result = await list_projects(status="active", workspace_id=workspace_id, limit=10, offset=5)
+
+    sql = mock_pool.fetch.call_args.args[0]
+    args = mock_pool.fetch.call_args.args[1:]
+    assert "FROM research_project" in sql
+    assert "status = $1" in sql
+    assert "workspace_id = $2" in sql
+    assert "LIMIT $3 OFFSET $4" in sql
+    assert args == ("active", workspace_id, 10, 5)
+    assert result[0]["id"] == project_id
 
 
 @pytest.mark.asyncio

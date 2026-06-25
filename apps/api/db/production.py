@@ -133,6 +133,7 @@ PROJECT_COLUMNS = (
     "primary_topic",
     "status",
     "owner_user_id",
+    "workspace_id",
     "default_library_pool_ids",
     "default_workspace_path",
     "metadata_json",
@@ -143,6 +144,7 @@ async def create_project(project_data: dict[str, Any]) -> dict[str, Any]:
     data = {
         "description": None,
         "status": "active",
+        "workspace_id": None,
         "default_library_pool_ids": [],
         "default_workspace_path": None,
         "metadata_json": {},
@@ -150,6 +152,8 @@ async def create_project(project_data: dict[str, Any]) -> dict[str, Any]:
     }
     if data.get("owner_user_id") is None:
         raise ValueError("owner_user_id is required for production projects")
+    if data.get("workspace_id") is None:
+        raise ValueError("workspace_id is required for production projects")
     return await _insert("research_project", PROJECT_COLUMNS, data)
 
 
@@ -160,6 +164,7 @@ async def get_project(project_id: UUID) -> dict[str, Any] | None:
 async def list_projects(
     status: str | None = None,
     owner_user_id: UUID | None = None,
+    workspace_id: UUID | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -168,6 +173,8 @@ async def list_projects(
         filters["status"] = status
     if owner_user_id is not None:
         filters["owner_user_id"] = owner_user_id
+    if workspace_id is not None:
+        filters["workspace_id"] = workspace_id
     return await _list("research_project", filters=filters, limit=limit, offset=offset)
 
 
