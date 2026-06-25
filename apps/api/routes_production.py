@@ -881,6 +881,8 @@ async def patch_experiment_job(
         raise HTTPException(status_code=400, detail="remote_host_id is required for ssh jobs")
     effective_metrics = updates.get("metrics_json", existing.get("metrics_json") or {})
     if executor_type == "docker_gpu":
+        if "metrics_json" in updates and updates["metrics_json"] is None:
+            raise HTTPException(status_code=400, detail="docker metrics_json cannot be null")
         try:
             validate_docker_job_metrics(effective_metrics, require_all=True)
         except ValueError as exc:

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
@@ -864,6 +864,84 @@ async def test_patch_experiment_job_rejects_unsafe_docker_metrics_with_existing_
             user=TEST_USER,
         )
 
+    update_experiment_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_experiment_job_rejects_null_metrics_for_explicit_docker_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.routes_production as routes_production
+
+    job_id = uuid4()
+    project_id = uuid4()
+    existing_job = {
+        "id": job_id,
+        "project_id": project_id,
+        "executor_type": "local",
+        "remote_host_id": None,
+        "metrics_json": {"memory": "avg_peak_by_phase"},
+    }
+    update_experiment_job = AsyncMock(return_value={})
+    monkeypatch.setattr(routes_production.db, "get_experiment_job", AsyncMock(return_value=existing_job))
+    monkeypatch.setattr(
+        routes_production.db,
+        "get_project",
+        AsyncMock(return_value={"id": project_id, "owner_user_id": TEST_USER_ID}),
+    )
+    monkeypatch.setattr(routes_production.db, "update_experiment_job", update_experiment_job)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await routes_production.patch_experiment_job(
+            job_id,
+            ExperimentJobPatch(executor_type="docker_gpu", metrics_json=None),
+            user=TEST_USER,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "metrics_json" in str(exc_info.value.detail)
+    update_experiment_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_experiment_job_rejects_null_metrics_for_existing_docker_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.routes_production as routes_production
+
+    job_id = uuid4()
+    project_id = uuid4()
+    existing_job = {
+        "id": job_id,
+        "project_id": project_id,
+        "executor_type": "docker_gpu",
+        "remote_host_id": None,
+        "metrics_json": {
+            "gpu_count": 1,
+            "job_image": "research-os-job-runtime:latest",
+            "memory": "16g",
+            "cpus": "4",
+            "network": "none",
+        },
+    }
+    update_experiment_job = AsyncMock(return_value={})
+    monkeypatch.setattr(routes_production.db, "get_experiment_job", AsyncMock(return_value=existing_job))
+    monkeypatch.setattr(
+        routes_production.db,
+        "get_project",
+        AsyncMock(return_value={"id": project_id, "owner_user_id": TEST_USER_ID}),
+    )
+    monkeypatch.setattr(routes_production.db, "update_experiment_job", update_experiment_job)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await routes_production.patch_experiment_job(
+            job_id,
+            ExperimentJobPatch(metrics_json=None),
+            user=TEST_USER,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "metrics_json" in str(exc_info.value.detail)
     update_experiment_job.assert_not_awaited()
 
 
