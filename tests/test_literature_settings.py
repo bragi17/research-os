@@ -137,6 +137,36 @@ class FakePool:
         )
 
 
+class FakeTransaction:
+    def __init__(self, pool: "DirectTransactionalFakePool") -> None:
+        self.pool = pool
+
+    async def __aenter__(self) -> None:
+        self.pool.transaction_entries += 1
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: Any,
+    ) -> None:
+        return None
+
+
+class DirectTransactionalFakePool(FakePool):
+    def __init__(
+        self,
+        *,
+        settings: Iterable[dict[str, Any]] | None = None,
+        credentials: Iterable[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(settings=settings, credentials=credentials)
+        self.transaction_entries = 0
+
+    def transaction(self) -> FakeTransaction:
+        return FakeTransaction(self)
+
+
 @pytest.mark.asyncio
 async def test_env_bootstrap_for_s2_and_openalex_hides_plaintext(
     monkeypatch: pytest.MonkeyPatch,
@@ -382,6 +412,32 @@ async def test_update_source_encrypts_inserts_clears_and_hides_plaintext(
     assert plaintext not in inserted_credential[3]
     assert plaintext not in pool.captured_arguments()
     assert plaintext not in repr(updated.model_dump(mode="json"))
+
+
+@pytest.mark.asyncio
+async def test_update_source_uses_direct_executor_transaction() -> None:
+    pool = DirectTransactionalFakePool(
+        settings=[
+            _setting_row(
+                LiteratureSource.WEB_SEARCH,
+                enabled=False,
+                options_json={"provider": "exa"},
+            )
+        ]
+    )
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    updated = await repo.update_source(
+        LiteratureSource.WEB_SEARCH,
+        enabled=True,
+        options={"provider": "tavily"},
+        new_credentials=[],
+        clear_credential_ids=[],
+    )
+
+    assert updated.enabled is True
+    assert updated.options == {"provider": "tavily"}
+    assert pool.transaction_entries == 1
 
 
 @pytest.mark.asyncio

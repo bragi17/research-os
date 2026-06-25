@@ -372,6 +372,19 @@ class LiteratureSettingsRepository:
                 )
                 return
 
+        transaction = getattr(pool, "transaction", None)
+        if callable(transaction):
+            async with transaction():
+                await self._write_source_update_on(
+                    pool,
+                    source,
+                    enabled=enabled,
+                    options=options,
+                    clear_ids=clear_ids,
+                    new_credentials=new_credentials,
+                )
+                return
+
         await self._write_source_update_on(
             pool,
             source,
