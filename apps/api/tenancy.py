@@ -7,8 +7,21 @@ from uuid import UUID
 from fastapi import HTTPException
 
 
+def _canonical_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        return str(value)
+
+
 def same_id(left: Any, right: Any) -> bool:
-    return str(left) == str(right)
+    left_id = _canonical_id(left)
+    right_id = _canonical_id(right)
+    if left_id is None or right_id is None:
+        return False
+    return left_id == right_id
 
 
 @dataclass(frozen=True)
@@ -23,11 +36,17 @@ class WorkspaceContext:
         user_id = user.get("id")
         if workspace_id is None or user_id is None:
             raise HTTPException(status_code=403, detail="Workspace membership required")
-        return cls(
-            user_id=UUID(str(user_id)),
-            workspace_id=UUID(str(workspace_id)),
-            role=str(user.get("role") or "research_user"),
-        )
+        try:
+            return cls(
+                user_id=UUID(str(user_id)),
+                workspace_id=UUID(str(workspace_id)),
+                role=str(user.get("role") or "research_user"),
+            )
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise HTTPException(
+                status_code=403,
+                detail="Workspace membership required",
+            ) from exc
 
 
 def require_same_workspace(

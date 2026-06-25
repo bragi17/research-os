@@ -15,6 +15,12 @@ def test_same_id_compares_uuid_and_string_values() -> None:
     assert same_id(value, uuid4()) is False
 
 
+def test_same_id_compares_uuid_strings_case_insensitively() -> None:
+    value = uuid4()
+
+    assert same_id(value, str(value).upper()) is True
+
+
 def test_workspace_context_from_user_requires_workspace_id() -> None:
     user_id = uuid4()
 
@@ -32,6 +38,29 @@ def test_workspace_context_from_user_requires_workspace_id() -> None:
 def test_workspace_context_from_user_rejects_missing_workspace_id() -> None:
     with pytest.raises(HTTPException) as exc:
         WorkspaceContext.from_user({"id": uuid4(), "role": "research_user"})
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Workspace membership required"
+
+
+def test_workspace_context_from_user_rejects_missing_user_id() -> None:
+    with pytest.raises(HTTPException) as exc:
+        WorkspaceContext.from_user({"workspace_id": uuid4(), "role": "research_user"})
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Workspace membership required"
+
+
+@pytest.mark.parametrize(
+    "user",
+    [
+        {"id": "not-a-uuid", "workspace_id": uuid4(), "role": "research_user"},
+        {"id": uuid4(), "workspace_id": "not-a-uuid", "role": "research_user"},
+    ],
+)
+def test_workspace_context_from_user_rejects_malformed_ids(user: dict[str, object]) -> None:
+    with pytest.raises(HTTPException) as exc:
+        WorkspaceContext.from_user(user)
 
     assert exc.value.status_code == 403
     assert exc.value.detail == "Workspace membership required"
