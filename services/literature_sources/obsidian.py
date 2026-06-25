@@ -50,16 +50,17 @@ class ObsidianSource:
                 continue
             doi = metadata.get("doi") or first_doi(text)
             arxiv_id = metadata.get("arxiv") or metadata.get("arxiv_id") or first_arxiv_id(text)
+            relative_path = note.relative_to(path)
             candidates.append(
                 LiteratureCandidate(
-                    candidate_id=f"OBSIDIAN:{note.relative_to(path)}",
+                    candidate_id=f"OBSIDIAN:{relative_path}",
                     title=title,
                     source=self.source,
                     doi=str(doi).strip() if doi else None,
                     arxiv_id=str(arxiv_id).strip() if arxiv_id else None,
                     year=parse_year(metadata.get("year") or metadata.get("date")),
                     url=str(metadata["url"]).strip() if metadata.get("url") else None,
-                    raw=compact_raw({"path": str(note), "metadata": metadata}),
+                    raw=compact_raw({"path": str(relative_path), "metadata": metadata}),
                 )
             )
             if len(candidates) >= limit:

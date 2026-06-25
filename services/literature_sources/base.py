@@ -26,9 +26,13 @@ def normalize_title_key(title: str | None) -> str:
 
 def candidate_key(candidate: LiteratureCandidate) -> str:
     if candidate.doi:
-        return f"doi:{candidate.doi.casefold()}"
+        doi = normalize_doi(candidate.doi)
+        if doi:
+            return f"doi:{doi}"
     if candidate.arxiv_id:
-        return f"arxiv:{candidate.arxiv_id.casefold()}"
+        arxiv_id = normalize_arxiv_id(candidate.arxiv_id)
+        if arxiv_id:
+            return f"arxiv:{arxiv_id}"
     if candidate.s2_id:
         return f"s2:{candidate.s2_id}"
     if candidate.openalex_id:
@@ -41,6 +45,27 @@ def parse_year(value: object) -> int | None:
         return None
     match = re.search(r"(19|20)\d{2}", str(value))
     return int(match.group(0)) if match else None
+
+
+def normalize_doi(value: str | None) -> str:
+    doi = (value or "").strip().casefold()
+    for prefix in (
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://dx.doi.org/",
+        "http://dx.doi.org/",
+    ):
+        if doi.startswith(prefix):
+            doi = doi.removeprefix(prefix)
+            break
+    return doi.strip().rstrip(".,;)")
+
+
+def normalize_arxiv_id(value: str | None) -> str:
+    arxiv_id = (value or "").strip().casefold()
+    if arxiv_id.startswith("arxiv:"):
+        arxiv_id = arxiv_id.removeprefix("arxiv:").strip()
+    return re.sub(r"v\d+\Z", "", arxiv_id)
 
 
 def query_tokens(query: str) -> set[str]:

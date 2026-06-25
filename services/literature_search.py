@@ -10,6 +10,7 @@ from libs.schemas.literature import (
     LiteratureGateStatus,
     LiteratureSearchReport,
     LiteratureSource,
+    LiteratureSourceError,
 )
 from services.literature_sources.base import LiteratureSourceAdapter, candidate_key
 
@@ -27,7 +28,7 @@ class LiteratureSearchCoordinator:
         requested = [source.source for source in self.sources]
         candidates: list[LiteratureCandidate] = []
         seen: set[str] = set()
-        errors = []
+        errors: list[LiteratureSourceError] = []
         unavailable: dict[str, str] = {}
         counts = {source.value: 0 for source in requested}
 
@@ -36,7 +37,11 @@ class LiteratureSearchCoordinator:
             if not query_text:
                 continue
             for source in self.sources:
-                result = await source.search(query_text, limit=limit_per_query)
+                try:
+                    result = await source.search(query_text, limit=limit_per_query)
+                except Exception as exc:
+                    errors.append(self._exception_error(source.source, query_text, exc))
+                    continue
                 if result.unavailable_reason:
                     unavailable[source.source.value] = result.unavailable_reason
                 errors.extend(result.errors)
@@ -65,13 +70,25 @@ class LiteratureSearchCoordinator:
             gate_status=gate_status,
         )
 
+    async def close(self) -> None:
+        for source in self.sources:
+            close = getattr(source, "close", None)
+            if close is not None:
+                await close()
+
+    async def __aenter__(self) -> "LiteratureSearchCoordinator":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        await self.close()
+
     def _gate_status(
         self,
         candidates: list[LiteratureCandidate],
-        errors: list[object],
+        errors: list[LiteratureSourceError],
         unavailable: dict[str, str],
     ) -> LiteratureGateStatus:
-        if candidates and errors:
+        if candidates and (errors or unavailable):
             return LiteratureGateStatus.WARN
         if candidates:
             return LiteratureGateStatus.PASS
@@ -84,3 +101,22 @@ class LiteratureSearchCoordinator:
         if all(error.kind in transient_kinds for error in errors):
             return LiteratureGateStatus.PENDING
         return LiteratureGateStatus.BLOCKED
+
+    def _exception_error(
+        self,
+        source: LiteratureSource,
+        query: str,
+        exc: Exception,
+    ) -> LiteratureSourceError:
+        kind = (
+            LiteratureErrorKind.TRANSIENT_ERROR
+            if isinstance(exc, (TimeoutError, ConnectionError))
+            else LiteratureErrorKind.UNAVAILABLE
+        )
+        message = f"{source.value} source failed with {type(exc).__name__}"
+        return LiteratureSourceError(
+            source=source,
+            kind=kind,
+            message=message[:200],
+            query=query,
+        )

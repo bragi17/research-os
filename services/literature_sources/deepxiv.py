@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import shlex
 from typing import Any
 
-from libs.schemas.literature import LiteratureCandidate, LiteratureSource
+from libs.schemas.literature import LiteratureCandidate, LiteratureErrorKind, LiteratureSource
 from services.literature_errors import SourceRequestError
 from services.literature_sources.base import SourceSearchResult, compact_raw, parse_year
 
@@ -21,6 +22,7 @@ class DeepXivSource:
         **dependencies: object,
     ) -> None:
         self.options = dict(options or {})
+        self.timeout_seconds = self._timeout_seconds(self.options.get("timeout_seconds"))
 
     async def search(self, query: str, limit: int = 50) -> SourceSearchResult:
         command = self.options.get("command")
@@ -65,7 +67,21 @@ class DeepXivSource:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            await self._kill_and_wait(process)
+            raise SourceRequestError(
+                source=self.source,
+                kind=LiteratureErrorKind.TRANSIENT_ERROR,
+                message=f"DeepXiv command timed out after {self.timeout_seconds:g} seconds",
+            ) from exc
+        except asyncio.CancelledError:
+            await asyncio.shield(self._kill_and_wait(process))
+            raise
         if process.returncode != 0:
             message = stderr.decode("utf-8", errors="replace").strip()
             raise SourceRequestError(
@@ -110,9 +126,24 @@ class DeepXivSource:
             return [str(author) for author in value if author]
         return []
 
-    def _error_kind(self, returncode: int | None):
-        from libs.schemas.literature import LiteratureErrorKind
+    async def _kill_and_wait(self, process: object) -> None:
+        kill = getattr(process, "kill", None)
+        if kill is not None:
+            with suppress(ProcessLookupError):
+                kill()
+        wait = getattr(process, "wait", None)
+        if wait is not None:
+            with suppress(ProcessLookupError):
+                await wait()
 
+    def _timeout_seconds(self, value: object) -> float:
+        try:
+            timeout = float(value) if value is not None else 30.0
+        except (TypeError, ValueError):
+            return 30.0
+        return timeout if timeout > 0 else 30.0
+
+    def _error_kind(self, returncode: int | None) -> LiteratureErrorKind:
         return (
             LiteratureErrorKind.TRANSIENT_ERROR
             if returncode is None or returncode >= 500
