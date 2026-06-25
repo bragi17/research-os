@@ -1,0 +1,168 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: research_os
+      POSTGRES_USER: ros_user
+      POSTGRES_PASSWORD: ros_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../scripts/migration:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ros_user -d research_os"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change-me-minio-secret}
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  grobid:
+    image: lfoppiano/grobid:0.8.1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8070/api/isalive"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    env_file:
+      - ../../.env
+    environment:
+      AUTH_REQUIRED: "true"
+      DATABASE_URL: postgresql://ros_user:ros_pass@postgres:5432/research_os
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: minio
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-change-me-minio-secret}
+      MINIO_BUCKET: research-os
+      MINIO_USE_SSL: "false"
+      GROBID_URL: http://grobid:8070
+      RESEARCH_OS_WORKSPACE_ROOT: /data/research-os/workspaces
+    volumes:
+      - workspace_data:/data/research-os/workspaces
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      grobid:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: ""
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    env_file:
+      - ../../.env
+    environment:
+      AUTH_REQUIRED: "true"
+      DATABASE_URL: postgresql://ros_user:ros_pass@postgres:5432/research_os
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: minio
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-change-me-minio-secret}
+      MINIO_BUCKET: research-os
+      MINIO_USE_SSL: "false"
+      GROBID_URL: http://grobid:8070
+      RESEARCH_OS_WORKSPACE_ROOT: /data/research-os/workspaces
+    volumes:
+      - workspace_data:/data/research-os/workspaces
+    command: python -m apps.worker.runner
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  production-scheduler:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: postgresql://ros_user:ros_pass@postgres:5432/research_os
+      REDIS_URL: redis://redis:6379/0
+      RESEARCH_OS_WORKSPACE_ROOT: /data/research-os/workspaces
+    volumes:
+      - workspace_data:/data/research-os/workspaces
+    command: python scripts/run_production_scheduler.py --idle-sleep-sec 5 --max-concurrent-tasks 1 --max-concurrent-jobs 1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  gpu-worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    env_file:
+      - ../../.env
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      DATABASE_URL: postgresql://ros_user:ros_pass@postgres:5432/research_os
+      REDIS_URL: redis://redis:6379/0
+      RESEARCH_OS_WORKSPACE_ROOT: /data/research-os/workspaces
+    volumes:
+      - workspace_data:/data/research-os/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: python scripts/run_production_scheduler.py --idle-sleep-sec 5 --max-concurrent-tasks 0 --max-concurrent-jobs 1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  workspace_data:
