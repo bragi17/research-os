@@ -79,13 +79,20 @@ def resolve_path_reference(
     return candidate
 
 
+def _project_workspace_root(
+    project_id: UUID,
+    workspace_id: UUID | None = None,
+) -> Path:
+    workspace_segment = str(workspace_id) if workspace_id is not None else "legacy"
+    return workspace_base() / "workspaces" / workspace_segment / "projects" / str(project_id)
+
+
 def _default_workspace_path(
     project_id: UUID,
     workspace_id: UUID | None = None,
     run_id: UUID | None = None,
 ) -> Path:
-    workspace_segment = str(workspace_id) if workspace_id is not None else "legacy"
-    path = workspace_base() / "workspaces" / workspace_segment / "projects" / str(project_id)
+    path = _project_workspace_root(project_id, workspace_id)
     if run_id is not None:
         path = path / "runs" / str(run_id)
     return path
@@ -98,19 +105,31 @@ def resolve_project_workspace_path(
 ) -> Path:
     """Resolve a project's trusted local workspace path under the configured base."""
 
-    base = workspace_base()
+    project_root = _project_workspace_root(
+        project["id"],
+        workspace_id=project.get("workspace_id"),
+    ).resolve()
     configured = project.get("default_workspace_path")
     if configured:
         raw = Path(str(configured)).expanduser()
-        candidate = raw.resolve() if raw.is_absolute() else (base / _safe_relative_path(raw, field_name="default_workspace_path")).resolve()
+        if project.get("workspace_id") is None:
+            base = workspace_base()
+            candidate = raw.resolve() if raw.is_absolute() else (base / _safe_relative_path(raw, field_name="default_workspace_path")).resolve()
+        else:
+            candidate = raw.resolve() if raw.is_absolute() else (project_root / _safe_relative_path(raw, field_name="default_workspace_path")).resolve()
     else:
-        candidate = _default_workspace_path(
-            project["id"],
-            workspace_id=project.get("workspace_id"),
-            run_id=run_id,
-        ).resolve()
-    if not _is_relative_to(candidate, base):
-        raise ValueError("default_workspace_path escapes workspace root")
+        candidate = project_root
+    if run_id is not None:
+        candidate = (candidate / "runs" / str(run_id)).resolve()
+    if project.get("workspace_id") is None and configured:
+        base = workspace_base()
+        workspace_segment_root = (base / "workspaces").resolve()
+        if not _is_relative_to(candidate, base):
+            raise ValueError("default_workspace_path escapes workspace root")
+        if _is_relative_to(candidate, workspace_segment_root) and not _is_relative_to(candidate, project_root):
+            raise ValueError("default_workspace_path escapes project workspace root")
+    elif not _is_relative_to(candidate, project_root):
+        raise ValueError("default_workspace_path escapes project workspace root")
     candidate.mkdir(parents=True, exist_ok=True)
     return candidate
 
