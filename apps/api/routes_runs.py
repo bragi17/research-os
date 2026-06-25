@@ -10,6 +10,7 @@ from structlog import get_logger
 import apps.api.database as db
 from apps.api.auth import get_current_user
 from apps.api.redis_queue import enqueue_run, publish_event
+from apps.api.tenancy import WorkspaceContext
 from libs.schemas.run import (
     CreateRunRequest,
     PauseRequest,
@@ -51,6 +52,7 @@ async def create_run(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Create a new research run."""
+    ctx = WorkspaceContext.from_user(user)
     await _require_project_access(request.project_id, user)
 
     run_id = uuid4()
@@ -71,8 +73,8 @@ async def create_run(
         "completed_at": None,
         "created_at": now,
         "updated_at": now,
-        "workspace_id": user["workspace_id"],
-        "created_by": user["id"],
+        "workspace_id": ctx.workspace_id,
+        "created_by": ctx.user_id,
         "project_id": request.project_id,
     }
 
@@ -101,21 +103,32 @@ async def list_runs(
     status: RunStatus | None = Query(None, description="Filter by status"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
     """List research runs with optional filtering."""
+    ctx = WorkspaceContext.from_user(user)
     try:
         status_value = status.value if status else None
-        return await db.list_runs(status=status_value, limit=limit, offset=offset)
+        return await db.list_runs(
+            status=status_value,
+            limit=limit,
+            offset=offset,
+            workspace_id=ctx.workspace_id,
+        )
     except Exception as exc:
         logger.error("list_runs_failed", error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to list runs")
 
 
 @router.get("/{run_id}", response_model=RunResponse)
-async def get_run(run_id: UUID) -> dict[str, Any]:
+async def get_run(
+    run_id: UUID,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get details of a specific research run."""
+    ctx = WorkspaceContext.from_user(user)
     try:
-        row = await db.get_run(run_id)
+        row = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("get_run_failed", run_id=str(run_id), error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to get run")
@@ -126,14 +139,22 @@ async def get_run(run_id: UUID) -> dict[str, Any]:
 
 
 @router.patch("/{run_id}")
-async def patch_run(run_id: UUID, body: dict[str, Any]) -> dict[str, Any]:
+async def patch_run(
+    run_id: UUID,
+    body: dict[str, Any],
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Update run fields."""
+    ctx = WorkspaceContext.from_user(user)
     allowed = {"title"}
     updates = {key: value for key, value in body.items() if key in allowed}
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update")
 
     try:
+        run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
         updates["updated_at"] = datetime.utcnow()
         result = await db.update_run(run_id, updates)
         if result is None:
@@ -147,13 +168,17 @@ async def patch_run(run_id: UUID, body: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.delete("/{run_id}")
-async def delete_run(run_id: UUID) -> dict[str, str]:
+async def delete_run(
+    run_id: UUID,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, str]:
     """Delete a research run and its related rows."""
+    ctx = WorkspaceContext.from_user(user)
     try:
-        pool = await db.get_pool()
-        row = await pool.fetchrow("SELECT id FROM research_run WHERE id = $1", run_id)
-        if row is None:
+        run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
+        if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
+        pool = await db.get_pool()
         await pool.execute("DELETE FROM run_event WHERE run_id = $1", run_id)
         await pool.execute("DELETE FROM pain_point WHERE run_id = $1", run_id)
         await pool.execute("DELETE FROM reading_path WHERE run_id = $1", run_id)
@@ -168,10 +193,14 @@ async def delete_run(run_id: UUID) -> dict[str, str]:
 
 
 @router.post("/{run_id}/start")
-async def start_run(run_id: UUID) -> dict[str, Any]:
+async def start_run(
+    run_id: UUID,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Start a queued research run."""
+    ctx = WorkspaceContext.from_user(user)
     try:
-        run = await db.get_run(run_id)
+        run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("start_run_get_failed", run_id=str(run_id), error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to retrieve run")
@@ -222,10 +251,15 @@ async def start_run(run_id: UUID) -> dict[str, Any]:
 
 
 @router.post("/{run_id}/pause")
-async def pause_run(run_id: UUID, request: PauseRequest) -> dict[str, Any]:
+async def pause_run(
+    run_id: UUID,
+    request: PauseRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Pause a running research run."""
+    ctx = WorkspaceContext.from_user(user)
     try:
-        run = await db.get_run(run_id)
+        run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("pause_run_get_failed", run_id=str(run_id), error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to retrieve run")
@@ -265,10 +299,15 @@ async def pause_run(run_id: UUID, request: PauseRequest) -> dict[str, Any]:
 
 
 @router.post("/{run_id}/resume")
-async def resume_run(run_id: UUID, request: ResumeRequest) -> dict[str, Any]:
+async def resume_run(
+    run_id: UUID,
+    request: ResumeRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Resume a paused research run."""
+    ctx = WorkspaceContext.from_user(user)
     try:
-        run = await db.get_run(run_id)
+        run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("resume_run_get_failed", run_id=str(run_id), error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to retrieve run")
@@ -308,10 +347,14 @@ async def resume_run(run_id: UUID, request: ResumeRequest) -> dict[str, Any]:
 
 
 @router.post("/{run_id}/cancel")
-async def cancel_run(run_id: UUID) -> dict[str, Any]:
+async def cancel_run(
+    run_id: UUID,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Cancel a research run."""
+    ctx = WorkspaceContext.from_user(user)
     try:
-        run = await db.get_run(run_id)
+        run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("cancel_run_get_failed", run_id=str(run_id), error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to retrieve run")
