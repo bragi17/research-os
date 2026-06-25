@@ -130,6 +130,8 @@ class LLMSettingsRepository:
     async def get_active_profile(self, include_secret: bool = False) -> LLMProfile:
         row = await self._fetch_active_row()
         if row is None:
+            if self.workspace_id != DEFAULT_WORKSPACE_UUID:
+                return _empty_profile(self.workspace_id)
             return await self.bootstrap_from_env(include_secret=include_secret)
         return _profile_from_row(row, include_secret=include_secret)
 
@@ -146,6 +148,8 @@ class LLMSettingsRepository:
         existing = await self._fetch_active_row()
         if existing is not None:
             return _profile_from_row(existing, include_secret=include_secret)
+        if self.workspace_id != DEFAULT_WORKSPACE_UUID:
+            return _empty_profile(self.workspace_id)
 
         api_key = os.getenv("DEEPSEEK_API_KEY", "")
         encrypted = encrypt_api_key(api_key) if api_key else None
@@ -213,7 +217,13 @@ class LLMSettingsRepository:
             safe_error,
         )
         if row is None:
-            await self.bootstrap_from_env(include_secret=False)
+            bootstrapped = await self.bootstrap_from_env(include_secret=False)
+            if bootstrapped.id is None:
+                return _empty_profile(
+                    self.workspace_id,
+                    last_test_status=status,
+                    last_test_error=safe_error,
+                )
             return await self.record_test_result(status, safe_error)
         invalidate_llm_config()
         return _profile_from_row(row, include_secret=False)
@@ -317,6 +327,28 @@ def _profile_from_row(row: Any, include_secret: bool) -> LLMProfile:
         last_test_status=data.get("last_test_status"),
         last_test_error=data.get("last_test_error"),
         last_test_at=data.get("last_test_at"),
+    )
+
+
+def _empty_profile(
+    workspace_id: UUID | str,
+    *,
+    last_test_status: str | None = None,
+    last_test_error: str | None = None,
+) -> LLMProfile:
+    return LLMProfile(
+        id=None,
+        workspace_id=str(workspace_id),
+        provider=DEEPSEEK_PROVIDER,
+        label=DEFAULT_DEEPSEEK_LABEL,
+        base_url=DEFAULT_DEEPSEEK_BASE_URL,
+        model=DEFAULT_DEEPSEEK_MODEL,
+        api_key=None,
+        api_key_preview="",
+        is_key_set=False,
+        last_test_status=last_test_status,
+        last_test_error=last_test_error,
+        last_test_at=None,
     )
 
 

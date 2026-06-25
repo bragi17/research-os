@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -241,6 +243,46 @@ async def test_profile_change_rebuilds_client_and_clears_response_cache() -> Non
 
 
 @pytest.mark.asyncio
+async def test_profile_change_closes_previous_async_client() -> None:
+    first_profile = _profile()
+    second_profile = LLMProfile(
+        id="profile-2",
+        workspace_id=first_profile.workspace_id,
+        provider="deepseek",
+        label="DeepSeek",
+        base_url="https://api.deepseek.com/v2",
+        model="deepseek-v4-pro",
+        api_key="test-secret-key",
+        api_key_preview="test****-key",
+        is_key_set=True,
+        last_test_status=None,
+        last_test_error=None,
+        last_test_at=None,
+    )
+    first_client = MagicMock()
+    first_client.aclose = AsyncMock()
+    first_client.chat.completions.create = AsyncMock(return_value=_response("FIRST"))
+    second_client = MagicMock()
+    second_client.chat.completions.create = AsyncMock(return_value=_response("SECOND"))
+
+    with (
+        patch(
+            "apps.worker.llm_gateway.get_active_llm_profile",
+            AsyncMock(side_effect=[first_profile, second_profile]),
+        ),
+        patch(
+            "apps.worker.llm_gateway.AsyncOpenAI",
+            side_effect=[first_client, second_client],
+        ),
+    ):
+        gw = LLMGateway()
+        await gw.chat([{"role": "user", "content": "hi"}], use_cache=False)
+        await gw.chat([{"role": "user", "content": "hi"}], use_cache=False)
+
+    first_client.aclose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_workspace_change_rebuilds_client_even_with_same_credentials() -> None:
     first_profile = _profile()
     second_profile = LLMProfile(
@@ -281,4 +323,59 @@ async def test_workspace_change_rebuilds_client_even_with_same_credentials() -> 
     assert second["content"] == "SECOND"
     assert openai_cls.call_count == 2
     first_client.chat.completions.create.assert_awaited_once()
+    second_client.chat.completions.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_response_cache_is_scoped_by_workspace_even_after_interleaved_switch() -> None:
+    messages = [{"role": "user", "content": "same prompt"}]
+    first_profile = _profile()
+    second_profile = LLMProfile(
+        id="profile-2",
+        workspace_id="11111111-1111-1111-1111-111111111111",
+        provider=first_profile.provider,
+        label=first_profile.label,
+        base_url=first_profile.base_url,
+        model=first_profile.model,
+        api_key=first_profile.api_key,
+        api_key_preview=first_profile.api_key_preview,
+        is_key_set=first_profile.is_key_set,
+        last_test_status=None,
+        last_test_error=None,
+        last_test_at=None,
+    )
+    stale_key_data = {
+        "messages": messages,
+        "model": first_profile.model,
+        "temperature": 0,
+        "max_tokens": 5,
+        "response_format": None,
+        "tools": None,
+    }
+    stale_cache_key = hashlib.sha256(
+        json.dumps(stale_key_data, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    second_client = MagicMock()
+    second_client.chat.completions.create = AsyncMock(return_value=_response("SECOND"))
+
+    with patch(
+        "apps.worker.llm_gateway.get_active_llm_profile",
+        AsyncMock(return_value=second_profile),
+    ):
+        gw = LLMGateway()
+        gw._client = second_client
+        gw._client_profile_key = gw._profile_key(second_profile)
+        gw._cache[stale_cache_key] = (
+            {
+                "content": "FIRST",
+                "model": first_profile.model,
+                "usage": {},
+                "finish_reason": "stop",
+            },
+            0,
+        )
+
+        result = await gw.chat(messages, temperature=0, max_tokens=5)
+
+    assert result["content"] == "SECOND"
     second_client.chat.completions.create.assert_awaited_once()

@@ -9,6 +9,7 @@ function calling (works with proxies that don't support response_format).
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
 import time
@@ -77,8 +78,13 @@ class LLMGateway:
             profile.provider,
             profile.base_url,
             profile.model,
-            profile.api_key or "",
+            self._api_key_fingerprint(profile.api_key),
         )
+
+    def _api_key_fingerprint(self, api_key: str | None) -> str:
+        if not api_key:
+            return ""
+        return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
 
     async def _get_profile(self) -> LLMProfile:
         profile = await get_active_llm_profile(include_secret=True)
@@ -86,10 +92,20 @@ class LLMGateway:
             raise ValueError("DeepSeek API key is not configured")
         return profile
 
+    async def _close_client(self, client: AsyncOpenAI) -> None:
+        close = getattr(client, "aclose", None) or getattr(client, "close", None)
+        if not callable(close):
+            return
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+
     async def _get_client(self) -> tuple[AsyncOpenAI, LLMProfile]:
         profile = await self._get_profile()
         profile_key = self._profile_key(profile)
         if self._client is None or self._client_profile_key != profile_key:
+            if self._client is not None:
+                await self._close_client(self._client)
             self._client = AsyncOpenAI(
                 api_key=profile.api_key,
                 base_url=profile.base_url,
@@ -124,6 +140,7 @@ class LLMGateway:
 
     def _get_cache_key(
         self,
+        profile: LLMProfile,
         messages: list[dict],
         model: str,
         temperature: float,
@@ -133,6 +150,13 @@ class LLMGateway:
     ) -> str:
         """Generate cache key for a request."""
         key_data = {
+            "profile": {
+                "workspace_id": profile.workspace_id,
+                "provider": profile.provider,
+                "base_url": profile.base_url,
+                "model": profile.model,
+                "api_key_fingerprint": self._api_key_fingerprint(profile.api_key),
+            },
             "messages": messages,
             "model": model,
             "temperature": temperature,
@@ -167,6 +191,7 @@ class LLMGateway:
         # Check cache
         if use_cache and temperature < 0.1:
             cache_key = self._get_cache_key(
+                profile,
                 messages,
                 model,
                 temperature,

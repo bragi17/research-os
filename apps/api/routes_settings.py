@@ -23,7 +23,7 @@ from services.llm_settings import (
     mask_api_key,
     redact_secret_text,
 )
-from services.workspace_context import workspace_context
+from services.workspace_context import DEFAULT_WORKSPACE_UUID, workspace_context
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
@@ -139,7 +139,11 @@ def _fallback_llm_profile(
     error: Exception | None = None,
     workspace_id: Any = DEFAULT_WORKSPACE_ID,
 ) -> LLMProfile:
-    api_key = _effective_setting_value("DEEPSEEK_API_KEY", env)
+    api_key = (
+        _effective_setting_value("DEEPSEEK_API_KEY", env)
+        if str(workspace_id) == str(DEFAULT_WORKSPACE_UUID)
+        else ""
+    )
     return LLMProfile(
         id=None,
         workspace_id=str(workspace_id),

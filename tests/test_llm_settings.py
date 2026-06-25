@@ -249,6 +249,37 @@ async def test_repository_uses_explicit_workspace_id_in_queries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_non_default_workspace_without_row_does_not_bootstrap_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_id = UUID("33333333-3333-3333-3333-333333333333")
+    inserts: list[tuple[Any, ...]] = []
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "unit-test-encryption-secret")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "operator-global-secret")
+
+    def handler(sql: str, args: tuple[Any, ...]) -> dict[str, Any] | None:
+        if sql.lstrip().upper().startswith("SELECT"):
+            return None
+        inserts.append(args)
+        return _row(
+            workspace_id=args[0],
+            api_key_encrypted=args[5],
+            api_key_preview=args[6],
+        )
+
+    pool = FakePool(handler)
+    repo = LLMSettingsRepository(pool_getter=lambda: pool, workspace_id=workspace_id)
+
+    profile = await repo.get_active_profile(include_secret=True)
+
+    assert profile.workspace_id == str(workspace_id)
+    assert profile.api_key is None
+    assert profile.api_key_preview == ""
+    assert profile.is_key_set is False
+    assert inserts == []
+
+
+@pytest.mark.asyncio
 async def test_get_active_llm_profile_hides_secret_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

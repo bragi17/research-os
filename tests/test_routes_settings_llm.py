@@ -212,6 +212,37 @@ def test_get_models_falls_back_when_llm_settings_store_is_unavailable(
     assert storage_items["RESEARCH_OS_WORKSPACE_ROOT"]["is_set"] is True
 
 
+def test_get_models_fallback_does_not_expose_env_key_for_authenticated_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("DEEPSEEK_API_KEY=operator-global-secret\n")
+    repo = FakeRepository(None)
+    repo.get_active_profile.side_effect = RuntimeError("settings table missing")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "operator-global-secret")
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda *args, **kwargs: repo,
+        raising=False,
+    )
+
+    response = _client(user=_user()).get("/api/v1/settings/models")
+
+    assert response.status_code == 200
+    llm_category = next(
+        category for category in response.json()["categories"] if category["id"] == "llm"
+    )
+    llm_items = {item["key"]: item for item in llm_category["items"]}
+    assert llm_category["profile"]["api_key_preview"] == ""
+    assert llm_category["profile"]["is_key_set"] is False
+    assert llm_items["DEEPSEEK_API_KEY"]["display_value"] == ""
+    assert llm_items["DEEPSEEK_API_KEY"]["is_set"] is False
+    assert "operator-global-secret" not in response.text
+
+
 def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
