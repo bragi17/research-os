@@ -268,6 +268,7 @@ class WorkerRunner:
 
             # ── Persist results to database ──
             await self._persist_results(run_id, result_state)
+            self._write_workspace_outputs(run_id, run, result_state)
 
             await publish_event(run_id, {
                 "event_type": f"run.{final_status}",
@@ -446,6 +447,72 @@ class WorkerRunner:
                         has_comparison=bool(state.comparison_matrix))
         except Exception as exc:
             logger.error("worker.persist_results_failed", error=str(exc))
+
+    def _write_workspace_outputs(
+        self,
+        run_id: UUID,
+        run: dict[str, Any],
+        state,
+    ) -> None:
+        """Write run outputs into the configured experiment workspace."""
+
+        policy = run.get("policy_json") if isinstance(run, dict) else {}
+        workspace = policy.get("experiment_workspace") if isinstance(policy, dict) else None
+        if not isinstance(workspace, dict):
+            return
+        raw_path = workspace.get("path") or workspace.get("relative_path")
+        if not raw_path:
+            return
+
+        try:
+            from apps.worker.production.workspaces import (
+                resolve_path_reference,
+                workspace_base,
+            )
+
+            workspace_path = resolve_path_reference(
+                workspace_base(),
+                raw_path,
+                field_name="experiment_workspace",
+            )
+            workspace_path.mkdir(parents=True, exist_ok=True)
+
+            report = getattr(state, "report_markdown", "") or ""
+            if report:
+                (workspace_path / "report.md").write_text(report, encoding="utf-8")
+
+            def write_json_file(filename: str, payload: Any) -> None:
+                (workspace_path / filename).write_text(
+                    json.dumps(payload, default=str, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+            write_json_file("context_bundle.json", getattr(state, "context_bundle", {}) or {})
+            write_json_file("idea_cards.json", getattr(state, "idea_cards", []) or [])
+            context_bundle = getattr(state, "context_bundle", {}) or {}
+            paper_summaries = getattr(state, "paper_summaries", []) or context_bundle.get("paper_summaries", [])
+            write_json_file("paper_summaries.json", paper_summaries)
+            write_json_file(
+                "run_state.json",
+                {
+                    "run_id": str(run_id),
+                    "title": run.get("title"),
+                    "topic": getattr(state, "topic", None),
+                    "mode": getattr(state, "mode", None),
+                    "current_step": getattr(state, "current_step", None),
+                    "papers_discovered": getattr(state, "papers_discovered", 0),
+                    "papers_read": getattr(state, "papers_read", 0),
+                    "current_cost_usd": getattr(state, "current_cost_usd", 0.0),
+                    "export_urls": getattr(state, "export_urls", []) or [],
+                    "experiment_workspace": workspace,
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "worker.workspace_outputs_failed",
+                run_id=str(run_id),
+                error=str(exc),
+            )
 
     async def _run_mode_graph(
         self,

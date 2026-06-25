@@ -238,8 +238,9 @@ def _reset_mock_state():
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """Create a FastAPI TestClient with all external dependencies mocked."""
+    monkeypatch.setenv("RESEARCH_OS_WORKSPACE_ROOT", str(tmp_path / "experiments"))
     db_patches = {
         "apps.api.database.init_pool": AsyncMock(side_effect=mock_init_pool),
         "apps.api.database.close_pool": AsyncMock(side_effect=mock_close_pool),
@@ -428,6 +429,62 @@ class TestCreateRunV2:
         assert r.status_code == 201
         run_id = r.json()["id"]
         assert _mock_runs[run_id]["policy_json"]["library_pool_ids"] == [pool_id]
+
+    def test_create_run_stores_default_experiment_workspace(self, client: TestClient):
+        requested_run_id = str(uuid4())
+        r = client.post(
+            "/api/v1/runs/multimode",
+            json={
+                "run_id": requested_run_id,
+                "title": "Prime Gaps CPU Study",
+                "topic": "CPU-only experiments for prime gap statistics and reproducible verification",
+                "mode": "frontier",
+            },
+        )
+
+        assert r.status_code == 201
+        data = r.json()
+        run_id = data["id"]
+        assert run_id == requested_run_id
+        workspace = data["policy_json"]["experiment_workspace"]
+        assert workspace["source"] == "default"
+        assert workspace["relative_path"] == f"prime-gaps-cpu-study-{run_id}"
+        assert _mock_runs[run_id]["policy_json"]["experiment_workspace"] == workspace
+
+    def test_create_run_accepts_manual_experiment_workspace(self, client: TestClient):
+        r = client.post(
+            "/api/v1/runs/multimode",
+            json={
+                "title": "Manual Workspace Study",
+                "topic": "CPU-only experiments for prime gap statistics and reproducible verification",
+                "mode": "frontier",
+                "experiment_workspace": "manual/prime-gap-study",
+            },
+        )
+
+        assert r.status_code == 201
+        data = r.json()
+        workspace = data["policy_json"]["experiment_workspace"]
+        assert workspace["source"] == "manual"
+        assert workspace["configured_path"] == "manual/prime-gap-study"
+        assert workspace["relative_path"] == "manual/prime-gap-study"
+
+    def test_create_run_rejects_experiment_workspace_outside_root(
+        self,
+        client: TestClient,
+    ):
+        r = client.post(
+            "/api/v1/runs/multimode",
+            json={
+                "title": "Bad Workspace Study",
+                "topic": "CPU-only experiments for prime gap statistics and reproducible verification",
+                "mode": "frontier",
+                "experiment_workspace": "../outside",
+            },
+        )
+
+        assert r.status_code == 400
+        assert "experiment_workspace" in r.json()["detail"]
 
     def test_create_run_with_parent(self, client: TestClient):
         parent_id = str(uuid4())

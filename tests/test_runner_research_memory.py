@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -112,3 +113,42 @@ async def test_run_mode_graph_passes_project_id_to_state(monkeypatch):
 
     assert seen_state["project_id"] == project_id
     assert result.project_id == project_id
+
+
+def test_worker_writes_run_outputs_to_experiment_workspace(monkeypatch, tmp_path):
+    from apps.worker.production.workspaces import run_workspace_record
+
+    monkeypatch.setenv("RESEARCH_OS_WORKSPACE_ROOT", str(tmp_path))
+    run_id = uuid4()
+    workspace = run_workspace_record(
+        run_id=run_id,
+        title="Prime Gap Study",
+    )
+    state = ModeGraphState(
+        run_id=run_id,
+        topic="CPU-only prime gap verification",
+        mode="frontier",
+        report_markdown="# Prime Gap Study\n\nDone.\n",
+        context_bundle={"paper_summaries": [{"title": "Prime gaps"}]},
+        idea_cards=[{"title": "Residual envelope check"}],
+        comparison_matrix=[{"method": "baseline"}],
+    )
+
+    WorkerRunner()._write_workspace_outputs(
+        run_id,
+        {"title": "Prime Gap Study", "policy_json": {"experiment_workspace": workspace}},
+        state,
+    )
+
+    workspace_path = tmp_path / workspace["relative_path"]
+    assert (workspace_path / "report.md").read_text() == "# Prime Gap Study\n\nDone.\n"
+    assert json.loads((workspace_path / "context_bundle.json").read_text()) == {
+        "paper_summaries": [{"title": "Prime gaps"}],
+    }
+    assert json.loads((workspace_path / "idea_cards.json").read_text()) == [
+        {"title": "Residual envelope check"},
+    ]
+    assert json.loads((workspace_path / "paper_summaries.json").read_text()) == [
+        {"title": "Prime gaps"},
+    ]
+    assert json.loads((workspace_path / "run_state.json").read_text())["run_id"] == str(run_id)
