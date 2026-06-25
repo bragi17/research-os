@@ -18,8 +18,10 @@ def test_saas_tenancy_migration_defines_tenant_workspace_membership_and_backfill
     assert "ALTER TABLE research_project ADD COLUMN IF NOT EXISTS workspace_id" in sql
     assert "ALTER TABLE remote_host ADD COLUMN IF NOT EXISTS workspace_id" in sql
     assert "ALTER TABLE terminal_session ADD COLUMN IF NOT EXISTS workspace_id" in sql
+    assert "ALTER TABLE code_artifact ADD COLUMN IF NOT EXISTS workspace_id" in sql
     assert "INSERT INTO workspace_member" in sql
     assert "idx_workspace_member_user" in sql
+    assert "idx_code_artifact_workspace" in sql
 
 
 def test_development_compose_mounts_all_migrations_directory() -> None:
