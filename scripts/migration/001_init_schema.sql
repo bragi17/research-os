@@ -178,7 +178,8 @@ ALTER TABLE chunk ADD COLUMN IF NOT EXISTS embedding VECTOR(3072);
 CREATE INDEX idx_chunk_paper ON chunk(paper_id);
 CREATE INDEX idx_chunk_section ON chunk USING GIN(section_path);
 CREATE INDEX idx_chunk_tsv ON chunk USING GIN(tsv);
-CREATE INDEX idx_chunk_embedding ON chunk USING HNSW (embedding vector_cosine_ops);
+-- HNSW on VECTOR(3072) exceeds pgvector's vector opclass dimension limit.
+-- Active vector search is indexed on library_chunk.embedding in 005_library_tables.sql.
 
 -- Chunk Embedding: Separate table for multiple embedding models
 CREATE TABLE chunk_embedding (

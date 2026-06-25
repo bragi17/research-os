@@ -31,6 +31,17 @@ def test_development_compose_mounts_all_migrations_directory() -> None:
     assert "001_init_schema.sql:/docker-entrypoint-initdb.d" not in compose
 
 
+def test_initial_schema_does_not_create_unsupported_3072_dim_hnsw_index() -> None:
+    sql = (ROOT / "scripts/migration/001_init_schema.sql").read_text()
+
+    assert "embedding VECTOR(3072)" in sql
+    assert "USING HNSW (embedding vector_cosine_ops)" not in sql
+    assert (
+        "idx_library_chunk_embedding"
+        in (ROOT / "scripts/migration/005_library_tables.sql").read_text()
+    )
+
+
 @pytest.mark.asyncio
 async def test_saas_tenancy_migrations_apply_to_postgres_and_are_idempotent() -> None:
     database_url = os.environ.get("RESEARCH_OS_MIGRATION_TEST_DATABASE_URL")
@@ -43,6 +54,18 @@ async def test_saas_tenancy_migrations_apply_to_postgres_and_are_idempotent() ->
 
     connection = await asyncpg.connect(database_url)
     try:
+        public_table_count = await connection.fetchval(
+            """
+            SELECT count(*)
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            """
+        )
+        assert public_table_count == 0, (
+            "RESEARCH_OS_MIGRATION_TEST_DATABASE_URL must point to a disposable "
+            "empty database"
+        )
+
         migration_paths = sorted((ROOT / "scripts/migration").glob("*.sql"))
         for migration_path in migration_paths:
             await connection.execute(migration_path.read_text())
