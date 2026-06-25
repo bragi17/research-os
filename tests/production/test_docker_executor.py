@@ -101,6 +101,17 @@ def test_build_docker_run_argv_uses_safe_container_name(tmp_path: Path) -> None:
     assert argv[argv.index("--name") + 1] == "research-os-job-tenant-..-job-1"
 
 
+@pytest.mark.parametrize("image", ["--privileged", "", "   "])
+def test_build_docker_run_argv_rejects_unsafe_image_reference(
+    tmp_path: Path,
+    image: str,
+) -> None:
+    spec = _job_spec(tmp_path, image=image)
+
+    with pytest.raises(ValueError, match="docker image reference is unsafe"):
+        build_docker_run_argv(spec)
+
+
 def test_build_docker_run_argv_rejects_cwd_escape(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

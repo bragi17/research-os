@@ -17,6 +17,7 @@ from apps.worker.production.experiments.local_executor import (
 
 DOCKER_CLEANUP_TIMEOUT_SEC = 10
 SAFE_CONTAINER_NAME_CHAR = re.compile(r"[^A-Za-z0-9_.-]")
+SAFE_IMAGE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$")
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,17 @@ def _container_name(job_id: str) -> str:
     return f"research-os-job-{SAFE_CONTAINER_NAME_CHAR.sub('-', job_id)}"
 
 
+def _validate_image_reference(image: str) -> str:
+    if (
+        not image
+        or image.startswith("-")
+        or any(character.isspace() or ord(character) < 32 for character in image)
+        or SAFE_IMAGE_REFERENCE.fullmatch(image) is None
+    ):
+        raise ValueError("docker image reference is unsafe")
+    return image
+
+
 def _resolve_expected_outputs(
     workspace_root: Path,
     cwd: Path,
@@ -82,6 +94,7 @@ def build_docker_run_argv(spec: DockerJobSpec) -> list[str]:
 
     workspace_root = spec.workspace_root.resolve()
     cwd = _resolve_inside_workspace(workspace_root, spec.cwd, "cwd")
+    image = _validate_image_reference(spec.image)
     return [
         "docker",
         "run",
@@ -100,7 +113,7 @@ def build_docker_run_argv(spec: DockerJobSpec) -> list[str]:
         f"{workspace_root}:/workspace:rw",
         "-w",
         "/workspace/" + cwd.relative_to(workspace_root).as_posix(),
-        spec.image,
+        image,
         "/bin/bash",
         "-lc",
         spec.command,
