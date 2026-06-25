@@ -1110,6 +1110,7 @@ async def test_remote_host_routes_are_owner_scoped(
         "id": remote_host_id,
         "name": "gpu-box",
         "owner_user_id": TEST_USER_ID,
+        "workspace_id": TEST_USER["workspace_id"],
         "host": "gpu.example.test",
         "port": 22,
         "username": None,
@@ -1133,13 +1134,16 @@ async def test_remote_host_routes_are_owner_scoped(
 
     assert created["id"] == remote_host_id
     assert create_remote_host.call_args.args[0]["owner_user_id"] == TEST_USER_ID
+    assert create_remote_host.call_args.args[0]["workspace_id"] == TEST_USER["workspace_id"]
     list_remote_hosts.assert_awaited_once_with(
         status="unknown",
         owner_user_id=TEST_USER_ID,
+        workspace_id=TEST_USER["workspace_id"],
         limit=50,
         offset=0,
     )
     assert listed[0]["owner_user_id"] == TEST_USER_ID
+    assert listed[0]["workspace_id"] == TEST_USER["workspace_id"]
 
 
 def test_workspace_relative_payloads_reject_unsafe_paths() -> None:

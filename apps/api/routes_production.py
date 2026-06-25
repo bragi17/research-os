@@ -271,6 +271,9 @@ async def _remote_host_for_access(remote_host_id: UUID, user: dict[str, Any]) ->
     remote_host = await db.get_remote_host(remote_host_id)
     if remote_host is None:
         raise HTTPException(status_code=404, detail="Remote host not found")
+    workspace_id = remote_host.get("workspace_id")
+    if workspace_id is not None and not _same_id(workspace_id, user["workspace_id"]):
+        raise HTTPException(status_code=403, detail="Remote host access denied")
     owner_user_id = remote_host.get("owner_user_id")
     if owner_user_id is None or not _same_id(owner_user_id, user["id"]):
         raise HTTPException(status_code=403, detail="Remote host access denied")
@@ -978,6 +981,7 @@ async def create_remote_host(
 ) -> dict[str, Any]:
     payload = _payload(request)
     payload["owner_user_id"] = user["id"]
+    payload["workspace_id"] = user["workspace_id"]
     return await db.create_remote_host(payload)
 
 
@@ -991,6 +995,7 @@ async def list_remote_hosts(
     return await db.list_remote_hosts(
         status=status,
         owner_user_id=user["id"],
+        workspace_id=user["workspace_id"],
         limit=limit,
         offset=offset,
     )

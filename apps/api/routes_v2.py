@@ -211,6 +211,8 @@ async def create_run_v2(
     """Create a new research run with an explicit research mode."""
     ctx = WorkspaceContext.from_user(user)
     await _require_project_access(request.project_id, user)
+    if request.parent_run_id is not None:
+        await _require_run(request.parent_run_id, ctx)
     await _require_context_bundle_access(request.context_bundle_id, ctx)
 
     run_id = uuid4()

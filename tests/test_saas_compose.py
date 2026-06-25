@@ -35,6 +35,7 @@ def test_saas_compose_defines_required_services_and_gpu_worker() -> None:
         "postgres",
         "redis",
         "minio",
+        "minio-init",
         "grobid",
         "api",
         "web",
@@ -109,7 +110,7 @@ def test_saas_compose_uses_saas_env_and_database_substitutions() -> None:
     postgres_env = compose["services"]["postgres"]["environment"]
     assert postgres_env["POSTGRES_DB"] == "${POSTGRES_DB:-research_os}"
     assert postgres_env["POSTGRES_USER"] == "${POSTGRES_USER:-ros_user}"
-    assert postgres_env["POSTGRES_PASSWORD"] == "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.saas}"
+    assert postgres_env["POSTGRES_PASSWORD"] == "${POSTGRES_PASSWORD:-change-me-postgres-password}"
     assert compose["services"]["postgres"]["healthcheck"]["test"] == [
         "CMD-SHELL",
         "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
@@ -118,11 +119,34 @@ def test_saas_compose_uses_saas_env_and_database_substitutions() -> None:
     for service_name in ["api", "worker", "production-scheduler", "gpu-worker"]:
         assert (
             compose["services"][service_name]["environment"]["DATABASE_URL"]
-            == "${DATABASE_URL:?set DATABASE_URL in .env.saas}"
+            == "${DATABASE_URL:-postgresql://ros_user:change-me-postgres-password@postgres:5432/research_os}"
         )
 
     compose_text = COMPOSE_PATH.read_text()
+    assert ":?" not in compose_text
     assert "ros_pass" not in compose_text
+
+
+def test_saas_compose_initializes_private_minio_bucket() -> None:
+    compose = _compose()
+    minio = compose["services"]["minio"]
+    init = compose["services"]["minio-init"]
+
+    assert minio["healthcheck"]["test"] == [
+        "CMD",
+        "curl",
+        "-f",
+        "http://localhost:9000/minio/health/ready",
+    ]
+    assert init["image"] == "minio/mc:latest"
+    assert init["depends_on"]["minio"]["condition"] == "service_healthy"
+    assert "mc alias set local http://minio:9000" in init["entrypoint"]
+    assert "mc mb --ignore-existing local/$${MINIO_BUCKET}" in init["entrypoint"]
+
+    for service_name in ["api", "worker"]:
+        assert compose["services"][service_name]["depends_on"]["minio-init"]["condition"] == (
+            "service_completed_successfully"
+        )
 
 
 def test_saas_compose_web_routes_api_to_internal_service() -> None:
@@ -145,6 +169,17 @@ def test_python_app_image_installs_docker_cli_for_gpu_worker() -> None:
 
     assert "docker.io" in dockerfile
     assert "README.md" in dockerfile
+    for package_path in [
+        "apps/api",
+        "apps/worker",
+        "libs/adapters",
+        "libs/prompts",
+        "libs/schemas",
+    ]:
+        assert f"COPY {package_path} ./{package_path}" in dockerfile
+        assert dockerfile.index(f"COPY {package_path} ./{package_path}") < dockerfile.index(
+            "pip install --no-cache-dir ."
+        )
     assert dockerfile.index("README.md") < dockerfile.index("pip install --no-cache-dir .")
     assert "[tool.hatch.build.targets.wheel]" in pyproject
     assert (
@@ -172,6 +207,18 @@ def test_docker_build_context_excludes_local_artifacts() -> None:
         ".worktrees",
     ]:
         assert ignored in dockerignore
+
+
+def test_web_protected_api_calls_use_token_aware_client() -> None:
+    src_root = ROOT / "apps/web/src"
+    offenders: list[str] = []
+    for path in src_root.rglob("*.tsx"):
+        rel = path.relative_to(ROOT).as_posix()
+        text = path.read_text()
+        if 'fetch("/api/v1' in text or "fetch('/api/v1" in text or "fetch(`/api/v1" in text:
+            offenders.append(rel)
+
+    assert offenders == []
 
 
 def test_saas_env_example_requires_secrets() -> None:

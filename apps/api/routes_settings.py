@@ -65,6 +65,7 @@ DEFAULT_SETTING_VALUES = {
     "RESEARCH_OS_WORKSPACE_ROOT": DEFAULT_EXPERIMENT_ROOT,
 }
 MISSING_CREDENTIAL_ENCRYPTION_KEY_FRAGMENT = "CREDENTIAL_ENCRYPTION_KEY is required"
+GLOBAL_SETTINGS_OPERATOR_ROLES = {"admin", "operator", "production_operator"}
 
 # Keys that should be masked in GET responses
 SENSITIVE_KEYS = {"DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "S2_API_KEY", "SEMANTIC_SCHOLAR_API_KEY", "JWT_SECRET"}
@@ -132,6 +133,11 @@ def _llm_settings_error_status(error: str) -> int:
     if MISSING_CREDENTIAL_ENCRYPTION_KEY_FRAGMENT in error:
         return 400
     return 500
+
+
+def _require_global_settings_operator(user: dict[str, Any]) -> None:
+    if user.get("role") not in GLOBAL_SETTINGS_OPERATOR_ROLES:
+        raise HTTPException(status_code=403, detail="Global settings require operator role")
 
 
 def _fallback_llm_profile(
@@ -272,8 +278,12 @@ async def get_model_settings(
 
 
 @router.put("/models")
-async def update_model_settings(body: dict[str, str]) -> dict[str, Any]:
+async def update_model_settings(
+    body: dict[str, str],
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Update model configuration. Body is {KEY: VALUE} pairs."""
+    _require_global_settings_operator(user)
     if not body:
         raise HTTPException(status_code=400, detail="No settings provided")
 
@@ -408,8 +418,11 @@ async def test_llm_connection(
 
 
 @router.post("/models/test-embedding")
-async def test_embedding_connection() -> dict[str, Any]:
+async def test_embedding_connection(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Test embedding API connection."""
+    _require_global_settings_operator(user)
     try:
         from services.embedding import get_embedding_service
         svc = get_embedding_service()

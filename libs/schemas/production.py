@@ -1010,6 +1010,7 @@ class RemoteHostCreate(BaseModel):
 
     name: NonBlankStr
     owner_user_id: UUID | None = None
+    workspace_id: UUID | None = None
     host: NonBlankStr
     port: int = Field(default=22, ge=1, le=65535)
     username: str | None = None

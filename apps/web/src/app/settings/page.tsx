@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { SettingsCategoryCard } from "@/features/settings/SettingsCategoryCard";
 import { DEFAULT_LLM_EDIT, isDirtyLlmEdit, llmEditFromProfile } from "@/features/settings/llmProfile";
 import type { Category, LLMEdit, TestResult } from "@/features/settings/types";
+import { apiFetch } from "@/lib/api";
 
 export default function SettingsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
@@ -22,13 +23,7 @@ export default function SettingsPage() {
   const fetchSettings = useCallback(async (options?: { forceLlmReset?: boolean }) => {
     try {
       setLoadError(null);
-      const res = await fetch("/api/v1/settings/models");
-      if (!res.ok) {
-        setLoadError(`Settings failed to load: HTTP ${res.status}`);
-        setCategories([]);
-        return;
-      }
-      const data = await res.json();
+      const data = await apiFetch<{ categories?: Category[] }>("/api/v1/settings/models");
       const loadedCategories = Array.isArray(data.categories) ? data.categories as Category[] : [];
       setCategories(loadedCategories);
       const llmProfile = loadedCategories.find((cat) => cat.id === "llm")?.profile;
@@ -65,23 +60,13 @@ export default function SettingsPage() {
     setSaving(true);
     setSaveResult(null);
     try {
-      const res = await fetch("/api/v1/settings/models", {
+      await apiFetch("/api/v1/settings/models", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(edits),
       });
-      if (res.ok) {
-        setSaveResult("Settings saved successfully. Restart services to apply.");
-        setEdits({});
-        fetchSettings();
-      } else {
-        try {
-          const err = await res.json();
-          setSaveResult(`Error: ${err.detail || res.statusText}`);
-        } catch {
-          setSaveResult(`Error: ${res.status} ${res.statusText}`);
-        }
-      }
+      setSaveResult("Settings saved successfully. Restart services to apply.");
+      setEdits({});
+      fetchSettings();
     } catch (e) {
       setSaveResult(`Error: ${e}`);
     } finally {
@@ -102,9 +87,8 @@ export default function SettingsPage() {
     setSaving(true);
     setSaveResult(null);
     try {
-      const res = await fetch("/api/v1/settings/llm", {
+      await apiFetch("/api/v1/settings/llm", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           label: llmEdit.label,
           base_url: llmEdit.base_url,
@@ -112,17 +96,8 @@ export default function SettingsPage() {
           api_key: llmEdit.api_key.trim() ? llmEdit.api_key : null,
         }),
       });
-      if (res.ok) {
-        setSaveResult("DeepSeek settings saved successfully.");
-        fetchSettings({ forceLlmReset: true });
-      } else {
-        try {
-          const err = await res.json();
-          setSaveResult(`Error: ${err.detail || res.statusText}`);
-        } catch {
-          setSaveResult(`Error: ${res.status} ${res.statusText}`);
-        }
-      }
+      setSaveResult("DeepSeek settings saved successfully.");
+      fetchSettings({ forceLlmReset: true });
     } catch (e) {
       setSaveResult(`Error: ${e}`);
     } finally {
@@ -145,18 +120,9 @@ export default function SettingsPage() {
     setSaving(true);
     setSaveResult(null);
     try {
-      const res = await fetch("/api/v1/settings/llm/api-key", { method: "DELETE" });
-      if (res.ok) {
-        setSaveResult("DeepSeek API key cleared.");
-        fetchSettings({ forceLlmReset: true });
-      } else {
-        try {
-          const err = await res.json();
-          setSaveResult(`Error: ${err.detail || res.statusText}`);
-        } catch {
-          setSaveResult(`Error: ${res.status} ${res.statusText}`);
-        }
-      }
+      await apiFetch("/api/v1/settings/llm/api-key", { method: "DELETE" });
+      setSaveResult("DeepSeek API key cleared.");
+      fetchSettings({ forceLlmReset: true });
     } catch (e) {
       setSaveResult(`Error: ${e}`);
     } finally {
@@ -180,12 +146,13 @@ export default function SettingsPage() {
       const testUrl = type === "llm"
         ? "/api/v1/settings/llm/test"
         : "/api/v1/settings/models/test-embedding";
-      const res = await fetch(testUrl, { method: "POST" });
-      if (!res.ok) {
-        setTestResults((prev) => ({ ...prev, [type]: { status: "error", detail: `HTTP ${res.status}` } }));
-        return;
-      }
-      const data = await res.json();
+      const data = await apiFetch<{
+        status: string;
+        model?: string;
+        response?: string;
+        dimension?: number;
+        error?: string;
+      }>(testUrl, { method: "POST" });
       setTestResults((prev) => ({
         ...prev,
         [type]: {

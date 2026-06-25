@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getLibraryPaper, type LibraryPaper } from "@/lib/api";
+import { analyzeLibraryPaper, getLibraryPaper, type LibraryPaper } from "@/lib/api";
 
 /* ── KaTeX loader ── */
 function useKatex() {
@@ -82,12 +82,10 @@ export default function LibraryPaperDetail() {
   const handleAnalyze = async () => {
     setAnalyzing(true);
     try {
-      const res = await fetch(`/api/v1/library/papers/${paperId}/analyze`, { method: "POST" });
-      if (res.ok) {
-        const updated = await getLibraryPaper(paperId);
-        setPaper(updated);
-        setTimeout(renderMath, 300);
-      }
+      await analyzeLibraryPaper(paperId);
+      const updated = await getLibraryPaper(paperId);
+      setPaper(updated);
+      setTimeout(renderMath, 300);
     } catch (e) { console.error(e); }
     finally { setAnalyzing(false); }
   };

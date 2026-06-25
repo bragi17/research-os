@@ -440,6 +440,13 @@ class TestCreateRunV2:
 
     def test_create_run_with_parent(self, client: TestClient):
         parent_id = str(uuid4())
+        _mock_runs[parent_id] = _make_mock_run({
+            "id": UUID(parent_id),
+            "workspace_id": DEFAULT_WORKSPACE_ID,
+            "created_by": DEFAULT_USER_ID,
+            "title": "Parent Research",
+        })
+
         r = client.post(
             "/api/v1/runs/multimode",
             json={
@@ -453,6 +460,34 @@ class TestCreateRunV2:
         data = r.json()
         assert data["mode"] == "divergent"
         assert data["parent_run_id"] == parent_id
+
+    def test_create_run_rejects_foreign_workspace_parent_without_creating_child(
+        self,
+        client: TestClient,
+    ):
+        parent_id = str(uuid4())
+        other_workspace_id = uuid4()
+        _mock_runs[parent_id] = _make_mock_run({
+            "id": UUID(parent_id),
+            "workspace_id": other_workspace_id,
+            "created_by": DEFAULT_USER_ID,
+            "title": "Foreign Parent Research",
+        })
+        before_ids = set(_mock_runs)
+
+        r = client.post(
+            "/api/v1/runs/multimode",
+            json={
+                "title": "Leaky Child Research",
+                "topic": "Multi-agent coordination with shared memory",
+                "mode": "divergent",
+                "parent_run_id": parent_id,
+            },
+        )
+
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Run not found"
+        assert set(_mock_runs) == before_ids
 
     def test_create_run_invalid_mode(self, client: TestClient):
         r = client.post(

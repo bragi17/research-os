@@ -451,6 +451,39 @@ def test_status_passes_workspace_id_to_counts(
     ]
 
 
+def test_queue_status_requires_auth_and_passes_workspace_id(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.database as database
+    import apps.api.routes_queue as routes_queue
+
+    calls: list[UUID] = []
+
+    async def fake_count_runs_by_status(*, workspace_id: UUID) -> dict[str, int]:
+        calls.append(workspace_id)
+        return {"queued": 2, "running": 1, "paused": 0}
+
+    async def fake_queue_length() -> int:
+        return 9
+
+    monkeypatch.setattr(database, "count_runs_by_status", fake_count_runs_by_status)
+    monkeypatch.setattr(routes_queue, "get_queue_length", fake_queue_length)
+    monkeypatch.setattr(routes_queue, "get_redis", lambda: object())
+
+    response = client.get("/api/v1/queue/status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "redis_available": True,
+        "queue_length": 9,
+        "active_runs": 1,
+        "queued_runs": 2,
+        "paused_runs": 0,
+    }
+    assert calls == [WORKSPACE_A]
+
+
 def test_get_events_returns_404_without_event_queries_when_scoped_get_missing(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

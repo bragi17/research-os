@@ -121,16 +121,19 @@ async def test_list_projects_filters_by_workspace(mock_pool: AsyncMock) -> None:
 async def test_remote_host_helpers_are_owner_scoped(mock_pool: AsyncMock) -> None:
     remote_host_id = uuid4()
     owner_user_id = uuid4()
+    workspace_id = uuid4()
     mock_pool.fetchrow.return_value = FakeRecord({
         "id": remote_host_id,
         "name": "gpu-box",
         "owner_user_id": owner_user_id,
+        "workspace_id": workspace_id,
     })
     mock_pool.fetch.return_value = [
         FakeRecord({
             "id": remote_host_id,
             "name": "gpu-box",
             "owner_user_id": owner_user_id,
+            "workspace_id": workspace_id,
         })
     ]
 
@@ -139,33 +142,53 @@ async def test_remote_host_helpers_are_owner_scoped(mock_pool: AsyncMock) -> Non
     created = await create_remote_host({
         "name": "gpu-box",
         "owner_user_id": owner_user_id,
+        "workspace_id": workspace_id,
         "host": "gpu.example.test",
     })
     assert created["id"] == remote_host_id
     insert_sql = mock_pool.fetchrow.call_args.args[0]
     assert "INSERT INTO remote_host" in insert_sql
     assert "owner_user_id" in insert_sql
+    assert "workspace_id" in insert_sql
 
     await get_remote_host(remote_host_id)
     get_sql = mock_pool.fetchrow.call_args.args[0]
-    assert "SELECT id, name, owner_user_id" in get_sql
+    assert "SELECT id, name, owner_user_id, workspace_id" in get_sql
 
-    listed = await list_remote_hosts(owner_user_id=owner_user_id, status="reachable", limit=10, offset=5)
+    listed = await list_remote_hosts(
+        owner_user_id=owner_user_id,
+        workspace_id=workspace_id,
+        status="reachable",
+        limit=10,
+        offset=5,
+    )
     list_sql = mock_pool.fetch.call_args.args[0]
     args = mock_pool.fetch.call_args.args[1:]
     assert "FROM remote_host" in list_sql
     assert "status = $1" in list_sql
     assert "owner_user_id = $2" in list_sql
-    assert args == ("reachable", owner_user_id, 10, 5)
+    assert "workspace_id = $3" in list_sql
+    assert args == ("reachable", owner_user_id, workspace_id, 10, 5)
     assert listed[0]["id"] == remote_host_id
 
 
 @pytest.mark.asyncio
-async def test_create_remote_host_requires_owner_user_id(mock_pool: AsyncMock) -> None:
+async def test_create_remote_host_requires_owner_and_workspace_id(mock_pool: AsyncMock) -> None:
     from apps.api.database import create_remote_host
 
     with pytest.raises(ValueError, match="owner_user_id is required"):
-        await create_remote_host({"name": "gpu-box", "host": "gpu.example.test"})
+        await create_remote_host({
+            "name": "gpu-box",
+            "workspace_id": uuid4(),
+            "host": "gpu.example.test",
+        })
+
+    with pytest.raises(ValueError, match="workspace_id is required"):
+        await create_remote_host({
+            "name": "gpu-box",
+            "owner_user_id": uuid4(),
+            "host": "gpu.example.test",
+        })
 
     mock_pool.fetchrow.assert_not_awaited()
 

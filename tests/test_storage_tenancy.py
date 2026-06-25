@@ -7,6 +7,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
+import services.storage as storage_module
 from services.storage import StorageService, workspace_object_prefix
 
 
@@ -107,6 +108,67 @@ async def test_local_upload_rejects_object_key_that_escapes_base_dir(
         )
 
     assert not (tmp_path / "outside").exists()
+
+
+@pytest.mark.asyncio
+async def test_minio_upload_uses_s3_signature_instead_of_basic_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        status_code = 200
+        content = b""
+
+    class FakeAsyncClient:
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def put(
+            self,
+            url: str,
+            *,
+            content: bytes,
+            headers: dict[str, str],
+            auth: object | None = None,
+            timeout: float,
+        ) -> FakeResponse:
+            captured.update({
+                "url": url,
+                "content": content,
+                "headers": headers,
+                "auth": auth,
+                "timeout": timeout,
+            })
+            return FakeResponse()
+
+    monkeypatch.setattr(storage_module.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(storage_module, "MINIO_ENDPOINT", "minio:9000")
+    monkeypatch.setattr(storage_module, "MINIO_BUCKET", "research-os")
+    monkeypatch.setattr(storage_module, "MINIO_ACCESS_KEY", "test-access")
+    monkeypatch.setattr(storage_module, "MINIO_SECRET_KEY", "test-secret")
+    monkeypatch.setattr(storage_module, "MINIO_USE_SSL", False)
+
+    metadata = await StorageService(backend="minio").upload_file(
+        content=b"%PDF-1.7\n",
+        filename="paper.pdf",
+        content_type="application/pdf",
+        prefix=workspace_object_prefix(WORKSPACE_ID, "pdfs"),
+    )
+
+    assert captured["auth"] is None
+    assert captured["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256 ")
+    assert "Credential=test-access/" in captured["headers"]["Authorization"]
+    assert captured["headers"]["x-amz-content-sha256"]
+    assert captured["headers"]["x-amz-date"]
+    assert captured["headers"]["Content-Type"] == "application/pdf"
+    assert captured["url"].startswith("http://minio:9000/research-os/workspaces/")
+    assert metadata["object_key"].startswith(
+        "workspaces/11111111-1111-1111-1111-111111111111/pdfs/"
+    )
 
 
 def test_upload_uses_authenticated_workspace_prefix(

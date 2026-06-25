@@ -1108,6 +1108,7 @@ async def create_claim_evidence(data: dict[str, Any]) -> dict[str, Any]:
 REMOTE_HOST_COLUMNS = (
     "name",
     "owner_user_id",
+    "workspace_id",
     "host",
     "port",
     "username",
@@ -1136,6 +1137,8 @@ async def create_remote_host(data: dict[str, Any]) -> dict[str, Any]:
     }
     if payload.get("owner_user_id") is None:
         raise ValueError("owner_user_id is required for remote hosts")
+    if payload.get("workspace_id") is None:
+        raise ValueError("workspace_id is required for remote hosts")
     return await _insert("remote_host", REMOTE_HOST_COLUMNS, payload)
 
 
@@ -1146,6 +1149,7 @@ async def get_remote_host(remote_host_id: UUID) -> dict[str, Any] | None:
 async def list_remote_hosts(
     status: str | None = None,
     owner_user_id: UUID | None = None,
+    workspace_id: UUID | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -1154,6 +1158,8 @@ async def list_remote_hosts(
         filters["status"] = status
     if owner_user_id is not None:
         filters["owner_user_id"] = owner_user_id
+    if workspace_id is not None:
+        filters["workspace_id"] = workspace_id
     return await _list("remote_host", filters=filters, limit=limit, offset=offset)
 
 

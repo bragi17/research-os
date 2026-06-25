@@ -32,6 +32,12 @@ def _user(workspace_id: UUID = WORKSPACE_A) -> dict[str, Any]:
     }
 
 
+def _operator_user(workspace_id: UUID = WORKSPACE_A) -> dict[str, Any]:
+    user = _user(workspace_id)
+    user["role"] = "admin"
+    return user
+
+
 def _client(user: dict[str, Any] | None = None) -> TestClient:
     app = FastAPI()
     app.include_router(routes_settings.router)
@@ -289,6 +295,56 @@ def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
     assert body["is_key_set"] is True
     assert "api_key" not in body
     assert "test-secret-key" not in response.text
+
+
+def test_put_models_rejects_non_operator_global_settings_update(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("DASHSCOPE_API_KEY=existing-key\n")
+    write_env = Mock()
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(routes_settings, "_write_env", write_env)
+
+    response = _client(user=_user()).put(
+        "/api/v1/settings/models",
+        json={"DASHSCOPE_API_KEY": "tenant-should-not-write-global-key"},
+    )
+
+    assert response.status_code == 403
+    write_env.assert_not_called()
+    assert "tenant-should-not-write-global-key" not in env_path.read_text()
+
+
+def test_put_models_allows_operator_global_settings_update(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("DASHSCOPE_API_KEY=existing-key\n")
+    reset_runtime = AsyncMock()
+    reset_embedding = Mock()
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(routes_settings, "_reset_llm_runtime", reset_runtime)
+    monkeypatch.setattr(routes_settings, "_reset_embedding_runtime", reset_embedding)
+
+    response = _client(user=_operator_user()).put(
+        "/api/v1/settings/models",
+        json={"DASHSCOPE_API_KEY": "operator-global-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "updated", "keys": ["DASHSCOPE_API_KEY"]}
+    assert "DASHSCOPE_API_KEY=operator-global-key" in env_path.read_text()
+    reset_runtime.assert_awaited_once_with()
+    reset_embedding.assert_called_once_with()
+
+
+def test_embedding_test_rejects_non_operator_global_credential_probe() -> None:
+    response = _client(user=_user()).post("/api/v1/settings/models/test-embedding")
+
+    assert response.status_code == 403
 
 
 def test_put_llm_awaits_async_gateway_reset(
