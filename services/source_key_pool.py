@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 
@@ -15,16 +16,18 @@ class NoAvailableSourceKey(Exception):
 class KeyMaterial:
     """API key material tracked by a source key pool."""
 
-    value: str
-    label: str | None = None
+    id: str | None
+    secret: str
+    preview: str
 
 
 @dataclass(frozen=True)
 class KeyLease:
     """A lease returned by SourceKeyPool.acquire()."""
 
-    key: KeyMaterial
-    issued_at: float
+    id: str | None
+    secret: str
+    preview: str
 
 
 @dataclass
@@ -41,11 +44,12 @@ class SourceKeyPool:
 
     def __init__(
         self,
-        keys: Iterable[str | KeyMaterial],
+        keys: list[KeyMaterial],
         *,
         requests_per_second: float,
         burst_capacity: int,
-        clock: Callable[[], float] | None = None,
+        now: Callable[[], float] | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
         default_cooldown_seconds: float = 60.0,
     ) -> None:
         if requests_per_second <= 0:
@@ -56,38 +60,55 @@ class SourceKeyPool:
         self.requests_per_second = requests_per_second
         self.burst_capacity = burst_capacity
         self.default_cooldown_seconds = max(0.0, default_cooldown_seconds)
-        self._clock = clock or time.monotonic
-        now = self._clock()
+        self._now = now or time.monotonic
+        self._sleep = sleep or asyncio.sleep
+        current_time = self._now()
         self._states = [
             _KeyState(
-                key=key if isinstance(key, KeyMaterial) else KeyMaterial(value=key),
+                key=key,
                 tokens=float(burst_capacity),
-                last_refill=now,
+                last_refill=current_time,
             )
             for key in keys
+            if key.secret.strip()
         ]
         self._next_index = 0
 
-    def acquire(self) -> KeyLease:
+    async def acquire(self) -> KeyLease:
         """Return a lease for the next available key."""
 
         if not self._states:
             raise NoAvailableSourceKey("No source keys are configured")
 
-        now = self._clock()
-        for offset in range(len(self._states)):
-            index = (self._next_index + offset) % len(self._states)
-            state = self._states[index]
-            self._refill(state, now)
+        while True:
+            current_time = self._now()
+            active_states = [
+                state for state in self._states if not state.disabled
+            ]
+            if not active_states:
+                raise NoAvailableSourceKey("No source keys are currently available")
 
-            if not self._is_available(state, now):
-                continue
+            for offset in range(len(self._states)):
+                index = (self._next_index + offset) % len(self._states)
+                state = self._states[index]
+                self._refill(state, current_time)
 
-            state.tokens -= 1
-            self._next_index = (index + 1) % len(self._states)
-            return KeyLease(key=state.key, issued_at=now)
+                if not self._is_available(state, current_time):
+                    continue
 
-        raise NoAvailableSourceKey("No source keys are currently available")
+                state.tokens -= 1
+                self._next_index = (index + 1) % len(self._states)
+                return KeyLease(
+                    id=state.key.id,
+                    secret=state.key.secret,
+                    preview=state.key.preview,
+                )
+
+            wait_seconds = min(
+                self._seconds_until_available(state, current_time)
+                for state in active_states
+            )
+            await self._sleep(max(0.0, wait_seconds))
 
     def record_rate_limit(
         self,
@@ -105,10 +126,13 @@ class SourceKeyPool:
             if retry_after_seconds is None
             else max(0.0, retry_after_seconds)
         )
-        now = self._clock()
+        current_time = self._now()
         state.tokens = 0.0
-        state.last_refill = now
-        state.cooldown_until = max(state.cooldown_until, now + cooldown_seconds)
+        state.last_refill = current_time
+        state.cooldown_until = max(
+            state.cooldown_until,
+            current_time + cooldown_seconds,
+        )
 
     def record_credential_error(self, lease: KeyLease) -> None:
         """Disable only the key associated with an authentication failure."""
@@ -118,23 +142,37 @@ class SourceKeyPool:
             state.disabled = True
             state.tokens = 0.0
 
-    def _refill(self, state: _KeyState, now: float) -> None:
-        elapsed = max(0.0, now - state.last_refill)
+    def _refill(self, state: _KeyState, current_time: float) -> None:
+        elapsed = max(0.0, current_time - state.last_refill)
         state.tokens = min(
             float(self.burst_capacity),
             state.tokens + elapsed * self.requests_per_second,
         )
-        state.last_refill = now
+        state.last_refill = current_time
 
-    def _is_available(self, state: _KeyState, now: float) -> bool:
+    def _is_available(self, state: _KeyState, current_time: float) -> bool:
         return (
             not state.disabled
-            and now >= state.cooldown_until
+            and current_time >= state.cooldown_until
             and state.tokens >= 1.0
         )
 
+    def _seconds_until_available(
+        self,
+        state: _KeyState,
+        current_time: float,
+    ) -> float:
+        self._refill(state, current_time)
+        cooldown_remaining = max(0.0, state.cooldown_until - current_time)
+        token_remaining = (
+            0.0
+            if state.tokens >= 1.0
+            else (1.0 - state.tokens) / self.requests_per_second
+        )
+        return max(cooldown_remaining, token_remaining)
+
     def _state_for_lease(self, lease: KeyLease) -> _KeyState | None:
         for state in self._states:
-            if state.key == lease.key:
+            if state.key.id == lease.id and state.key.secret == lease.secret:
                 return state
         return None

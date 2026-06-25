@@ -590,28 +590,18 @@ class SemanticScholarAdapter:
                 "venue", "authors", "citationCount", "isOpenAccess",
             ]
 
-        # Use recommendations base URL
-        client = await self._get_client()
         url = f"{S2_RECOMMENDATIONS_BASE}/papers"
-
-        await self._acquire_token()
-
-        response = await client.post(
+        return await self._request_with_retry(
+            "POST",
             url,
             params={"fields": ",".join(fields)},
-            json={
+            json_data={
                 "positivePaperIds": positive_paper_ids,
                 "negativePaperIds": negative_paper_ids or [],
                 "limit": min(limit, 500),
             },
+            use_cache=False,
         )
-
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 429:
-            raise RuntimeError("Rate limited")
-        else:
-            raise ValueError(f"API error: {response.status_code}")
 
     async def get_recommendations_for_paper(
         self,
@@ -629,26 +619,17 @@ class SemanticScholarAdapter:
                 "venue", "authors", "citationCount", "isOpenAccess",
             ]
 
-        client = await self._get_client()
         url = f"{S2_RECOMMENDATIONS_BASE}/papers/forpaper/{paper_id}"
-
-        await self._acquire_token()
-
-        response = await client.get(
+        return await self._request_with_retry(
+            "GET",
             url,
             params={
                 "limit": min(limit, 500),
                 "from": from_pool,
                 "fields": ",".join(fields),
             },
+            use_cache=False,
         )
-
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 429:
-            raise RuntimeError("Rate limited")
-        else:
-            raise ValueError(f"API error: {response.status_code}")
 
     # ============================================
     # Snippet Search Method
@@ -685,15 +666,8 @@ class SemanticScholarAdapter:
 
     async def get_latest_release(self) -> dict[str, Any]:
         """Get the latest dataset release information."""
-        client = await self._get_client()
         url = f"{S2_DATASETS_BASE}/release/latest"
-
-        await self._acquire_token()
-        response = await client.get(url)
-
-        if response.status_code == 200:
-            return response.json()
-        raise ValueError(f"API error: {response.status_code}")
+        return await self._request_with_retry("GET", url, use_cache=False)
 
     async def get_dataset_download_url(
         self,
@@ -701,16 +675,9 @@ class SemanticScholarAdapter:
         dataset_name: str,
     ) -> str:
         """Get download URL for a specific dataset."""
-        client = await self._get_client()
         url = f"{S2_DATASETS_BASE}/release/{release_id}/dataset/{dataset_name}"
-
-        await self._acquire_token()
-        response = await client.get(url)
-
-        if response.status_code == 200:
-            data = response.json()
-            return data["downloadLink"]
-        raise ValueError(f"API error: {response.status_code}")
+        data = await self._request_with_retry("GET", url, use_cache=False)
+        return data["downloadLink"]
 
     async def close(self) -> None:
         """Close the HTTP client."""

@@ -26,6 +26,10 @@ def test_semantic_scholar_api_key_defaults_to_one_request_per_second() -> None:
     assert adapter.rate_limit.burst_capacity == 1
 
 
+def test_openalex_retry_max_delay_defaults_to_30_seconds() -> None:
+    assert OpenAlexConfig().retry_max_delay == 30.0
+
+
 @pytest.mark.asyncio
 async def test_semantic_scholar_429_raises_rate_limited_error_with_retry_after(
     monkeypatch: pytest.MonkeyPatch,
@@ -109,6 +113,76 @@ async def test_semantic_scholar_403_raises_credential_error(
     assert error.kind == LiteratureErrorKind.CREDENTIAL_ERROR
     assert error.status_code == 403
     assert request_count == 1
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_semantic_scholar_recommendations_429_raises_rate_limited_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "1.5"},
+            request=request,
+            text="too many requests",
+        )
+
+    adapter = SemanticScholarAdapter(
+        api_key="key",
+        rate_limit=RateLimitConfig(
+            requests_per_second=100.0,
+            burst_capacity=10,
+            retry_attempts=1,
+        ),
+    )
+    adapter._client = httpx.AsyncClient(
+        base_url=S2_GRAPH_BASE,
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(s2_module.asyncio, "sleep", _no_sleep)
+
+    with pytest.raises(SourceRequestError) as exc_info:
+        await adapter.get_recommendations(["paper-1"])
+
+    error = exc_info.value
+    assert error.source == LiteratureSource.SEMANTIC_SCHOLAR
+    assert error.kind == LiteratureErrorKind.RATE_LIMITED
+    assert error.status_code == 429
+    assert error.retry_after_seconds == 1.5
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_semantic_scholar_dataset_5xx_raises_transient_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, request=request, text="service unavailable")
+
+    adapter = SemanticScholarAdapter(
+        api_key="key",
+        rate_limit=RateLimitConfig(
+            requests_per_second=100.0,
+            burst_capacity=10,
+            retry_attempts=1,
+        ),
+    )
+    adapter._client = httpx.AsyncClient(
+        base_url=S2_GRAPH_BASE,
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(s2_module.asyncio, "sleep", _no_sleep)
+
+    with pytest.raises(SourceRequestError) as exc_info:
+        await adapter.get_latest_release()
+
+    error = exc_info.value
+    assert error.source == LiteratureSource.SEMANTIC_SCHOLAR
+    assert error.kind == LiteratureErrorKind.TRANSIENT_ERROR
+    assert error.status_code == 503
 
     await adapter.close()
 

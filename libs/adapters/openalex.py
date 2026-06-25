@@ -135,7 +135,7 @@ class OpenAlexConfig:
     max_results_per_query: int = 200
     retry_attempts: int = 3
     retry_base_delay: float = 1.0
-    retry_max_delay: float = 60.0
+    retry_max_delay: float = 30.0
 
 
 class OpenAlexAdapter:
