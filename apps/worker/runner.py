@@ -507,6 +507,16 @@ class WorkerRunner:
                     "experiment_workspace": workspace,
                 },
             )
+            from apps.worker.production.research_completion import (
+                write_research_completion_package,
+            )
+
+            write_research_completion_package(
+                workspace_path,
+                run_id=run_id,
+                title=str(run.get("title") or getattr(state, "topic", "Research Run")),
+                state=state,
+            )
         except Exception as exc:
             logger.warning(
                 "worker.workspace_outputs_failed",

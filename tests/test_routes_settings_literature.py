@@ -221,6 +221,30 @@ def test_put_literature_source_redacts_secret_from_error(
     assert "semantic-secret-key-1234567890" not in response.text
 
 
+def test_put_literature_source_missing_encryption_key_returns_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeLiteratureRepository()
+    repo.update_source.side_effect = RuntimeError(
+        "CREDENTIAL_ENCRYPTION_KEY is required to store DeepSeek API keys"
+    )
+    monkeypatch.setattr(
+        routes_settings,
+        "LiteratureSettingsRepository",
+        lambda: repo,
+        raising=False,
+    )
+
+    response = _client().put(
+        "/api/v1/settings/literature/semantic_scholar",
+        json={"new_credentials": ["semantic-secret-key-1234567890"]},
+    )
+
+    assert response.status_code == 400
+    assert "CREDENTIAL_ENCRYPTION_KEY" in response.json()["detail"]
+    assert "semantic-secret-key-1234567890" not in response.text
+
+
 def test_put_literature_source_value_error_returns_400_and_redacts_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -255,10 +279,26 @@ def test_post_literature_source_test_records_ok_for_configured_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = FakeLiteratureRepository()
+    probe_calls: list[LiteratureSource] = []
+
+    async def fake_probe_literature_source(
+        source: LiteratureSource,
+        *,
+        repo: FakeLiteratureRepository,
+    ) -> dict[str, Any]:
+        probe_calls.append(source)
+        return {"status": "ok", "error": None, "candidate_count": 1}
+
     monkeypatch.setattr(
         routes_settings,
         "LiteratureSettingsRepository",
         lambda: repo,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routes_settings,
+        "probe_literature_source",
+        fake_probe_literature_source,
         raising=False,
     )
 
@@ -266,6 +306,7 @@ def test_post_literature_source_test_records_ok_for_configured_source(
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "error": None}
+    assert probe_calls == [LiteratureSource.SEMANTIC_SCHOLAR]
     repo.get_source.assert_awaited_once_with(LiteratureSource.SEMANTIC_SCHOLAR)
     repo.record_source_test.assert_awaited_once_with(
         LiteratureSource.SEMANTIC_SCHOLAR,

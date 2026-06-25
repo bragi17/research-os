@@ -10,6 +10,7 @@ from structlog import get_logger
 
 from libs.schemas.literature import LiteratureSource, LiteratureSourceUpdate
 from libs.schemas.settings import LLMSettingsUpdate, LLMTestRequest
+from services.literature_source_probe import probe_literature_source
 from services.literature_settings import LiteratureSettingsRepository
 from services.llm_settings import (
     DEFAULT_DEEPSEEK_BASE_URL,
@@ -364,7 +365,10 @@ async def delete_llm_api_key() -> dict[str, Any]:
     except Exception as exc:
         error = redact_secret_text(str(exc))[:200]
         logger.error("settings.llm_key_delete_failed", error=error)
-        raise HTTPException(status_code=500, detail=error)
+        raise HTTPException(
+            status_code=_llm_settings_error_status(error),
+            detail=error,
+        )
 
 
 @router.put("/literature/{source}")
@@ -404,7 +408,10 @@ async def update_literature_source(
             source=source.value,
             error=error,
         )
-        raise HTTPException(status_code=500, detail=error)
+        raise HTTPException(
+            status_code=_llm_settings_error_status(error),
+            detail=error,
+        )
 
 
 @router.post("/literature/{source}/test")
@@ -412,8 +419,13 @@ async def test_literature_source(source: LiteratureSource) -> dict[str, Any]:
     repo = LiteratureSettingsRepository()
     try:
         settings = await repo.get_source(source)
-        status = "ok" if settings.configured else "error"
-        error = None if settings.configured else f"{source.value} is not configured"
+        if settings.configured:
+            result = await probe_literature_source(source, repo=repo)
+            status = str(result.get("status") or "error")
+            error = result.get("error")
+        else:
+            status = "error"
+            error = f"{source.value} is not configured"
         await repo.record_source_test(source, status, error)
         return {"status": status, "error": error}
     except Exception as exc:

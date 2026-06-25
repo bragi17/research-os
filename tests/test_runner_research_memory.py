@@ -152,3 +152,14 @@ def test_worker_writes_run_outputs_to_experiment_workspace(monkeypatch, tmp_path
         {"title": "Prime gaps"},
     ]
     assert json.loads((workspace_path / "run_state.json").read_text())["run_id"] == str(run_id)
+    manifest = json.loads((workspace_path / "experiments" / "manifest.json").read_text())
+    assert manifest["project"] == "Prime Gap Study"
+    assert manifest["phases"][0]["jobs"][0]["name"] == "research_flow_integrity"
+    metrics = json.loads((workspace_path / "artifacts" / "research_flow_metrics.json").read_text())
+    assert metrics["cpu_experiment"] == "research_flow_integrity_v1"
+    assert metrics["idea_count"] == 1
+    assert metrics["paper_summary_count"] == 1
+    draft = (workspace_path / "paper" / "draft.md").read_text()
+    assert "# Prime Gap Study" in draft
+    assert "## CPU Experiment" in draft
+    assert "Residual envelope check" in draft
