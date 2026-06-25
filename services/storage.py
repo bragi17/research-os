@@ -40,6 +40,12 @@ def workspace_object_prefix(workspace_id: UUID | str, prefix: str) -> str:
     return f"workspaces/{UUID(str(workspace_id))}/{relative.as_posix()}"
 
 
+def _safe_filename(filename: str) -> str:
+    if not filename or filename in {".", ".."} or "/" in filename or "\\" in filename:
+        raise ValueError("filename must be a safe basename")
+    return filename
+
+
 class StorageService:
     """
     Object storage service for Research OS.
@@ -68,12 +74,17 @@ class StorageService:
         Returns:
             Dict with keys: object_key, sha256, size, content_type
         """
+        safe_filename = _safe_filename(filename)
         sha256 = hashlib.sha256(content).hexdigest()
-        ext = Path(filename).suffix
-        object_key = f"{prefix}/{sha256[:8]}/{uuid4().hex[:8]}_{filename}"
+        object_key = f"{prefix}/{sha256[:8]}/{uuid4().hex[:8]}_{safe_filename}"
 
         if self.backend == "local":
-            file_path = self.base_dir / object_key
+            base_dir = self.base_dir.resolve()
+            file_path = (base_dir / object_key).resolve()
+            try:
+                file_path.relative_to(base_dir)
+            except ValueError as exc:
+                raise ValueError("storage path escapes base directory") from exc
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_bytes(content)
             logger.info("storage.uploaded_local", key=object_key, size=len(content))

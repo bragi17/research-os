@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
-from services.storage import workspace_object_prefix
+from services.storage import StorageService, workspace_object_prefix
 
 
 WORKSPACE_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -31,6 +31,82 @@ def test_workspace_object_prefix_rejects_unsafe_prefix() -> None:
         assert str(exc) == "storage prefix must be relative and safe"
     else:
         raise AssertionError("unsafe prefix accepted")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../evil.pdf",
+        "..\\evil.pdf",
+        "",
+        ".",
+        "..",
+    ],
+)
+async def test_local_upload_rejects_unsafe_filename(
+    tmp_path,
+    filename: str,
+) -> None:
+    storage = StorageService(backend="local")
+    storage.base_dir = tmp_path / "storage"
+    storage.base_dir.mkdir()
+    prefix = workspace_object_prefix(WORKSPACE_ID, "pdfs")
+
+    with pytest.raises(ValueError, match="filename must be a safe basename"):
+        await storage.upload_file(
+            content=b"%PDF-1.7\n",
+            filename=filename,
+            content_type="application/pdf",
+            prefix=prefix,
+        )
+
+    assert not (tmp_path / "evil.pdf").exists()
+
+
+@pytest.mark.asyncio
+async def test_local_upload_with_workspace_prefix_writes_under_base_dir(
+    tmp_path,
+) -> None:
+    storage = StorageService(backend="local")
+    storage.base_dir = tmp_path / "storage"
+    storage.base_dir.mkdir()
+    prefix = workspace_object_prefix(WORKSPACE_ID, "pdfs")
+
+    metadata = await storage.upload_file(
+        content=b"%PDF-1.7\n",
+        filename="paper.pdf",
+        content_type="application/pdf",
+        prefix=prefix,
+    )
+
+    base_dir = storage.base_dir.resolve()
+    uploaded_path = (storage.base_dir / metadata["object_key"]).resolve()
+
+    assert uploaded_path.is_relative_to(base_dir)
+    assert uploaded_path.read_bytes() == b"%PDF-1.7\n"
+    assert metadata["object_key"].startswith(
+        "workspaces/11111111-1111-1111-1111-111111111111/pdfs/"
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_upload_rejects_object_key_that_escapes_base_dir(
+    tmp_path,
+) -> None:
+    storage = StorageService(backend="local")
+    storage.base_dir = tmp_path / "storage"
+    storage.base_dir.mkdir()
+
+    with pytest.raises(ValueError, match="storage path escapes base directory"):
+        await storage.upload_file(
+            content=b"%PDF-1.7\n",
+            filename="paper.pdf",
+            content_type="application/pdf",
+            prefix="../../../outside",
+        )
+
+    assert not (tmp_path / "outside").exists()
 
 
 def test_upload_uses_authenticated_workspace_prefix(
