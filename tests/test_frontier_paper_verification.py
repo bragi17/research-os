@@ -13,6 +13,9 @@ from apps.worker.modes.base import ModeGraphState
 async def test_verify_paper_candidates_for_run_persists_and_returns_by_candidate_id(
     monkeypatch,
 ):
+    monkeypatch.delenv("S2_API_KEY", raising=False)
+    monkeypatch.delenv("CROSSREF_EMAIL", raising=False)
+    monkeypatch.delenv("OPENALEX_EMAIL", raising=False)
     run_id = uuid4()
     persisted: list[dict] = []
     verified_candidates = []
