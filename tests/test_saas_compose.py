@@ -34,3 +34,5 @@ def test_saas_env_example_requires_secrets() -> None:
     assert "JWT_SECRET=change-me-generate-a-long-random-secret" in env
     assert "CREDENTIAL_ENCRYPTION_KEY=change-me-generate-a-long-random-secret" in env
     assert "AUTH_REQUIRED=true" in env
+    assert "S2_API_KEY=" in env
+    assert "CROSSREF_EMAIL=" in env
