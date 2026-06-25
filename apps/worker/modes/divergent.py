@@ -519,6 +519,66 @@ def _attach_prior_art_details(
     return updated_cards
 
 
+def _unpack_literature_search_result(result: Any) -> tuple[
+    list[str],
+    list[str],
+    list[str],
+    dict[str, str],
+    dict[str, Any] | None,
+]:
+    if isinstance(result, tuple) and len(result) >= 5:
+        found, executed, errors, title_map, report = result[:5]
+    else:
+        found, executed, errors, title_map = result
+        report = None
+    return (
+        list(found or []),
+        list(executed or []),
+        list(errors or []),
+        dict(title_map or {}),
+        dict(report) if isinstance(report, dict) else None,
+    )
+
+
+def _literature_gate_status(report: dict[str, Any] | None) -> str:
+    if not report:
+        return ""
+    status = report.get("gate_status")
+    return str(getattr(status, "value", status) or "").lower()
+
+
+def _prior_art_retrieval_status(gate_status: str) -> str:
+    return "retrieval_pending" if gate_status == "pending" else "retrieval_failed"
+
+
+def _mark_gated_prior_art_cards(
+    cards: list[dict[str, Any]],
+    gated_searches_by_key: dict[str, str],
+) -> list[dict[str, Any]]:
+    updated_cards: list[dict[str, Any]] = []
+    for card in cards:
+        dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        retrieval_gate_status = gated_searches_by_key.get(dedup_key)
+        if retrieval_gate_status:
+            updated_cards.append(
+                {
+                    **card,
+                    "prior_art_check_status": _prior_art_retrieval_status(
+                        retrieval_gate_status
+                    ),
+                    "prior_art_found": None,
+                    "similar_works": card.get("similar_works", []),
+                    "prior_art_similar_works": card.get(
+                        "prior_art_similar_works",
+                        [],
+                    ),
+                }
+            )
+        else:
+            updated_cards.append(dict(card))
+    return updated_cards
+
+
 def _verifier_value(value: Any) -> Any:
     if isinstance(value, str):
         if len(value) <= _VERIFIER_TEXT_MAX_LENGTH:
@@ -1318,13 +1378,26 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
     prior_art_verification: dict[str, dict[str, Any]] = {}
     prior_art_records_by_key: dict[str, list[dict[str, Any]]] = {}
+    literature_reports_by_key: dict[str, dict[str, Any]] = {}
+    gated_searches_by_key: dict[str, str] = {}
     for job in search_jobs:
-        found, _executed, search_errors, title_map = await search_academic_sources(
+        search_result = await search_academic_sources(
             topic=state.topic,
             queries=[job["query"]],
             existing_titles=existing_titles,
+            return_report=True,
+        )
+        found, _executed, search_errors, title_map, search_report = (
+            _unpack_literature_search_result(search_result)
         )
         errors.extend(search_errors)
+        if search_report is not None:
+            literature_reports_by_key[job["dedup_key"]] = search_report
+        gate_status = _literature_gate_status(search_report)
+        if gate_status in {"blocked", "pending"}:
+            gated_searches_by_key[job["dedup_key"]] = gate_status
+            prior_art_records_by_key[job["dedup_key"]] = []
+            continue
 
         card_verification = await verify_paper_candidates_for_run(
             state.run_id,
@@ -1341,10 +1414,56 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
         )
         prior_art_verification.update(normalized_verification)
 
+    if (
+        search_jobs
+        and len(gated_searches_by_key) == len(search_jobs)
+        and not any(prior_art_records_by_key.values())
+    ):
+        retrieval_status = (
+            "retrieval_pending"
+            if any(status == "pending" for status in gated_searches_by_key.values())
+            else "retrieval_failed"
+        )
+        updated_bundle = dict(state.context_bundle)
+        if literature_reports_by_key:
+            updated_bundle["literature_search_reports"] = literature_reports_by_key
+        updates["idea_cards"] = _mark_gated_prior_art_cards(
+            keyed_idea_cards,
+            gated_searches_by_key,
+        )
+        updates["context_bundle"] = updated_bundle
+        updates["current_cost_usd"] = cost
+        updates["errors"] = errors
+        updates["messages"] = [
+            {
+                "role": "assistant",
+                "content": "Prior art retrieval is not available for the current literature sources.",
+            }
+        ]
+        logger.info(
+            "prior_art_check.retrieval_unavailable",
+            gate_status=retrieval_status,
+            jobs=len(search_jobs),
+        )
+        await emit_progress(
+            state.run_id,
+            "prior_art_check",
+            "done",
+            "Prior art retrieval is not available",
+            severity="warning",
+        )
+        return updates
+
     # Use VERIFIER prompt from templates.py to assess novelty
     verifier_system = get_system_prompt(PromptName.VERIFIER)
+    reviewable_idea_cards = [
+        card
+        for card in keyed_idea_cards[:10]
+        if str(card.get("dedup_key") or _idea_dedup_key(card))
+        not in gated_searches_by_key
+    ]
     verifier_payload = _build_prior_art_verifier_payload(
-        keyed_idea_cards[:10],
+        reviewable_idea_cards,
         prior_art_records_by_key,
     )
     verifier_payload_json = json.dumps(verifier_payload, default=str)
@@ -1404,6 +1523,23 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     updated_cards: list[dict[str, Any]] = []
     for card in keyed_idea_cards:
         dedup_key = str(card.get("dedup_key") or _idea_dedup_key(card))
+        retrieval_gate_status = gated_searches_by_key.get(dedup_key)
+        if retrieval_gate_status:
+            updated_cards.append(
+                {
+                    **card,
+                    "prior_art_check_status": _prior_art_retrieval_status(
+                        retrieval_gate_status
+                    ),
+                    "prior_art_found": None,
+                    "similar_works": card.get("similar_works", []),
+                    "prior_art_similar_works": card.get(
+                        "prior_art_similar_works",
+                        [],
+                    ),
+                }
+            )
+            continue
         check = check_map.get(
             dedup_key,
             title_check_map.get(card.get("title", ""), {}),
@@ -1435,6 +1571,8 @@ async def prior_art_check(state: ModeGraphState) -> dict[str, Any]:
     paper_verification = dict(updated_bundle.get("paper_verification", {}))
     paper_verification.update(prior_art_verification)
     updated_bundle["paper_verification"] = paper_verification
+    if literature_reports_by_key:
+        updated_bundle["literature_search_reports"] = literature_reports_by_key
     updates["context_bundle"] = updated_bundle
     updates["current_cost_usd"] = cost
     updates["errors"] = errors

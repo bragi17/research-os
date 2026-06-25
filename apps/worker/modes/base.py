@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, overload
 from uuid import UUID, uuid4
 
 from langgraph.graph import END
@@ -31,6 +31,15 @@ from libs.prompts.templates import (
 from services.parser import detect_arxiv_id, parse_paper
 
 logger = get_logger(__name__)
+
+LiteratureSearchResult = tuple[list[str], list[str], list[str], dict[str, str]]
+LiteratureSearchResultWithReport = tuple[
+    list[str],
+    list[str],
+    list[str],
+    dict[str, str],
+    dict[str, Any] | None,
+]
 
 # ---------------------------------------------------------------------------
 # Cost estimation
@@ -255,18 +264,119 @@ def check_should_continue(
 # ---------------------------------------------------------------------------
 
 
+@overload
 async def search_academic_sources(
     topic: str,
     queries: list[dict[str, Any]],
     keywords: list[str] | None = None,
     existing_titles: set[str] | None = None,
-) -> tuple[list[str], list[str], list[str], dict[str, str]]:
+    return_report: Literal[False] = False,
+) -> LiteratureSearchResult:
+    ...
+
+
+@overload
+async def search_academic_sources(
+    topic: str,
+    queries: list[dict[str, Any]],
+    keywords: list[str] | None = None,
+    existing_titles: set[str] | None = None,
+    return_report: Literal[True] = True,
+) -> LiteratureSearchResultWithReport:
+    ...
+
+
+async def search_academic_sources(
+    topic: str,
+    queries: list[dict[str, Any]],
+    keywords: list[str] | None = None,
+    existing_titles: set[str] | None = None,
+    return_report: bool = False,
+) -> LiteratureSearchResult | LiteratureSearchResultWithReport:
     """
-    Unified search across Semantic Scholar and OpenAlex.
+    Unified search across configured literature sources.
 
     Returns:
         (new_candidate_ids, executed_query_texts, error_messages, id_to_title_map)
     """
+    executed = _executed_query_texts(topic, queries)
+    try:
+        coordinator = await _build_literature_search_coordinator()
+    except Exception as exc:
+        if not _is_missing_literature_settings_table(exc):
+            raise
+        logger.warning(
+            "search_academic.literature_settings_unavailable",
+            error=str(exc),
+        )
+        result = await _legacy_search_academic_sources(
+            topic=topic,
+            queries=queries,
+            existing_titles=existing_titles,
+        )
+        if return_report:
+            return (*result, None)
+        return result
+
+    try:
+        candidates, report = await coordinator.search(
+            topic=topic,
+            queries=queries,
+            limit_per_query=50,
+        )
+    finally:
+        await coordinator.close()
+
+    seen_titles: set[str] = set(existing_titles or set())
+    new_candidates: list[str] = []
+    id_to_title: dict[str, str] = {}
+    for candidate in candidates:
+        candidate_id = (
+            candidate.candidate_id
+            if return_report
+            else _legacy_candidate_id(candidate)
+        )
+        if not candidate_id:
+            logger.debug(
+                "search_academic.skipped_unresolvable_candidate",
+                source=candidate.source.value,
+                title=candidate.title[:80],
+            )
+            continue
+        norm = _normalize_title(candidate.title)
+        if norm and norm in seen_titles:
+            continue
+        if norm:
+            seen_titles.add(norm)
+        new_candidates.append(candidate_id)
+        id_to_title[candidate_id] = candidate.title
+
+    errors = [
+        _format_literature_source_error(error)
+        for error in report.source_errors
+    ]
+    errors.extend(
+        f"{source} unavailable: {reason}"
+        for source, reason in report.unavailable_sources.items()
+    )
+    report_payload = report.model_dump(mode="json")
+    logger.info(
+        "search_academic.literature_done",
+        queries=len(executed),
+        candidates=len(new_candidates),
+        gate_status=report.gate_status.value,
+    )
+    if return_report:
+        return new_candidates, executed, errors, id_to_title, report_payload
+    return new_candidates, executed, errors, id_to_title
+
+
+async def _legacy_search_academic_sources(
+    topic: str,
+    queries: list[dict[str, Any]],
+    existing_titles: set[str] | None = None,
+) -> LiteratureSearchResult:
+    """Fallback direct S2/OpenAlex search for pre-migration databases."""
     s2 = SemanticScholarAdapter(api_key=os.getenv("S2_API_KEY"))
     oa = OpenAlexAdapter(email=os.getenv("OPENALEX_EMAIL"))
 
@@ -363,6 +473,213 @@ async def search_academic_sources(
     return new_candidates, executed, errors, id_to_title
 
 
+async def _build_literature_search_coordinator() -> Any:
+    """Build a literature search coordinator from saved source settings."""
+    from libs.schemas.literature import LiteratureSource
+    from services.literature_search import LiteratureSearchCoordinator
+    from services.literature_settings import LiteratureSettingsRepository, mask_api_key
+    from services.literature_sources.deepxiv import DeepXivSource
+    from services.literature_sources.local_library import LocalLibrarySource
+    from services.literature_sources.obsidian import ObsidianSource
+    from services.literature_sources.openalex import OpenAlexSource
+    from services.literature_sources.semantic_scholar import SemanticScholarSource
+    from services.literature_sources.web_search import WebSearchSource
+    from services.literature_sources.zotero import ZoteroSource
+    from services.source_key_pool import KeyMaterial, SourceKeyPool
+
+    repo = LiteratureSettingsRepository()
+    settings = await repo.list_sources()
+    adapters: list[Any] = []
+    for source_settings in settings:
+        if not source_settings.enabled:
+            continue
+        source = source_settings.source
+        options = _literature_adapter_options(source, source_settings.options)
+
+        if source is LiteratureSource.LOCAL_LIBRARY:
+            adapters.append(LocalLibrarySource(options=options))
+        elif source is LiteratureSource.ZOTERO:
+            adapters.append(ZoteroSource(options=options))
+        elif source is LiteratureSource.OBSIDIAN:
+            adapters.append(ObsidianSource(options=options))
+        elif source is LiteratureSource.WEB_SEARCH:
+            credentials = await repo.get_active_credentials(source)
+            adapters.append(
+                WebSearchSource(
+                    options=options,
+                    api_key=_first_literature_secret(credentials),
+                )
+            )
+        elif source is LiteratureSource.SEMANTIC_SCHOLAR:
+            credentials = await repo.get_active_credentials(source)
+            key_pool = SourceKeyPool(
+                [
+                    KeyMaterial(
+                        id=str(credential.id) if credential.id else None,
+                        secret=credential.secret,
+                        preview=mask_api_key(credential.secret),
+                    )
+                    for credential in credentials
+                ],
+                requests_per_second=_positive_float(
+                    options.get("requests_per_second"),
+                    1.0,
+                ),
+                burst_capacity=_positive_int(options.get("burst_capacity"), 1),
+            )
+            adapters.append(
+                SemanticScholarSource(
+                    options=options,
+                    source_key_pool=key_pool,
+                )
+            )
+        elif source is LiteratureSource.OPENALEX:
+            credentials = await repo.get_active_credentials(source)
+            adapters.append(
+                OpenAlexSource(
+                    options=options,
+                    email=options.get("email"),
+                    api_key=_first_literature_secret(credentials),
+                )
+            )
+        elif source is LiteratureSource.DEEPXIV:
+            adapters.append(DeepXivSource(options=options))
+
+    return LiteratureSearchCoordinator(adapters)
+
+
+def _literature_adapter_options(source: Any, options: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(options)
+    source_value = getattr(source, "value", str(source))
+    if source_value == "zotero" and "path" not in normalized:
+        path = normalized.get("library_path")
+        if path:
+            normalized["path"] = path
+    if source_value == "obsidian" and "path" not in normalized:
+        path = normalized.get("vault_path")
+        if path:
+            normalized["path"] = path
+    return normalized
+
+
+def _first_literature_secret(credentials: list[Any]) -> str | None:
+    for credential in credentials:
+        secret = getattr(credential, "secret", "")
+        if secret:
+            return str(secret)
+    return None
+
+
+def _legacy_candidate_id(candidate: Any) -> str | None:
+    s2_id = _clean_identifier(getattr(candidate, "s2_id", None))
+    if s2_id:
+        return s2_id
+
+    openalex_id = _clean_identifier(getattr(candidate, "openalex_id", None))
+    if openalex_id:
+        return f"OA:{openalex_id}"
+
+    candidate_id = _clean_identifier(getattr(candidate, "candidate_id", None))
+    if candidate_id:
+        lower = candidate_id.lower()
+        if lower.startswith("s2:") or lower.startswith("semanticscholar:"):
+            return candidate_id.split(":", 1)[1].strip() or None
+        if lower.startswith("openalex:"):
+            openalex_value = candidate_id.split(":", 1)[1].strip()
+            return f"OA:{openalex_value}" if openalex_value else None
+        if lower.startswith("oa:"):
+            return f"OA:{candidate_id.split(':', 1)[1].strip()}"
+
+    doi = _legacy_bare_doi(getattr(candidate, "doi", None))
+    if doi:
+        return doi
+    return _legacy_bare_doi(candidate_id)
+
+
+def _clean_identifier(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _legacy_bare_doi(value: object) -> str | None:
+    text = _clean_identifier(value)
+    if not text:
+        return None
+    lower = text.lower()
+    for prefix in (
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://dx.doi.org/",
+        "http://dx.doi.org/",
+        "doi:",
+    ):
+        if lower.startswith(prefix):
+            text = text[len(prefix) :].strip()
+            break
+    text = text.rstrip(".,;")
+    return text if text.lower().startswith("10.") and "/" in text else None
+
+
+def _executed_query_texts(topic: str, queries: list[dict[str, Any]]) -> list[str]:
+    executed: list[str] = []
+    for query_spec in queries:
+        query_text = str(query_spec.get("query") or topic).strip()
+        if query_text:
+            executed.append(query_text)
+    return executed
+
+
+def _format_literature_source_error(error: Any) -> str:
+    source = getattr(
+        getattr(error, "source", None),
+        "value",
+        None,
+    ) or getattr(error, "source", "source")
+    kind = getattr(
+        getattr(error, "kind", None),
+        "value",
+        None,
+    ) or getattr(error, "kind", "error")
+    message = getattr(error, "message", str(error))
+    query = getattr(error, "query", None)
+    prefix = f"{source} {kind}"
+    if query:
+        return f"{prefix} for '{str(query)[:40]}': {message}"
+    return f"{prefix}: {message}"
+
+
+def _is_missing_literature_settings_table(exc: Exception) -> bool:
+    if getattr(exc, "sqlstate", None) == "42P01" or getattr(exc, "pgcode", None) == "42P01":
+        return True
+    name = type(exc).__name__
+    message = str(exc).casefold()
+    return (
+        name == "UndefinedTableError"
+        or (
+            "literature_source_" in message
+            and "does not exist" in message
+        )
+    )
+
+
+def _positive_float(value: object, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _positive_int(value: object, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
 async def verify_paper_candidates_for_run(
     run_id: UUID | str,
     candidate_ids: list[str],
@@ -423,8 +740,11 @@ async def tool_resolve_metadata(pid: str) -> tuple[Any | None, list[str]]:
     )
     try:
         kwargs: dict[str, str] = {}
-        if pid.startswith("OA:"):
-            kwargs["openalex_id"] = pid.removeprefix("OA:")
+        lower_pid = pid.lower()
+        if lower_pid.startswith(("oa:", "openalex:")):
+            kwargs["openalex_id"] = pid.split(":", 1)[1].strip()
+        elif lower_pid.startswith(("s2:", "semanticscholar:")):
+            kwargs["s2_id"] = pid.split(":", 1)[1].strip()
         elif pid.startswith("10."):
             kwargs["doi"] = pid
         else:
