@@ -229,6 +229,7 @@ def test_production_constraint_enums_match_design_values() -> None:
     assert [executor_type.value for executor_type in ExperimentJobExecutorType] == [
         "local",
         "ssh",
+        "docker_gpu",
     ]
     assert [observation_type.value for observation_type in ResultObservationType] == [
         "metric",

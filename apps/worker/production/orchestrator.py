@@ -22,6 +22,10 @@ from apps.worker.production.experiments.local_executor import (
     LocalJobResult,
     LocalJobSpec,
 )
+from apps.worker.production.experiments.docker_executor import (
+    DockerExperimentExecutor,
+    DockerJobSpec,
+)
 from apps.worker.production.experiments.manifest import expand_manifest_jobs
 from apps.worker.production.experiments.ssh_executor import (
     SSHExperimentExecutor,
@@ -378,7 +382,12 @@ async def create_manifest_jobs(manifest_id: UUID) -> list[dict[str, Any]]:
     remote_host_id = resources.get("remote_host_id")
     executor_type = resources.get("executor_type")
     if executor_type is None:
-        executor_type = "ssh" if remote_host_id and resources.get("local_first") is False else "local"
+        if resources.get("gpu_required") is True:
+            executor_type = "docker_gpu"
+        elif remote_host_id and resources.get("local_first") is False:
+            executor_type = "ssh"
+        else:
+            executor_type = "local"
     remote_host_uuid = UUID(str(remote_host_id)) if executor_type == "ssh" and remote_host_id else None
     if executor_type == "ssh" and remote_host_uuid is None:
         raise ValueError("remote_host_id is required for ssh manifest resources")
@@ -413,6 +422,11 @@ async def create_manifest_jobs(manifest_id: UUID) -> list[dict[str, Any]]:
                     "job_index": job.job_index,
                     "oom_retry": job.oom_retry,
                     "phase_dependencies": list(job.phase_dependencies),
+                    "gpu_count": int(resources.get("gpu_count") or 1),
+                    "job_image": resources.get("job_image") or "research-os-job-runtime:latest",
+                    "memory": resources.get("memory") or "16g",
+                    "cpus": resources.get("cpus") or "4",
+                    "network": resources.get("network") or "none",
                 },
             }
         )
@@ -1046,6 +1060,25 @@ async def run_local_job(
         )
         artifact_dir = str(local_artifact_dir)
         executor = executor or SSHExperimentExecutor()
+    elif executor_type == "docker_gpu":
+        cwd = Path(str(job.get("cwd") or "."))
+        metrics = job.get("metrics_json") if isinstance(job.get("metrics_json"), dict) else {}
+        spec = DockerJobSpec(
+            job_id=str(job_id),
+            workspace_root=root,
+            cwd=cwd,
+            command=job["cmd"],
+            image=str(metrics.get("job_image") or "research-os-job-runtime:latest"),
+            log_dir=log_dir,
+            expected_outputs=_expected_output_paths(job),
+            timeout_sec=_job_timeout(job),
+            gpu_count=int(metrics.get("gpu_count") or 1),
+            memory=str(metrics.get("memory") or "16g"),
+            cpus=str(metrics.get("cpus") or "4"),
+            network=str(metrics.get("network") or "none"),
+        )
+        artifact_dir = str(_resolve_job_artifact_dir(root, job_id))
+        executor = executor or DockerExperimentExecutor()
     elif executor_type == "local":
         cwd = _resolve_job_cwd(job.get("cwd"), root)
         spec = LocalJobSpec(

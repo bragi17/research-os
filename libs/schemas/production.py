@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
@@ -171,6 +171,7 @@ class ExperimentJobExecutorType(str, Enum):
 
     LOCAL = "local"
     SSH = "ssh"
+    DOCKER_GPU = "docker_gpu"
 
 
 class ExperimentJobStatus(str, Enum):
@@ -365,6 +366,12 @@ class ExperimentResources(BaseModel):
     local_first: bool = True
     gpu_required: bool = False
     remote_host_id: UUID | None = None
+    executor_type: Literal["local", "ssh", "docker_gpu"] | None = None
+    gpu_count: int = Field(default=1, ge=1)
+    job_image: str = "research-os-job-runtime:latest"
+    memory: str = "16g"
+    cpus: str = "4"
+    network: str = "none"
     max_parallel: int = Field(default=1, ge=1)
 
 
