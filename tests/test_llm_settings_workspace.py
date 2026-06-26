@@ -30,13 +30,6 @@ def test_workspace_context_restores_previous_value() -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_executes_run_inside_workspace_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    await _assert_worker_executes_run_inside_workspace_context(monkeypatch)
-
-
-@pytest.mark.asyncio
 async def test_worker_run_executes_inside_loaded_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
