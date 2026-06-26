@@ -613,7 +613,6 @@ def client():
 
 def test_library_archive_upload_rejects_tar_path_traversal(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import io
     import tarfile
@@ -636,6 +635,27 @@ def test_library_archive_upload_rejects_tar_path_traversal(
     assert not (tmp_path / "escape.txt").exists()
 
 
+def test_library_archive_upload_rejects_tar_special_member(tmp_path: Path) -> None:
+    import tarfile
+
+    import apps.api.routes_library as routes_library
+
+    archive_path = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        info = tarfile.TarInfo("link.tex")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "main.tex"
+        tar.addfile(info)
+
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        routes_library._safe_extract_archive(archive_path, extract_dir)
+
+    assert not (extract_dir / "link.tex").exists()
+
+
 def test_library_archive_upload_rejects_zip_path_traversal(tmp_path: Path) -> None:
     import zipfile
 
@@ -651,6 +671,36 @@ def test_library_archive_upload_rejects_zip_path_traversal(tmp_path: Path) -> No
     with pytest.raises(ValueError, match="unsafe archive member"):
         routes_library._safe_extract_archive(archive_path, extract_dir)
 
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_library_upload_file_rejects_tar_path_traversal_with_400(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import io
+    import tarfile
+
+    import services.library.tools_storage as tools_storage
+
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        payload = b"owned"
+        info = tarfile.TarInfo("../escape.txt")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    archive.seek(0)
+
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", tmp_path / "uploads")
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={"file": ("evil.tar.gz", archive.getvalue(), "application/gzip")},
+    )
+
+    assert response.status_code == 400
+    assert "unsafe archive member" in response.json()["detail"]
     assert not (tmp_path / "escape.txt").exists()
 
 

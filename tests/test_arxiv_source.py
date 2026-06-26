@@ -91,3 +91,23 @@ def test_extract_source_rejects_tar_path_traversal(tmp_path: Path) -> None:
         extract_source_archive(archive_path, extract_dir)
 
     assert not (tmp_path / "escape.tex").exists()
+
+
+def test_extract_source_rejects_tar_special_member(tmp_path: Path) -> None:
+    import tarfile
+
+    from services.parser.arxiv_source import extract_source_archive
+
+    archive_path = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        info = tarfile.TarInfo("link.tex")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "main.tex"
+        tar.addfile(info)
+
+    extract_dir = tmp_path / "extract"
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        extract_source_archive(archive_path, extract_dir)
+
+    assert not (extract_dir / "link.tex").exists()

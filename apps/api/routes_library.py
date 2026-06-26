@@ -518,12 +518,18 @@ async def upload_file(
         extract_dir.mkdir(parents=True, exist_ok=True)
 
         if filename.endswith((".tar.gz", ".tgz")):
-            _safe_extract_archive(upload_path, extract_dir)
+            try:
+                _safe_extract_archive(upload_path, extract_dir)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         elif filename.endswith(".gz"):
             with gzip.open(str(upload_path), "rb") as gz_in:
                 (extract_dir / filename.replace(".gz", "")).write_bytes(gz_in.read())
         elif filename.endswith(".zip"):
-            _safe_extract_archive(upload_path, extract_dir)
+            try:
+                _safe_extract_archive(upload_path, extract_dir)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
             shutil.copy2(str(upload_path), str(extract_dir / filename))
 
