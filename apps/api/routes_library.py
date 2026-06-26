@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 
+import gzip
 import os
+import shutil
+import tarfile
+import zipfile
 from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -46,6 +51,63 @@ def _parse_pool_ids(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _archive_member_target(extract_dir: Path, member_name: str) -> Path:
+    extract_root = extract_dir.resolve()
+    target = (extract_root / member_name).resolve()
+    try:
+        target.relative_to(extract_root)
+    except ValueError as exc:
+        raise ValueError(f"unsafe archive member: {member_name}") from exc
+    return target
+
+
+def _safe_extract_archive(archive_path: Path, extract_dir: Path) -> None:
+    archive_path = Path(archive_path)
+    extract_dir = Path(extract_dir)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+
+    if archive_path.name.endswith((".tar.gz", ".tgz")):
+        with tarfile.open(archive_path, "r:gz") as tar:
+            members = tar.getmembers()
+            for member in members:
+                _archive_member_target(extract_dir, member.name)
+                if not (member.isdir() or member.isfile()):
+                    raise ValueError(f"unsafe archive member: {member.name}")
+
+            for member in members:
+                target = _archive_member_target(extract_dir, member.name)
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = tar.extractfile(member)
+                if source is None:
+                    raise ValueError(f"unsafe archive member: {member.name}")
+                with source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+        return
+
+    if archive_path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            infos = zf.infolist()
+            for info in infos:
+                _archive_member_target(extract_dir, info.filename)
+
+            for info in infos:
+                target = _archive_member_target(extract_dir, info.filename)
+                if info.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info, "r") as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+        return
+
+    raise ValueError(f"Unsupported archive type: {archive_path.name}")
 
 
 # GET /pools — list knowledge-base pools
@@ -440,7 +502,6 @@ async def upload_file(
 ) -> dict[str, Any]:
     """Upload LaTeX source archive with full deep analysis + RAG indexing."""
     from services.library.tools_storage import ensure_library_dirs, UPLOADS_DIR
-    import tarfile, gzip, shutil
     from uuid import uuid4 as _uuid4
 
     ensure_library_dirs()
@@ -457,15 +518,12 @@ async def upload_file(
         extract_dir.mkdir(parents=True, exist_ok=True)
 
         if filename.endswith((".tar.gz", ".tgz")):
-            with tarfile.open(str(upload_path), "r:gz") as tar:
-                tar.extractall(str(extract_dir))
+            _safe_extract_archive(upload_path, extract_dir)
         elif filename.endswith(".gz"):
             with gzip.open(str(upload_path), "rb") as gz_in:
                 (extract_dir / filename.replace(".gz", "")).write_bytes(gz_in.read())
         elif filename.endswith(".zip"):
-            import zipfile
-            with zipfile.ZipFile(str(upload_path), "r") as zf:
-                zf.extractall(str(extract_dir))
+            _safe_extract_archive(upload_path, extract_dir)
         else:
             shutil.copy2(str(upload_path), str(extract_dir / filename))
 

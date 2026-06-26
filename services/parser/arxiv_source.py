@@ -24,6 +24,49 @@ ARXIV_EPRINT_URL = "https://arxiv.org/e-print/{arxiv_id}"
 CACHE_DIR_NAME = ".arxiv-cache"
 
 
+def _archive_member_target(extract_dir: Path, member_name: str) -> Path:
+    extract_root = extract_dir.resolve()
+    target = (extract_root / member_name).resolve()
+    try:
+        target.relative_to(extract_root)
+    except ValueError as exc:
+        raise ValueError(f"unsafe archive member: {member_name}") from exc
+    return target
+
+
+def extract_source_archive(
+    archive_path: str | Path,
+    extract_dir: str | Path,
+) -> list[Path]:
+    archive_path = Path(archive_path)
+    extract_dir = Path(extract_dir)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+
+    with tarfile.open(archive_path, "r:gz") as tar:
+        members = tar.getmembers()
+        for member in members:
+            _archive_member_target(extract_dir, member.name)
+            if not (member.isdir() or member.isfile()):
+                raise ValueError(f"unsafe archive member: {member.name}")
+
+        for member in members:
+            target = _archive_member_target(extract_dir, member.name)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = tar.extractfile(member)
+            if source is None:
+                raise ValueError(f"unsafe archive member: {member.name}")
+            with source, target.open("wb") as output:
+                shutil.copyfileobj(source, output)
+
+    files = [f for f in extract_dir.rglob("*") if f.is_file()]
+    logger.info("arxiv_source.extracted_tar", file_count=len(files))
+    return files
+
+
 def parse_arxiv_id(input_str: str) -> str:
     """
     Parse arXiv ID from various input formats.
@@ -134,20 +177,7 @@ def extract_arxiv_source(
 
     # Try tar.gz first
     try:
-        with tarfile.open(archive_path, "r:gz") as tar:
-            # Security: prevent path traversal
-            for member in tar.getmembers():
-                member_path = Path(extract_dir / member.name)
-                if not str(member_path.resolve()).startswith(
-                    str(extract_dir.resolve())
-                ):
-                    raise ValueError(
-                        f"Path traversal detected in archive: {member.name}"
-                    )
-            tar.extractall(path=extract_dir)
-            files = [f for f in extract_dir.rglob("*") if f.is_file()]
-            logger.info("arxiv_source.extracted_tar", file_count=len(files))
-            return files
+        return extract_source_archive(archive_path, extract_dir)
     except tarfile.TarError:
         pass
 
