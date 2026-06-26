@@ -392,6 +392,61 @@ async def test_update_coding_task_rejects_non_allowlisted_fields(
 
 
 @pytest.mark.asyncio
+async def test_generic_get_rejects_unallowlisted_table(mock_pool: AsyncMock) -> None:
+    from apps.api.db import production
+
+    with pytest.raises(ValueError, match="Unsupported table"):
+        await production._get_by_id("research_project; DROP TABLE research_project", uuid4())
+
+    mock_pool.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generic_insert_rejects_unallowlisted_columns(mock_pool: AsyncMock) -> None:
+    from apps.api.db import production
+
+    with pytest.raises(ValueError, match="Invalid column names"):
+        await production._insert(
+            "research_project",
+            ("title", "title); DROP TABLE research_project; --"),
+            {
+                "title": "Durable project",
+                "title); DROP TABLE research_project; --": "bad",
+            },
+        )
+
+    mock_pool.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generic_list_rejects_unallowlisted_filter_columns(
+    mock_pool: AsyncMock,
+) -> None:
+    from apps.api.db import production
+
+    with pytest.raises(ValueError, match="Invalid column names"):
+        await production._list(
+            "research_project",
+            filters={"status OR 1=1": "active"},
+        )
+
+    mock_pool.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generic_list_rejects_unallowlisted_order_by(mock_pool: AsyncMock) -> None:
+    from apps.api.db import production
+
+    with pytest.raises(ValueError, match="Invalid order_by"):
+        await production._list(
+            "research_project",
+            order_by="created_at DESC; DROP TABLE research_project",
+        )
+
+    mock_pool.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_list_terminal_sessions_filters_and_paginates(mock_pool: AsyncMock) -> None:
     project_id = uuid4()
     session_id = uuid4()

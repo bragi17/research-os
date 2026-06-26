@@ -15,7 +15,7 @@ IDEA_CARD_JSONB_FIELDS = {
     "prior_art_details",
 }
 
-IDEA_CARD_CREATE_FIELDS = [
+IDEA_CARD_CREATE_FIELDS = (
     "run_id",
     "title",
     "problem_statement",
@@ -40,7 +40,7 @@ IDEA_CARD_CREATE_FIELDS = [
     "jury_trace_id",
     "jury_status",
     "prior_art_details",
-]
+)
 
 IDEA_CARD_CREATE_DEFAULTS: dict[str, Any] = {
     "problem_statement": None,
@@ -332,7 +332,7 @@ async def create_idea_card(
             {", ".join(placeholders)}
         )
         RETURNING *
-        """,
+        """,  # nosec B608
         *values,
     )
     return db_pool.record_to_dict(row)
@@ -398,7 +398,7 @@ async def update_idea_card(
 
     values.append(idea_id)
     query = (
-        f"UPDATE idea_card SET {', '.join(set_parts)} "
+        f"UPDATE idea_card SET {', '.join(set_parts)} "  # nosec B608
         f"WHERE id = ${idx} RETURNING *"
     )
     pool = await db_pool.get_pool()

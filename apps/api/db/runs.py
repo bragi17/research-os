@@ -175,7 +175,7 @@ async def update_run(
 
     values.append(run_id)
     query = (
-        f"UPDATE research_run SET {', '.join(set_parts)} "
+        f"UPDATE research_run SET {', '.join(set_parts)} "  # nosec B608
         f"WHERE id = ${idx} RETURNING *"
     )
     pool = await db_pool.get_pool()

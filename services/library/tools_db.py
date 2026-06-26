@@ -139,7 +139,7 @@ async def list_library_papers(
                 WHERE lpp.library_paper_id = library_paper.id
                   AND lpp.pool_id = ANY(${idx}::uuid[])
             )
-            """
+            """  # nosec B608
         )
         values.append([UUID(str(pool_id)) for pool_id in pool_ids])
         idx += 1
@@ -154,7 +154,7 @@ async def list_library_papers(
     offset_idx = idx
 
     query = (
-        f"SELECT * FROM library_paper{where} "
+        f"SELECT * FROM library_paper{where} "  # nosec B608
         f"ORDER BY created_at DESC "
         f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
     )
@@ -193,12 +193,12 @@ async def count_library_papers(
                 WHERE lpp.library_paper_id = library_paper.id
                   AND lpp.pool_id = ANY(${idx}::uuid[])
             )
-            """
+            """  # nosec B608
         )
         values.append([UUID(str(pool_id)) for pool_id in pool_ids])
 
-    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    row = await pool.fetchrow(f"SELECT COUNT(*) AS cnt FROM library_paper{where}", *values)
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""  # nosec B608
+    row = await pool.fetchrow(f"SELECT COUNT(*) AS cnt FROM library_paper{where}", *values)  # nosec B608
     return row["cnt"]
 
 
@@ -240,7 +240,7 @@ async def update_library_paper(
 
     values.append(paper_id)
     query = (
-        f"UPDATE library_paper SET {', '.join(set_parts)} "
+        f"UPDATE library_paper SET {', '.join(set_parts)} "  # nosec B608
         f"WHERE id = ${idx} RETURNING *"
     )
 
@@ -347,7 +347,7 @@ async def search_library_vectors(
                 WHERE lpp.library_paper_id = lp.id
                   AND lpp.pool_id = ANY(${idx}::uuid[])
             )
-            """
+            """  # nosec B608
         )
         values.append([UUID(str(pool_id)) for pool_id in pool_ids])
         idx += 1
@@ -375,7 +375,7 @@ async def search_library_vectors(
         {where}
         ORDER BY lc.embedding <=> $1::vector
         LIMIT ${idx}
-        """,
+        """,  # nosec B608
         *values,
     )
 
@@ -407,7 +407,7 @@ async def search_library_text(
                 WHERE lpp.library_paper_id = library_paper.id
                   AND lpp.pool_id = ANY(${idx}::uuid[])
             )
-            """
+            """  # nosec B608
         )
         values.append([UUID(str(pool_id)) for pool_id in pool_ids])
         idx += 1
@@ -418,7 +418,7 @@ async def search_library_text(
         WHERE {' AND '.join(conditions)}
         ORDER BY created_at DESC
         LIMIT ${idx}
-        """,
+        """,  # nosec B608
         *values,
     )
     return [_record_to_dict(r) for r in rows]

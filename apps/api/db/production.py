@@ -26,8 +26,43 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _table_columns(table: str) -> tuple[str, ...]:
+    try:
+        return TABLE_RESPONSE_COLUMNS[table]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported table: {table}") from exc
+
+
 def _select_columns(table: str) -> str:
-    return ", ".join(TABLE_RESPONSE_COLUMNS[table])
+    return ", ".join(_table_columns(table))
+
+
+def _validate_columns(
+    table: str,
+    columns: tuple[str, ...] | list[str] | set[str] | frozenset[str],
+    allowed_columns: frozenset[str],
+) -> None:
+    _table_columns(table)
+    invalid = set(columns) - allowed_columns
+    if invalid:
+        raise ValueError(f"Invalid column names: {invalid}")
+
+
+def _insert_columns(table: str) -> frozenset[str]:
+    try:
+        return frozenset(TABLE_INSERT_COLUMNS[table])
+    except KeyError as exc:
+        raise ValueError(f"Unsupported table: {table}") from exc
+
+
+def _order_by_sql(table: str, order_by: str) -> str:
+    parts = order_by.split()
+    if len(parts) != 2:
+        raise ValueError(f"Invalid order_by: {order_by}")
+    column, direction = parts
+    if column not in _table_columns(table) or direction.upper() not in {"ASC", "DESC"}:
+        raise ValueError(f"Invalid order_by: {order_by}")
+    return f"{column} {direction.upper()}"
 
 
 async def _insert(
@@ -35,6 +70,7 @@ async def _insert(
     columns: tuple[str, ...],
     data: dict[str, Any],
 ) -> dict[str, Any]:
+    _validate_columns(table, columns, _insert_columns(table))
     values = [_db_value(data.get(column)) for column in columns]
     column_sql = ", ".join(columns)
     placeholder_sql = ", ".join(f"${idx}" for idx in range(1, len(columns) + 1))
@@ -44,7 +80,7 @@ async def _insert(
         INSERT INTO {table} ({column_sql})
         VALUES ({placeholder_sql})
         RETURNING {_select_columns(table)}
-        """,
+        """,  # nosec B608
         *values,
     )
     return db_pool.record_to_dict(row)
@@ -53,7 +89,7 @@ async def _insert(
 async def _get_by_id(table: str, row_id: UUID) -> dict[str, Any] | None:
     pool = await db_pool.get_pool()
     row = await pool.fetchrow(
-        f"SELECT {_select_columns(table)} FROM {table} WHERE id = $1",
+        f"SELECT {_select_columns(table)} FROM {table} WHERE id = $1",  # nosec B608
         row_id,
     )
     return db_pool.record_to_dict(row) if row is not None else None
@@ -68,6 +104,8 @@ async def _list(
     offset: int = 0,
 ) -> list[dict[str, Any]]:
     filters = filters or {}
+    _validate_columns(table, set(filters), frozenset(_table_columns(table)))
+    order_by = _order_by_sql(table, order_by)
     values = [_db_value(value) for value in filters.values()]
     where_sql = ""
     if filters:
@@ -87,7 +125,7 @@ async def _list(
         {where_sql}
         ORDER BY {order_by}
         LIMIT ${limit_idx} OFFSET ${offset_idx}
-        """,
+        """,  # nosec B608
         *values,
     )
     return [db_pool.record_to_dict(row) for row in rows]
@@ -102,9 +140,8 @@ async def _update(
     if not updates:
         return await _get_by_id(table, row_id)
 
-    invalid = set(updates) - allowed_columns
-    if invalid:
-        raise ValueError(f"Invalid column names: {invalid}")
+    _validate_columns(table, allowed_columns, frozenset(_table_columns(table)))
+    _validate_columns(table, set(updates), allowed_columns)
 
     set_parts: list[str] = []
     values: list[Any] = []
@@ -121,7 +158,7 @@ async def _update(
         SET {', '.join(set_parts)}
         WHERE id = ${id_idx}
         RETURNING {_select_columns(table)}
-        """,
+        """,  # nosec B608
         *values,
     )
     return db_pool.record_to_dict(row) if row is not None else None
@@ -409,7 +446,7 @@ async def claim_queued_coding_tasks(
                 )
         WHERE id IN (SELECT id FROM picked)
         RETURNING {_select_columns("coding_task")}
-        """,
+        """,  # nosec B608
         limit,
         worker,
         lease_seconds,
@@ -450,7 +487,7 @@ async def claim_coding_task(
         WHERE id = $1
           AND status = 'queued'
         RETURNING {_select_columns("coding_task")}
-        """,
+        """,  # nosec B608
         task_id,
         worker,
         lease_seconds,
@@ -480,7 +517,7 @@ async def recover_stale_coding_tasks(stale_before: datetime) -> list[dict[str, A
               created_at
           ) < $1
         RETURNING {_select_columns("coding_task")}
-        """,
+        """,  # nosec B608
         stale_before,
     )
     return [db_pool.record_to_dict(row) for row in rows]
@@ -520,7 +557,7 @@ async def update_coding_task_if_lease(
           AND metadata_json #>> '{{scheduler_lease,worker_id}}' = ${worker_idx}
           AND metadata_json #>> '{{scheduler_lease,lease_id}}' = ${lease_idx}
         RETURNING {_select_columns("coding_task")}
-        """,
+        """,  # nosec B608
         *values,
     )
     return db_pool.record_to_dict(row) if row is not None else None
@@ -550,7 +587,7 @@ async def heartbeat_coding_task_if_lease(
           AND metadata_json #>> '{{scheduler_lease,worker_id}}' = $2
           AND metadata_json #>> '{{scheduler_lease,lease_id}}' = $3
         RETURNING {_select_columns("coding_task")}
-        """,
+        """,  # nosec B608
         task_id,
         worker_id,
         lease_id,
@@ -852,7 +889,7 @@ async def claim_experiment_jobs(
                 )
         WHERE id IN (SELECT id FROM picked)
         RETURNING {_select_columns("experiment_job")}
-        """,
+        """,  # nosec B608
         job_ids,
         limit,
         worker,
@@ -894,7 +931,7 @@ async def claim_experiment_job(
         WHERE id = $1
           AND status = 'pending'
         RETURNING {_select_columns("experiment_job")}
-        """,
+        """,  # nosec B608
         job_id,
         worker,
         lease_seconds,
@@ -923,7 +960,7 @@ async def recover_stale_experiment_jobs(stale_before: datetime) -> list[dict[str
               created_at
           ) < $1
         RETURNING {_select_columns("experiment_job")}
-        """,
+        """,  # nosec B608
         stale_before,
     )
     return [db_pool.record_to_dict(row) for row in rows]
@@ -998,7 +1035,7 @@ async def update_experiment_job_if_lease(
           AND metrics_json #>> '{{scheduler_lease,worker_id}}' = ${worker_idx}
           AND metrics_json #>> '{{scheduler_lease,lease_id}}' = ${lease_idx}
         RETURNING {_select_columns("experiment_job")}
-        """,
+        """,  # nosec B608
         *values,
     )
     return db_pool.record_to_dict(row) if row is not None else None
@@ -1031,7 +1068,7 @@ async def heartbeat_experiment_job_if_lease(
           AND metrics_json #>> '{{scheduler_lease,worker_id}}' = $2
           AND metrics_json #>> '{{scheduler_lease,lease_id}}' = $3
         RETURNING {_select_columns("experiment_job")}
-        """,
+        """,  # nosec B608
         job_id,
         worker_id,
         lease_id,
@@ -1399,4 +1436,22 @@ TABLE_RESPONSE_COLUMNS: dict[str, tuple[str, ...]] = {
     "manuscript_package": ("id", *MANUSCRIPT_PACKAGE_COLUMNS, "created_at", "updated_at"),
     "submission_package": ("id", *SUBMISSION_PACKAGE_COLUMNS, "created_at", "updated_at"),
     "terminal_session": ("id", *TERMINAL_SESSION_COLUMNS, "created_at"),
+}
+
+
+TABLE_INSERT_COLUMNS: dict[str, tuple[str, ...]] = {
+    "research_project": PROJECT_COLUMNS,
+    "project_query_pack": QUERY_PACK_COLUMNS,
+    "experiment_plan": EXPERIMENT_PLAN_COLUMNS,
+    "coding_task": CODING_TASK_COLUMNS,
+    "coding_event": CODING_EVENT_COLUMNS,
+    "code_artifact": CODE_ARTIFACT_COLUMNS,
+    "experiment_manifest": EXPERIMENT_MANIFEST_COLUMNS,
+    "experiment_job": EXPERIMENT_JOB_COLUMNS,
+    "claim_ledger": CLAIM_LEDGER_COLUMNS,
+    "claim_evidence": CLAIM_EVIDENCE_COLUMNS,
+    "remote_host": REMOTE_HOST_COLUMNS,
+    "manuscript_package": MANUSCRIPT_PACKAGE_COLUMNS,
+    "submission_package": SUBMISSION_PACKAGE_COLUMNS,
+    "terminal_session": TERMINAL_SESSION_COLUMNS,
 }

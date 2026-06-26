@@ -71,6 +71,19 @@ async def test_assign_paper_to_pools_uses_default_pool_when_empty():
 
 
 @pytest.mark.asyncio
+async def test_update_library_pool_rejects_unknown_fields():
+    pool = _make_pool()
+
+    with patch("services.library.pools_db.get_pool", AsyncMock(return_value=pool)):
+        from services.library.pools_db import update_library_pool
+
+        with pytest.raises(ValueError, match="Invalid column names"):
+            await update_library_pool(uuid4(), {"name": "Geometry", "kind": "default"})
+
+    pool.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_delete_pool_without_deleting_papers_moves_orphans_to_unassigned():
     pool_id = uuid4()
     unassigned_id = uuid4()

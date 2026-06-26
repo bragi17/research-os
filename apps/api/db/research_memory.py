@@ -75,7 +75,7 @@ async def list_research_memory_items(
         WHERE {" AND ".join(filters)}
         ORDER BY updated_at DESC
         LIMIT ${len(values)}
-        """,
+        """,  # nosec B608
         *values,
     )
     return [db_pool.record_to_dict(row) for row in rows]

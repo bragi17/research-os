@@ -91,6 +91,10 @@ async def update_library_pool(
     updates: dict[str, Any],
 ) -> dict[str, Any] | None:
     allowed = {"name", "description"}
+    invalid = set(updates) - allowed
+    if invalid:
+        raise ValueError(f"Invalid column names: {invalid}")
+
     selected = {key: value for key, value in updates.items() if key in allowed}
     if not selected:
         pool = await get_pool()
@@ -126,7 +130,7 @@ async def update_library_pool(
             FROM library_pool_paper
             WHERE pool_id = library_pool.id
         ) AS paper_count
-        """,
+        """,  # nosec B608
         *values,
     )
     return _record_to_dict(row) if row else None
