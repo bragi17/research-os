@@ -2,16 +2,9 @@
 
 from apps.api.app import create_app
 from apps.api.redis_queue import (
-    close_redis as _close_redis,
-    enqueue_run as _enqueue_run,
     get_redis,
-    init_redis as _init_redis,
-    publish_event as _publish_event,
     set_redis,
 )
-from apps.api.routes_events import format_sse as _format_sse
-from apps.api.routes_files import MAX_UPLOAD_SIZE
-from apps.api.routes_results import ExportRequest, ExportResponse, HypothesisResponse
 
 app = create_app()
 

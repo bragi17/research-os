@@ -13,9 +13,9 @@ from uuid import UUID, uuid4
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from structlog import get_logger
 
 from apps.api.database import get_pool

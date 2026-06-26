@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
@@ -20,12 +19,10 @@ from structlog import get_logger
 from apps.worker.llm_gateway import ModelTier, get_gateway
 from apps.worker.modes.base import (
     ModeGraphState,
-    _estimate_cost,
     _normalize_title,
     _stable_unique,
     check_should_continue,
     emit_progress,
-    extract_claims,
     generate_llm_json,
     rerank_search_results,
     resolve_and_read_paper,
@@ -34,11 +31,8 @@ from apps.worker.modes.base import (
 )
 from libs.adapters.semantic_scholar import SemanticScholarAdapter
 from libs.prompts.templates import (
-    CLAIM_OUTPUT_SCHEMA,
     GAP_OUTPUT_SCHEMA,
-    PLANNER_OUTPUT_SCHEMA,
     PromptName,
-    get_schema,
     get_system_prompt,
 )
 

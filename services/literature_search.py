@@ -79,7 +79,7 @@ class LiteratureSearchCoordinator:
     async def __aenter__(self) -> "LiteratureSearchCoordinator":
         return self
 
-    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+    async def __aexit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
         await self.close()
 
     def _gate_status(
