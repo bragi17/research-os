@@ -9,7 +9,7 @@ final outputs (Markdown, JSON, BibTeX).
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
@@ -22,7 +22,6 @@ from apps.worker.modes.base import (
     emit_progress,
     generate_llm_json,
 )
-from libs.prompts.templates import PromptName, get_system_prompt
 
 logger = get_logger(__name__)
 

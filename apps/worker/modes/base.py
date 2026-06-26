@@ -7,18 +7,15 @@ extracted from the v1 graph_state.py for use across all mode-specific graphs.
 
 from __future__ import annotations
 
-import json
 import os
-import re
 from typing import Annotated, Any, Literal, overload
 from uuid import UUID, uuid4
 
-from langgraph.graph import END
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 from structlog import get_logger
 
-from apps.worker.llm_gateway import LLMGateway, ModelTier, get_gateway
+from apps.worker.llm_gateway import LLMGateway, ModelTier
 from libs.adapters.openalex import OpenAlexAdapter
 from libs.adapters.semantic_scholar import SemanticScholarAdapter
 from libs.adapters.scholar_fusion import ScholarFusionService

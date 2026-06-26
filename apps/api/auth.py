@@ -107,25 +107,24 @@ async def create_user(email: str, username: str, password: str) -> dict[str, Any
     # Create a default workspace for the user
     workspace_id = uuid4()
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                """INSERT INTO workspace (id, name, owner_id) VALUES ($1, $2, NULL)""",
-                workspace_id, f"{username}'s workspace",
-            )
-            row = await conn.fetchrow(
-                """
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            """INSERT INTO workspace (id, name, owner_id) VALUES ($1, $2, NULL)""",
+            workspace_id, f"{username}'s workspace",
+        )
+        row = await conn.fetchrow(
+            """
                 INSERT INTO app_user (id, email, username, password_hash, role, workspace_id)
                 VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING id, email, username, role, workspace_id, is_active, created_at
                 """,
-                user_id, email, username, hash_password(password), "research_user", workspace_id,
-            )
-            # Update workspace owner
-            await conn.execute(
-                "UPDATE workspace SET owner_id = $1 WHERE id = $2",
-                user_id, workspace_id,
-            )
+            user_id, email, username, hash_password(password), "research_user", workspace_id,
+        )
+        # Update workspace owner
+        await conn.execute(
+            "UPDATE workspace SET owner_id = $1 WHERE id = $2",
+            user_id, workspace_id,
+        )
     return dict(row)
 
 async def get_user_by_email(email: str) -> dict[str, Any] | None:

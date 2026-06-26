@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import signal
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -215,7 +216,7 @@ class WorkerRunner:
         # -----------------------------------------------------------------
         if mode == "intake":
             # Route first, then create child run
-            from apps.worker.modes.router import classify_mode, build_mode_config
+            from apps.worker.modes.router import build_mode_config
             mode_config = build_mode_config(
                 user_input=topic,
                 keywords=keywords,
@@ -388,7 +389,7 @@ class WorkerRunner:
                         if not title:
                             continue
                         paper_id = _uuid4()
-                        try:
+                        with suppress(Exception):
                             await pool.execute("""
                                 INSERT INTO paper (id, canonical_title, normalized_title, abstract,
                                     publication_year, venue, metadata_json)
@@ -403,8 +404,6 @@ class WorkerRunner:
                                 ps.get("venue", ""),
                                 json.dumps({**ps, "source_run_id": str(run_id)}, default=str)[:5000],
                             )
-                        except Exception:
-                            pass
                     logger.info("worker.papers_persisted", count=len(paper_summaries))
                 except Exception as exc:
                     logger.debug("persist_papers_failed", error=str(exc))

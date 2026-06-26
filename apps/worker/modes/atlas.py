@@ -8,7 +8,7 @@ Produces a one-page atlas, taxonomy, reading path, and mind map.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
@@ -17,11 +17,9 @@ from structlog import get_logger
 from apps.worker.llm_gateway import ModelTier, get_gateway
 from apps.worker.modes.base import (
     ModeGraphState,
-    _estimate_cost,
     _normalize_title,
     check_should_continue,
     emit_progress,
-    extract_claims,
     generate_llm_json,
     resolve_and_read_paper,
     search_academic_sources,

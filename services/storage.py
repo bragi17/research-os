@@ -11,7 +11,6 @@ import hmac
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 from urllib.parse import quote, urlparse
 from uuid import UUID, uuid4
 

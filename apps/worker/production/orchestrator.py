@@ -460,7 +460,7 @@ def _resolve_log_dir(job: dict[str, Any], workspace_root: Path, job_id: UUID) ->
     default_log_dir = (workspace_root / ".research-os" / "jobs" / str(job_id) / "logs").resolve()
     try:
         default_log_dir.relative_to(workspace_root)
-    except ValueError as exc:
+    except ValueError:
         raise ValueError("log_dir escapes workspace_root")
     return default_log_dir
 

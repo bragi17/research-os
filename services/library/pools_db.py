@@ -204,35 +204,34 @@ async def remove_paper_from_pool(
     pool_id: UUID,
 ) -> dict[str, str]:
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                """
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            """
                 DELETE FROM library_pool_paper
                 WHERE pool_id = $1 AND library_paper_id = $2
                 """,
-                pool_id,
-                paper_id,
-            )
-            remaining = await conn.fetchrow(
-                """
+            pool_id,
+            paper_id,
+        )
+        remaining = await conn.fetchrow(
+            """
                 SELECT COUNT(*) AS cnt
                 FROM library_pool_paper
                 WHERE library_paper_id = $1
                 """,
-                paper_id,
-            )
-            if remaining["cnt"] == 0:
-                unassigned_id = await _get_system_pool_id(SYSTEM_UNASSIGNED_KIND, conn)
-                await conn.execute(
-                    """
+            paper_id,
+        )
+        if remaining["cnt"] == 0:
+            unassigned_id = await _get_system_pool_id(SYSTEM_UNASSIGNED_KIND, conn)
+            await conn.execute(
+                """
                     INSERT INTO library_pool_paper (pool_id, library_paper_id)
                     VALUES ($1, $2)
                     ON CONFLICT DO NOTHING
                     """,
-                    unassigned_id,
-                    paper_id,
-                )
+                unassigned_id,
+                paper_id,
+            )
     return {"status": "removed", "paper_id": str(paper_id)}
 
 
@@ -241,28 +240,27 @@ async def delete_library_pool(
     delete_papers: bool = False,
 ) -> dict[str, Any]:
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            pool_row = await conn.fetchrow(
-                "SELECT id, kind FROM library_pool WHERE id = $1",
-                pool_id,
-            )
-            if pool_row is None:
-                return {"status": "missing", "pool_id": str(pool_id)}
-            if pool_row["kind"] in {SYSTEM_DEFAULT_KIND, SYSTEM_UNASSIGNED_KIND}:
-                raise ValueError("System pools cannot be deleted")
+    async with pool.acquire() as conn, conn.transaction():
+        pool_row = await conn.fetchrow(
+            "SELECT id, kind FROM library_pool WHERE id = $1",
+            pool_id,
+        )
+        if pool_row is None:
+            return {"status": "missing", "pool_id": str(pool_id)}
+        if pool_row["kind"] in {SYSTEM_DEFAULT_KIND, SYSTEM_UNASSIGNED_KIND}:
+            raise ValueError("System pools cannot be deleted")
 
-            if delete_papers:
-                rows = await conn.fetch(
-                    """
+        if delete_papers:
+            rows = await conn.fetch(
+                """
                     SELECT library_paper_id
                     FROM library_pool_paper
                     WHERE pool_id = $1
                     """,
-                    pool_id,
-                )
-                await conn.execute(
-                    """
+                pool_id,
+            )
+            await conn.execute(
+                """
                     DELETE FROM library_paper
                     WHERE id IN (
                         SELECT library_paper_id
@@ -270,13 +268,13 @@ async def delete_library_pool(
                         WHERE pool_id = $1
                     )
                     """,
-                    pool_id,
-                )
-                deleted_papers = len(rows)
-                moved_to_unassigned = 0
-            else:
-                orphan_rows = await conn.fetch(
-                    """
+                pool_id,
+            )
+            deleted_papers = len(rows)
+            moved_to_unassigned = 0
+        else:
+            orphan_rows = await conn.fetch(
+                """
                     SELECT lpp.library_paper_id
                     FROM library_pool_paper lpp
                     WHERE lpp.pool_id = $1
@@ -287,23 +285,23 @@ async def delete_library_pool(
                           AND other.pool_id <> $1
                     )
                     """,
-                    pool_id,
-                )
-                unassigned_id = await _get_system_pool_id(SYSTEM_UNASSIGNED_KIND, conn)
-                for row in orphan_rows:
-                    await conn.execute(
-                        """
+                pool_id,
+            )
+            unassigned_id = await _get_system_pool_id(SYSTEM_UNASSIGNED_KIND, conn)
+            for row in orphan_rows:
+                await conn.execute(
+                    """
                         INSERT INTO library_pool_paper (pool_id, library_paper_id)
                         VALUES ($1, $2)
                         ON CONFLICT DO NOTHING
                         """,
-                        unassigned_id,
-                        row["library_paper_id"],
-                    )
-                deleted_papers = 0
-                moved_to_unassigned = len(orphan_rows)
+                    unassigned_id,
+                    row["library_paper_id"],
+                )
+            deleted_papers = 0
+            moved_to_unassigned = len(orphan_rows)
 
-            await conn.execute("DELETE FROM library_pool WHERE id = $1", pool_id)
+        await conn.execute("DELETE FROM library_pool WHERE id = $1", pool_id)
 
     return {
         "status": "deleted",

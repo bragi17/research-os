@@ -2,6 +2,7 @@ import asyncio
 import os
 import signal
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -228,10 +229,8 @@ def _build_result(
 
 
 async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
-    try:
+    with suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
 
     try:
         await asyncio.wait_for(process.wait(), timeout=2)
@@ -239,10 +238,8 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
     except asyncio.TimeoutError:
         pass
 
-    try:
+    with suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
     await process.wait()
 
 

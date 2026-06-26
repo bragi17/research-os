@@ -4,6 +4,7 @@ import re
 import shlex
 import signal
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -420,10 +421,8 @@ def _has_control_or_space(value: str) -> bool:
 
 
 async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
-    try:
+    with suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
 
     try:
         await asyncio.wait_for(process.wait(), timeout=2)
@@ -431,10 +430,8 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
     except asyncio.TimeoutError:
         pass
 
-    try:
+    with suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
     await process.wait()
 
 

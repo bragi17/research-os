@@ -22,7 +22,6 @@ from apps.api.auth import get_current_user
 from apps.api.tenancy import WorkspaceContext
 
 from apps.api.database import (
-    create_context_bundle,
     create_event,
     create_run as db_create_run,
     get_context_bundle,

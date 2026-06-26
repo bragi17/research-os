@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -35,10 +36,8 @@ async def close_redis() -> None:
     """Close the API Redis connection."""
     global _redis
     if _redis is not None:
-        try:
+        with suppress(Exception):
             await _redis.close()
-        except Exception:
-            pass
         _redis = None
 
 

@@ -8,8 +8,6 @@ For arXiv papers, LaTeX parsing is preferred as it produces higher quality resul
 from __future__ import annotations
 
 import os
-import re
-from pathlib import Path
 
 from structlog import get_logger
 
@@ -17,8 +15,8 @@ from services.parser.arxiv_source import (
     get_arxiv_latex_source,
     parse_arxiv_id,
 )
-from services.parser.grobid_client import GROBIDClient, ParsedPaper, parse_pdf
-from services.parser.latex_parser import LatexParser, parse_latex_file
+from services.parser.grobid_client import GROBIDClient, ParsedPaper, parse_pdf as parse_pdf
+from services.parser.latex_parser import LatexParser, parse_latex_file as parse_latex_file
 
 logger = get_logger(__name__)
 

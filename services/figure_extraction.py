@@ -12,8 +12,6 @@ Outputs are stored via StorageService and metadata saved to figure_asset table.
 
 from __future__ import annotations
 
-import os
-import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4

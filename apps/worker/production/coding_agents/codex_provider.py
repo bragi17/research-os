@@ -542,10 +542,8 @@ class CodexProvider:
             await self._stop_process(process)
             await self._drain_stderr_task(stderr_task)
             stderr_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await stderr_task
-            except asyncio.CancelledError:
-                pass
             self._unregister_process_keys(process_keys, process)
 
     async def run(self, prompt: str, options: CodingExecOptions) -> CodingAgentResult:

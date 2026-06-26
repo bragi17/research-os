@@ -6,14 +6,11 @@ Downloads and extracts LaTeX source files from arXiv for structured parsing.
 
 from __future__ import annotations
 
-import asyncio
 import gzip
-import os
 import re
 import shutil
 import tarfile
 from pathlib import Path
-from typing import Any
 
 import httpx
 from structlog import get_logger

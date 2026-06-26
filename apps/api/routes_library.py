@@ -29,12 +29,10 @@ from services.library.pools_db import (
     update_library_pool,
 )
 from services.library.tools_db import (
-    insert_library_paper,
     get_library_paper,
     list_library_papers,
     delete_library_paper,
     update_library_paper,
-    insert_library_chunks,
     search_library_vectors,
     search_library_text,
     count_library_papers,

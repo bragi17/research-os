@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -126,7 +127,5 @@ def _atomic_write_text(target: Path, content: str) -> None:
         os.replace(temp_name, target)
     finally:
         if temp_name is not None:
-            try:
+            with suppress(FileNotFoundError):
                 os.unlink(temp_name)
-            except FileNotFoundError:
-                pass

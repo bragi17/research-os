@@ -10,6 +10,7 @@ import signal
 import struct
 import subprocess
 import termios
+from contextlib import suppress
 from pathlib import Path
 from uuid import UUID
 
@@ -100,16 +101,12 @@ class LocalPtySession:
                     self.process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     os.killpg(self.process.pid, signal.SIGKILL)
-                    try:
+                    with suppress(subprocess.TimeoutExpired):
                         self.process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        pass
         except ProcessLookupError:
             pass
-        try:
+        with suppress(OSError):
             os.close(self.master_fd)
-        except OSError:
-            pass
 
 
 class LocalTerminalManager:

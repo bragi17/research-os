@@ -7,18 +7,14 @@ Client for interacting with GROBID service for academic PDF parsing.
 from __future__ import annotations
 
 import asyncio
-import io
-import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
 from xml.etree import ElementTree
 
 import httpx
-from pydantic import BaseModel, Field
 from structlog import get_logger
 
 logger = get_logger(__name__)
