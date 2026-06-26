@@ -59,6 +59,7 @@ dependencies = [
     "orjson>=3.10.12",
     "python-ulid>=2.7.0",
     "httpx-sse>=0.4.0",
+    "defusedxml>=0.7.1",
 
     # Observability
     "opentelemetry-api>=1.28.0",

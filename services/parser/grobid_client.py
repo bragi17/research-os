@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from xml.etree import ElementTree
-
 import httpx
+from defusedxml import ElementTree
+from defusedxml.common import DefusedXmlException
 from structlog import get_logger
 
 logger = get_logger(__name__)
@@ -391,7 +391,7 @@ class GROBIDClient:
 
             paper.parse_quality = "high"
 
-        except ElementTree.ParseError as e:
+        except (ElementTree.ParseError, DefusedXmlException) as e:
             logger.error("xml_parse_error", error=str(e))
             paper.parse_quality = "low"
             paper.error_message = f"XML parsing failed: {e}"
