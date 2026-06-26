@@ -760,6 +760,224 @@ def test_library_archive_upload_allows_valid_nested_zip(tmp_path: Path) -> None:
     assert extracted.read_text() == expected_text
 
 
+def _patch_upload_ingestion_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, Any]]:
+    import apps.worker.agents.paper_ingestion as paper_ingestion
+
+    calls: list[dict[str, Any]] = []
+
+    class FakePipeline:
+        async def ingest(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {"id": "uploaded-paper-id", "title": kwargs.get("title", "")}
+
+    monkeypatch.setattr(
+        paper_ingestion,
+        "PaperIngestionPipeline",
+        lambda: FakePipeline(),
+    )
+    return calls
+
+
+def _assert_no_partial_extract_dirs(upload_dir: Path) -> None:
+    if not upload_dir.exists():
+        return
+    assert [path for path in upload_dir.iterdir() if path.is_dir()] == []
+
+
+def test_library_upload_file_rejects_payload_over_limit_with_413(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import apps.api.routes_library as routes_library
+    import services.library.tools_storage as tools_storage
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
+    monkeypatch.setattr(routes_library, "MAX_UPLOAD_BYTES", 8, raising=False)
+    _patch_upload_ingestion_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={
+            "file": (
+                "main.tex",
+                b"\\documentclass{article}\n",
+                "application/x-tex",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert "upload" in response.json()["detail"].lower()
+    _assert_no_partial_extract_dirs(upload_dir)
+
+
+def test_library_upload_file_rejects_unsafe_filename_with_400(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import services.library.tools_storage as tools_storage
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={
+            "file": (
+                "../evil.tex",
+                b"\\documentclass{article}",
+                "application/x-tex",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert "filename" in response.json()["detail"].lower()
+    _assert_no_partial_extract_dirs(upload_dir)
+
+
+def test_library_upload_file_rejects_gzip_decompression_over_limit_with_413(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import gzip
+
+    import apps.api.routes_library as routes_library
+    import services.library.tools_storage as tools_storage
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
+    monkeypatch.setattr(routes_library, "MAX_EXTRACTED_BYTES", 12, raising=False)
+    _patch_upload_ingestion_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={
+            "file": (
+                "main.tex.gz",
+                gzip.compress(b"\\documentclass{article}\nhello"),
+                "application/gzip",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert "extracted" in response.json()["detail"].lower()
+    _assert_no_partial_extract_dirs(upload_dir)
+
+
+def test_library_archive_upload_rejects_tar_member_over_limit(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import io
+    import tarfile
+
+    import apps.api.routes_library as routes_library
+    import services.library.tools_storage as tools_storage
+
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        payload = b"\\documentclass{article}\nlarge"
+        info = tarfile.TarInfo("nested/main.tex")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    archive.seek(0)
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
+    monkeypatch.setattr(routes_library, "MAX_ARCHIVE_MEMBER_BYTES", 12, raising=False)
+    _patch_upload_ingestion_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={"file": ("large.tar.gz", archive.getvalue(), "application/gzip")},
+    )
+
+    assert response.status_code == 413
+    assert "member" in response.json()["detail"].lower()
+    _assert_no_partial_extract_dirs(upload_dir)
+
+
+def test_library_archive_upload_rejects_zip_member_over_limit(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import io
+    import zipfile
+
+    import apps.api.routes_library as routes_library
+    import services.library.tools_storage as tools_storage
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("nested/main.tex", "\\documentclass{article}\nlarge")
+    archive.seek(0)
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
+    monkeypatch.setattr(routes_library, "MAX_ARCHIVE_MEMBER_BYTES", 12, raising=False)
+    _patch_upload_ingestion_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={"file": ("large.zip", archive.getvalue(), "application/zip")},
+    )
+
+    assert response.status_code == 413
+    assert "member" in response.json()["detail"].lower()
+    _assert_no_partial_extract_dirs(upload_dir)
+
+
+def test_library_upload_file_allows_valid_nested_tar_and_passes_latex_text(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import io
+    import tarfile
+
+    import services.library.tools_storage as tools_storage
+
+    expected_text = "\\documentclass{article}\nNested route content"
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        payload = expected_text.encode()
+        info = tarfile.TarInfo("paper/source/main.tex")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    archive.seek(0)
+
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", tmp_path / "uploads")
+    calls = _patch_upload_ingestion_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        data={"title": "Nested Upload", "project_tags": "tag-a, tag-b"},
+        files={"file": ("valid.tar.gz", archive.getvalue(), "application/gzip")},
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {"id": "uploaded-paper-id", "title": "Nested Upload"}
+    assert calls == [
+        {
+            "latex_text": expected_text,
+            "title": "Nested Upload",
+            "project_tags": ["tag-a", "tag-b"],
+            "pool_ids": [],
+            "is_manually_uploaded": True,
+        }
+    ]
+
+
 def test_library_upload_file_rejects_tar_path_traversal_with_400(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

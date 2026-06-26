@@ -45,12 +45,121 @@ NO_ARXIV_DETAIL = (
     "Cannot re-analyze: no arXiv ID found. Try adding the paper again with an arXiv ID."
 )
 INVALID_ARCHIVE_DETAIL = "Invalid or unsafe archive input"
+COPY_CHUNK_BYTES = 1024 * 1024
+MAX_UPLOAD_BYTES = int(
+    os.getenv("LIBRARY_UPLOAD_MAX_BYTES", str(50 * 1024 * 1024))
+)
+MAX_EXTRACTED_BYTES = int(
+    os.getenv("LIBRARY_MAX_EXTRACTED_BYTES", str(200 * 1024 * 1024))
+)
+MAX_ARCHIVE_MEMBERS = int(os.getenv("LIBRARY_MAX_ARCHIVE_MEMBERS", "1000"))
+MAX_ARCHIVE_MEMBER_BYTES = int(
+    os.getenv("LIBRARY_MAX_ARCHIVE_MEMBER_BYTES", str(50 * 1024 * 1024))
+)
+
+
+class ArchiveLimitExceededError(ValueError):
+    """Raised when an uploaded archive exceeds configured resource limits."""
 
 
 def _parse_pool_ids(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _safe_upload_filename(filename: str | None) -> str:
+    raw_filename = (filename or "").strip()
+    if not raw_filename:
+        raise ValueError("Invalid upload filename")
+    path = Path(raw_filename)
+    if (
+        path.is_absolute()
+        or raw_filename != path.name
+        or "/" in raw_filename
+        or "\\" in raw_filename
+        or "\x00" in raw_filename
+    ):
+        raise ValueError("Invalid upload filename")
+    return raw_filename
+
+
+async def _read_upload_limited(file: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total_size = 0
+    while True:
+        chunk = await file.read(COPY_CHUNK_BYTES)
+        if not chunk:
+            break
+        total_size += len(chunk)
+        if total_size > MAX_UPLOAD_BYTES:
+            raise ArchiveLimitExceededError("Upload exceeds maximum size")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _check_archive_member_count(member_count: int) -> None:
+    if member_count > MAX_ARCHIVE_MEMBERS:
+        raise ArchiveLimitExceededError("Archive member count exceeds maximum")
+
+
+def _read_limited_tar_members(tar: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    members: list[tarfile.TarInfo] = []
+    while True:
+        member = tar.next()
+        if member is None:
+            return members
+        members.append(member)
+        _check_archive_member_count(len(members))
+
+
+def _check_archive_member_size(member_name: str, size: int) -> None:
+    if size > MAX_ARCHIVE_MEMBER_BYTES:
+        raise ArchiveLimitExceededError(
+            f"Archive member exceeds maximum size: {member_name}"
+        )
+
+
+def _add_archive_extracted_size(total_size: int, member_name: str, size: int) -> int:
+    _check_archive_member_size(member_name, size)
+    next_total = total_size + size
+    if next_total > MAX_EXTRACTED_BYTES:
+        raise ArchiveLimitExceededError("Archive extracted content exceeds maximum size")
+    return next_total
+
+
+def _copy_stream_limited(
+    source: Any,
+    target: Path,
+    *,
+    member_name: str,
+    total_so_far: int = 0,
+    member_limit: int | None = None,
+) -> int:
+    copied = 0
+    with target.open("wb") as output:
+        while True:
+            member_remaining = (
+                MAX_EXTRACTED_BYTES - total_so_far - copied
+                if member_limit is None
+                else member_limit - copied
+            )
+            total_remaining = MAX_EXTRACTED_BYTES - total_so_far - copied
+            remaining = min(member_remaining, total_remaining)
+            read_size = min(COPY_CHUNK_BYTES, max(1, remaining + 1))
+            chunk = source.read(read_size)
+            if not chunk:
+                return copied
+            if member_limit is not None and copied + len(chunk) > member_limit:
+                raise ArchiveLimitExceededError(
+                    f"Archive member exceeds maximum size: {member_name}"
+                )
+            if total_so_far + copied + len(chunk) > MAX_EXTRACTED_BYTES:
+                raise ArchiveLimitExceededError(
+                    "Archive extracted content exceeds maximum size"
+                )
+            output.write(chunk)
+            copied += len(chunk)
 
 
 def _archive_member_target(extract_dir: Path, member_name: str) -> Path:
@@ -109,13 +218,20 @@ def _safe_extract_archive(archive_path: Path, extract_dir: Path) -> None:
 
     if archive_path.name.endswith((".tar.gz", ".tgz")):
         with tarfile.open(archive_path, "r:gz") as tar:
-            members = tar.getmembers()
+            members = _read_limited_tar_members(tar)
             archive_files: set[Path] = set()
             archive_dirs: set[Path] = {extract_root}
+            extracted_size = 0
             for member in members:
                 target = _archive_member_target(extract_dir, member.name)
                 if not (member.isdir() or member.isfile()):
                     raise ValueError(f"unsafe archive member: {member.name}")
+                if member.isfile():
+                    extracted_size = _add_archive_extracted_size(
+                        extracted_size,
+                        member.name,
+                        member.size,
+                    )
                 _check_archive_member_layout(
                     extract_root,
                     target,
@@ -125,6 +241,7 @@ def _safe_extract_archive(archive_path: Path, extract_dir: Path) -> None:
                     archive_dirs,
                 )
 
+            written_size = 0
             for member in members:
                 target = _archive_member_target(extract_dir, member.name)
                 if member.isdir():
@@ -144,8 +261,14 @@ def _safe_extract_archive(archive_path: Path, extract_dir: Path) -> None:
                 if source is None:
                     raise ValueError(f"unsafe archive member: {member.name}")
                 try:
-                    with source, target.open("wb") as output:
-                        shutil.copyfileobj(source, output)
+                    with source:
+                        written_size += _copy_stream_limited(
+                            source,
+                            target,
+                            member_name=member.name,
+                            total_so_far=written_size,
+                            member_limit=MAX_ARCHIVE_MEMBER_BYTES,
+                        )
                 except IsADirectoryError as exc:
                     raise ValueError(f"unsafe archive member: {member.name}") from exc
         return
@@ -153,10 +276,18 @@ def _safe_extract_archive(archive_path: Path, extract_dir: Path) -> None:
     if archive_path.suffix.lower() == ".zip":
         with zipfile.ZipFile(archive_path, "r") as zf:
             infos = zf.infolist()
+            _check_archive_member_count(len(infos))
             archive_files = set()
             archive_dirs = {extract_root}
+            extracted_size = 0
             for info in infos:
                 target = _archive_member_target(extract_dir, info.filename)
+                if not info.is_dir():
+                    extracted_size = _add_archive_extracted_size(
+                        extracted_size,
+                        info.filename,
+                        info.file_size,
+                    )
                 _check_archive_member_layout(
                     extract_root,
                     target,
@@ -166,6 +297,7 @@ def _safe_extract_archive(archive_path: Path, extract_dir: Path) -> None:
                     archive_dirs,
                 )
 
+            written_size = 0
             for info in infos:
                 target = _archive_member_target(extract_dir, info.filename)
                 if info.is_dir():
@@ -184,8 +316,14 @@ def _safe_extract_archive(archive_path: Path, extract_dir: Path) -> None:
                         f"unsafe archive member: {info.filename}"
                     ) from exc
                 try:
-                    with zf.open(info, "r") as source, target.open("wb") as output:
-                        shutil.copyfileobj(source, output)
+                    with zf.open(info, "r") as source:
+                        written_size += _copy_stream_limited(
+                            source,
+                            target,
+                            member_name=info.filename,
+                            total_so_far=written_size,
+                            member_limit=MAX_ARCHIVE_MEMBER_BYTES,
+                        )
                 except IsADirectoryError as exc:
                     raise ValueError(
                         f"unsafe archive member: {info.filename}"
@@ -590,48 +728,54 @@ async def upload_file(
     from uuid import uuid4 as _uuid4
 
     ensure_library_dirs()
+    extract_dir: Path | None = None
 
     try:
         # Save + extract uploaded file
         upload_id = str(_uuid4())
-        filename = file.filename or "upload.tar.gz"
+        try:
+            filename = _safe_upload_filename(file.filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         upload_path = UPLOADS_DIR / f"{upload_id}_{filename}"
-        raw_content = await file.read()
+        raw_content = await _read_upload_limited(file)
         upload_path.write_bytes(raw_content)
 
         extract_dir = UPLOADS_DIR / upload_id
         extract_dir.mkdir(parents=True, exist_ok=True)
 
-        if filename.endswith((".tar.gz", ".tgz")):
-            try:
+        try:
+            if filename.endswith((".tar.gz", ".tgz")):
                 _safe_extract_archive(upload_path, extract_dir)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            except (tarfile.TarError, EOFError, gzip.BadGzipFile, zlib.error) as exc:
-                raise HTTPException(
-                    status_code=400, detail=INVALID_ARCHIVE_DETAIL
-                ) from exc
-        elif filename.endswith(".gz"):
-            try:
+            elif filename.endswith(".gz"):
+                target_filename = filename.removesuffix(".gz")
+                if not target_filename:
+                    raise ValueError("Invalid upload filename")
                 with gzip.open(str(upload_path), "rb") as gz_in:
-                    (extract_dir / filename.replace(".gz", "")).write_bytes(
-                        gz_in.read()
+                    _copy_stream_limited(
+                        gz_in,
+                        extract_dir / target_filename,
+                        member_name=target_filename,
+                        member_limit=None,
                     )
-            except (gzip.BadGzipFile, EOFError, zlib.error) as exc:
-                raise HTTPException(
-                    status_code=400, detail=INVALID_ARCHIVE_DETAIL
-                ) from exc
-        elif filename.endswith(".zip"):
-            try:
+            elif filename.endswith(".zip"):
                 _safe_extract_archive(upload_path, extract_dir)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            except zipfile.BadZipFile as exc:
-                raise HTTPException(
-                    status_code=400, detail=INVALID_ARCHIVE_DETAIL
-                ) from exc
-        else:
-            shutil.copy2(str(upload_path), str(extract_dir / filename))
+            else:
+                shutil.copy2(str(upload_path), str(extract_dir / filename))
+        except ArchiveLimitExceededError:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (
+            tarfile.TarError,
+            zipfile.BadZipFile,
+            EOFError,
+            gzip.BadGzipFile,
+            zlib.error,
+        ) as exc:
+            raise HTTPException(
+                status_code=400, detail=INVALID_ARCHIVE_DETAIL
+            ) from exc
 
         # Find main .tex and read content
         tex_files = list(extract_dir.rglob("*.tex"))
@@ -661,9 +805,17 @@ async def upload_file(
             is_manually_uploaded=True,
         )
 
+    except ArchiveLimitExceededError as exc:
+        if extract_dir is not None:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except HTTPException:
+        if extract_dir is not None:
+            shutil.rmtree(extract_dir, ignore_errors=True)
         raise
     except Exception as exc:
+        if extract_dir is not None:
+            shutil.rmtree(extract_dir, ignore_errors=True)
         logger.error("library.file_upload_failed", error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
