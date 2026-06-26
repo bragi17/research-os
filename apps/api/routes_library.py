@@ -105,12 +105,21 @@ def _check_archive_member_count(member_count: int) -> None:
 
 def _read_limited_tar_members(tar: tarfile.TarFile) -> list[tarfile.TarInfo]:
     members: list[tarfile.TarInfo] = []
+    extracted_size = 0
     while True:
         member = tar.next()
         if member is None:
             return members
         members.append(member)
         _check_archive_member_count(len(members))
+        if not (member.isdir() or member.isfile()):
+            raise ValueError(f"unsafe archive member: {member.name}")
+        if member.isfile():
+            extracted_size = _add_archive_extracted_size(
+                extracted_size,
+                member.name,
+                member.size,
+            )
 
 
 def _check_archive_member_size(member_name: str, size: int) -> None:
@@ -221,17 +230,8 @@ def _safe_extract_archive(archive_path: Path, extract_dir: Path) -> None:
             members = _read_limited_tar_members(tar)
             archive_files: set[Path] = set()
             archive_dirs: set[Path] = {extract_root}
-            extracted_size = 0
             for member in members:
                 target = _archive_member_target(extract_dir, member.name)
-                if not (member.isdir() or member.isfile()):
-                    raise ValueError(f"unsafe archive member: {member.name}")
-                if member.isfile():
-                    extracted_size = _add_archive_extracted_size(
-                        extracted_size,
-                        member.name,
-                        member.size,
-                    )
                 _check_archive_member_layout(
                     extract_root,
                     target,

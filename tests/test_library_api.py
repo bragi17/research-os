@@ -906,6 +906,26 @@ def test_library_archive_upload_rejects_tar_member_over_limit(
     _assert_no_partial_extract_dirs(upload_dir)
 
 
+def test_library_archive_upload_rejects_tar_declared_member_over_limit_before_data_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import gzip
+    import tarfile
+
+    import apps.api.routes_library as routes_library
+
+    info = tarfile.TarInfo("huge.tex")
+    info.size = 1024 * 1024
+    archive_path = tmp_path / "huge.tar.gz"
+    archive_path.write_bytes(gzip.compress(info.tobuf()))
+
+    monkeypatch.setattr(routes_library, "MAX_ARCHIVE_MEMBER_BYTES", 12, raising=False)
+
+    with pytest.raises(routes_library.ArchiveLimitExceededError, match="member"):
+        routes_library._safe_extract_archive(archive_path, tmp_path / "extract")
+
+
 def test_library_archive_upload_rejects_zip_member_over_limit(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
