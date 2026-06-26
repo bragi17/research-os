@@ -674,6 +674,50 @@ def test_library_archive_upload_rejects_zip_path_traversal(tmp_path: Path) -> No
     assert not (tmp_path / "escape.txt").exists()
 
 
+def test_library_archive_upload_rejects_tar_file_parent_conflict(
+    tmp_path: Path,
+) -> None:
+    import io
+    import tarfile
+
+    import apps.api.routes_library as routes_library
+
+    archive_path = tmp_path / "conflict.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        parent_payload = b"not a directory"
+        parent = tarfile.TarInfo("a")
+        parent.size = len(parent_payload)
+        tar.addfile(parent, io.BytesIO(parent_payload))
+
+        child_payload = b"\\documentclass{article}"
+        child = tarfile.TarInfo("a/b.tex")
+        child.size = len(child_payload)
+        tar.addfile(child, io.BytesIO(child_payload))
+
+    extract_dir = tmp_path / "extract"
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        routes_library._safe_extract_archive(archive_path, extract_dir)
+
+
+def test_library_archive_upload_rejects_zip_directory_file_conflict(
+    tmp_path: Path,
+) -> None:
+    import zipfile
+
+    import apps.api.routes_library as routes_library
+
+    archive_path = tmp_path / "conflict.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("a/b.tex/", "")
+        zf.writestr("a/b.tex", "\\documentclass{article}")
+
+    extract_dir = tmp_path / "extract"
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        routes_library._safe_extract_archive(archive_path, extract_dir)
+
+
 def test_library_upload_file_rejects_tar_path_traversal_with_400(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -702,6 +746,40 @@ def test_library_upload_file_rejects_tar_path_traversal_with_400(
     assert response.status_code == 400
     assert "unsafe archive member" in response.json()["detail"]
     assert not (tmp_path / "escape.txt").exists()
+
+
+def test_library_upload_file_rejects_tar_file_parent_conflict_with_400(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import io
+    import tarfile
+
+    import services.library.tools_storage as tools_storage
+
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        parent_payload = b"not a directory"
+        parent = tarfile.TarInfo("a")
+        parent.size = len(parent_payload)
+        tar.addfile(parent, io.BytesIO(parent_payload))
+
+        child_payload = b"\\documentclass{article}"
+        child = tarfile.TarInfo("a/b.tex")
+        child.size = len(child_payload)
+        tar.addfile(child, io.BytesIO(child_payload))
+    archive.seek(0)
+
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", tmp_path / "uploads")
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={"file": ("conflict.tar.gz", archive.getvalue(), "application/gzip")},
+    )
+
+    assert response.status_code == 400
+    assert "unsafe archive member" in response.json()["detail"]
 
 
 def test_library_upload_file_rejects_malformed_tar_with_400(

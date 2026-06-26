@@ -111,3 +111,27 @@ def test_extract_source_rejects_tar_special_member(tmp_path: Path) -> None:
         extract_source_archive(archive_path, extract_dir)
 
     assert not (extract_dir / "link.tex").exists()
+
+
+def test_extract_source_rejects_tar_file_parent_conflict(tmp_path: Path) -> None:
+    import io
+    import tarfile
+
+    from services.parser.arxiv_source import extract_source_archive
+
+    archive_path = tmp_path / "conflict.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        parent_payload = b"not a directory"
+        parent = tarfile.TarInfo("a")
+        parent.size = len(parent_payload)
+        tar.addfile(parent, io.BytesIO(parent_payload))
+
+        child_payload = b"\\documentclass{article}"
+        child = tarfile.TarInfo("a/b.tex")
+        child.size = len(child_payload)
+        tar.addfile(child, io.BytesIO(child_payload))
+
+    extract_dir = tmp_path / "extract"
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        extract_source_archive(archive_path, extract_dir)

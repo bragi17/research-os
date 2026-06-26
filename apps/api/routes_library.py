@@ -65,48 +65,133 @@ def _archive_member_target(extract_dir: Path, member_name: str) -> Path:
     return target
 
 
+def _archive_target_parent_paths(extract_root: Path, target: Path) -> list[Path]:
+    relative_target = target.relative_to(extract_root)
+    parent_paths: list[Path] = []
+    parent_path = extract_root
+    for part in relative_target.parts[:-1]:
+        parent_path = parent_path / part
+        parent_paths.append(parent_path)
+    return parent_paths
+
+
+def _check_archive_member_layout(
+    extract_root: Path,
+    target: Path,
+    member_name: str,
+    is_dir: bool,
+    archive_files: set[Path],
+    archive_dirs: set[Path],
+) -> None:
+    parent_paths = _archive_target_parent_paths(extract_root, target)
+    for parent_path in parent_paths:
+        if parent_path in archive_files or (
+            parent_path.exists() and not parent_path.is_dir()
+        ):
+            raise ValueError(f"unsafe archive member: {member_name}")
+
+    if is_dir:
+        if target in archive_files or (target.exists() and not target.is_dir()):
+            raise ValueError(f"unsafe archive member: {member_name}")
+        archive_dirs.update(parent_paths)
+        archive_dirs.add(target)
+        return
+
+    if target in archive_dirs or (target.exists() and target.is_dir()):
+        raise ValueError(f"unsafe archive member: {member_name}")
+    archive_dirs.update(parent_paths)
+    archive_files.add(target)
+
+
 def _safe_extract_archive(archive_path: Path, extract_dir: Path) -> None:
     archive_path = Path(archive_path)
     extract_dir = Path(extract_dir)
     extract_dir.mkdir(parents=True, exist_ok=True)
+    extract_root = extract_dir.resolve()
 
     if archive_path.name.endswith((".tar.gz", ".tgz")):
         with tarfile.open(archive_path, "r:gz") as tar:
             members = tar.getmembers()
+            archive_files: set[Path] = set()
+            archive_dirs: set[Path] = {extract_root}
             for member in members:
-                _archive_member_target(extract_dir, member.name)
+                target = _archive_member_target(extract_dir, member.name)
                 if not (member.isdir() or member.isfile()):
                     raise ValueError(f"unsafe archive member: {member.name}")
+                _check_archive_member_layout(
+                    extract_root,
+                    target,
+                    member.name,
+                    member.isdir(),
+                    archive_files,
+                    archive_dirs,
+                )
 
             for member in members:
                 target = _archive_member_target(extract_dir, member.name)
                 if member.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    try:
+                        target.mkdir(parents=True, exist_ok=True)
+                    except (FileExistsError, NotADirectoryError) as exc:
+                        raise ValueError(
+                            f"unsafe archive member: {member.name}"
+                        ) from exc
                     continue
 
-                target.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                except (FileExistsError, NotADirectoryError) as exc:
+                    raise ValueError(f"unsafe archive member: {member.name}") from exc
                 source = tar.extractfile(member)
                 if source is None:
                     raise ValueError(f"unsafe archive member: {member.name}")
-                with source, target.open("wb") as output:
-                    shutil.copyfileobj(source, output)
+                try:
+                    with source, target.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+                except IsADirectoryError as exc:
+                    raise ValueError(f"unsafe archive member: {member.name}") from exc
         return
 
     if archive_path.suffix.lower() == ".zip":
         with zipfile.ZipFile(archive_path, "r") as zf:
             infos = zf.infolist()
+            archive_files = set()
+            archive_dirs = {extract_root}
             for info in infos:
-                _archive_member_target(extract_dir, info.filename)
+                target = _archive_member_target(extract_dir, info.filename)
+                _check_archive_member_layout(
+                    extract_root,
+                    target,
+                    info.filename,
+                    info.is_dir(),
+                    archive_files,
+                    archive_dirs,
+                )
 
             for info in infos:
                 target = _archive_member_target(extract_dir, info.filename)
                 if info.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    try:
+                        target.mkdir(parents=True, exist_ok=True)
+                    except (FileExistsError, NotADirectoryError) as exc:
+                        raise ValueError(
+                            f"unsafe archive member: {info.filename}"
+                        ) from exc
                     continue
 
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info, "r") as source, target.open("wb") as output:
-                    shutil.copyfileobj(source, output)
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                except (FileExistsError, NotADirectoryError) as exc:
+                    raise ValueError(
+                        f"unsafe archive member: {info.filename}"
+                    ) from exc
+                try:
+                    with zf.open(info, "r") as source, target.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+                except IsADirectoryError as exc:
+                    raise ValueError(
+                        f"unsafe archive member: {info.filename}"
+                    ) from exc
         return
 
     raise ValueError(f"Unsupported archive type: {archive_path.name}")
