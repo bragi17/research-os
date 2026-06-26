@@ -609,7 +609,7 @@ async def upload_file(
                 _safe_extract_archive(upload_path, extract_dir)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            except tarfile.TarError as exc:
+            except (tarfile.TarError, EOFError, gzip.BadGzipFile, zlib.error) as exc:
                 raise HTTPException(
                     status_code=400, detail=INVALID_ARCHIVE_DETAIL
                 ) from exc

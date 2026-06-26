@@ -718,6 +718,48 @@ def test_library_archive_upload_rejects_zip_directory_file_conflict(
         routes_library._safe_extract_archive(archive_path, extract_dir)
 
 
+def test_library_archive_upload_allows_valid_nested_tar(tmp_path: Path) -> None:
+    import io
+    import tarfile
+
+    import apps.api.routes_library as routes_library
+
+    archive_path = tmp_path / "valid.tar.gz"
+    expected_text = "\\documentclass{article}\nNested tar content"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        payload = expected_text.encode()
+        info = tarfile.TarInfo("paper/source/main.tex")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+
+    extract_dir = tmp_path / "extract"
+
+    routes_library._safe_extract_archive(archive_path, extract_dir)
+
+    extracted = extract_dir / "paper" / "source" / "main.tex"
+    assert extracted.exists()
+    assert extracted.read_text() == expected_text
+
+
+def test_library_archive_upload_allows_valid_nested_zip(tmp_path: Path) -> None:
+    import zipfile
+
+    import apps.api.routes_library as routes_library
+
+    archive_path = tmp_path / "valid.zip"
+    expected_text = "\\documentclass{article}\nNested zip content"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("paper/source/main.tex", expected_text)
+
+    extract_dir = tmp_path / "extract"
+
+    routes_library._safe_extract_archive(archive_path, extract_dir)
+
+    extracted = extract_dir / "paper" / "source" / "main.tex"
+    assert extracted.exists()
+    assert extracted.read_text() == expected_text
+
+
 def test_library_upload_file_rejects_tar_path_traversal_with_400(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -800,6 +842,35 @@ def test_library_upload_file_rejects_malformed_tar_with_400(
     detail = response.json()["detail"]
     assert detail
     assert "invalid" in detail.lower() or "unsafe" in detail.lower()
+
+
+def test_library_upload_file_rejects_truncated_tar_gzip_with_400(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import io
+    import tarfile
+
+    import services.library.tools_storage as tools_storage
+
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        payload = b"\\documentclass{article}"
+        info = tarfile.TarInfo("nested/main.tex")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+
+    truncated_archive = archive.getvalue()[:16]
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", tmp_path / "uploads")
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={"file": ("truncated.tar.gz", truncated_archive, "application/gzip")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid or unsafe archive input"
 
 
 def test_library_upload_file_rejects_malformed_zip_with_400(
