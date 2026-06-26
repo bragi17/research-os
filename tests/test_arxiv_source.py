@@ -1,4 +1,6 @@
 """Tests for arXiv source downloader (offline tests only)."""
+from pathlib import Path
+
 import pytest
 from services.parser.arxiv_source import parse_arxiv_id, find_main_tex, extract_arxiv_source
 
@@ -68,3 +70,24 @@ class TestExtractArxivSource:
         files = extract_arxiv_source(gz_path, extract_dir)
         assert len(files) == 1
         assert files[0].suffix == ".tex"
+
+
+def test_extract_source_rejects_tar_path_traversal(tmp_path: Path) -> None:
+    import io
+    import tarfile
+
+    from services.parser.arxiv_source import extract_source_archive
+
+    archive_path = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        payload = b"owned"
+        info = tarfile.TarInfo("../../escape.tex")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+
+    extract_dir = tmp_path / "extract"
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        extract_source_archive(archive_path, extract_dir)
+
+    assert not (tmp_path / "escape.tex").exists()

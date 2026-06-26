@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -608,6 +609,49 @@ def client():
 # ===================================================================
 # POST /api/v1/library/papers
 # ===================================================================
+
+
+def test_library_archive_upload_rejects_tar_path_traversal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+    import tarfile
+
+    import apps.api.routes_library as routes_library
+
+    archive_path = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        payload = b"owned"
+        info = tarfile.TarInfo("../escape.txt")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        routes_library._safe_extract_archive(archive_path, extract_dir)
+
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_library_archive_upload_rejects_zip_path_traversal(tmp_path: Path) -> None:
+    import zipfile
+
+    import apps.api.routes_library as routes_library
+
+    archive_path = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("../escape.txt", "owned")
+
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        routes_library._safe_extract_archive(archive_path, extract_dir)
+
+    assert not (tmp_path / "escape.txt").exists()
 
 
 class TestAddPaper:
