@@ -704,6 +704,66 @@ def test_library_upload_file_rejects_tar_path_traversal_with_400(
     assert not (tmp_path / "escape.txt").exists()
 
 
+def test_library_upload_file_rejects_malformed_tar_with_400(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import services.library.tools_storage as tools_storage
+
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", tmp_path / "uploads")
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={"file": ("bad.tar.gz", b"not a tar archive", "application/gzip")},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail
+    assert "invalid" in detail.lower() or "unsafe" in detail.lower()
+
+
+def test_library_upload_file_rejects_malformed_zip_with_400(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import services.library.tools_storage as tools_storage
+
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", tmp_path / "uploads")
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={"file": ("bad.zip", b"not a zip archive", "application/zip")},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail
+    assert "invalid" in detail.lower() or "unsafe" in detail.lower()
+
+
+def test_library_upload_file_rejects_malformed_gzip_with_400(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import services.library.tools_storage as tools_storage
+
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", tmp_path / "uploads")
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={"file": ("bad.gz", b"not gzip data", "application/gzip")},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail
+    assert "invalid" in detail.lower() or "unsafe" in detail.lower()
+
+
 class TestAddPaper:
     """Test POST /api/v1/library/papers."""
 

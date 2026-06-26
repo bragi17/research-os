@@ -7,6 +7,7 @@ import os
 import shutil
 import tarfile
 import zipfile
+import zlib
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +46,7 @@ router = APIRouter(prefix="/api/v1/library", tags=["library"])
 NO_ARXIV_DETAIL = (
     "Cannot re-analyze: no arXiv ID found. Try adding the paper again with an arXiv ID."
 )
+INVALID_ARCHIVE_DETAIL = "Invalid or unsafe archive input"
 
 
 def _parse_pool_ids(value: str | None) -> list[str]:
@@ -522,14 +524,29 @@ async def upload_file(
                 _safe_extract_archive(upload_path, extract_dir)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except tarfile.TarError as exc:
+                raise HTTPException(
+                    status_code=400, detail=INVALID_ARCHIVE_DETAIL
+                ) from exc
         elif filename.endswith(".gz"):
-            with gzip.open(str(upload_path), "rb") as gz_in:
-                (extract_dir / filename.replace(".gz", "")).write_bytes(gz_in.read())
+            try:
+                with gzip.open(str(upload_path), "rb") as gz_in:
+                    (extract_dir / filename.replace(".gz", "")).write_bytes(
+                        gz_in.read()
+                    )
+            except (gzip.BadGzipFile, EOFError, zlib.error) as exc:
+                raise HTTPException(
+                    status_code=400, detail=INVALID_ARCHIVE_DETAIL
+                ) from exc
         elif filename.endswith(".zip"):
             try:
                 _safe_extract_archive(upload_path, extract_dir)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except zipfile.BadZipFile as exc:
+                raise HTTPException(
+                    status_code=400, detail=INVALID_ARCHIVE_DETAIL
+                ) from exc
         else:
             shutil.copy2(str(upload_path), str(extract_dir / filename))
 
