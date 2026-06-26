@@ -7,117 +7,58 @@ Downloads and extracts LaTeX source files from arXiv for structured parsing.
 from __future__ import annotations
 
 import gzip
+import os
 import re
 import shutil
 import tarfile
+import zlib
 from pathlib import Path
 
 import httpx
 from structlog import get_logger
+from services.parser.archive_safety import (
+    ArchiveLimitExceededError,
+    ArchiveLimits,
+    copy_stream_limited,
+    safe_extract_tar_gz,
+)
 
 logger = get_logger(__name__)
 
 ARXIV_EPRINT_URL = "https://arxiv.org/e-print/{arxiv_id}"
 CACHE_DIR_NAME = ".arxiv-cache"
+COPY_CHUNK_BYTES = 1024 * 1024
+MAX_DOWNLOAD_BYTES = int(
+    os.getenv("ARXIV_SOURCE_MAX_DOWNLOAD_BYTES", str(50 * 1024 * 1024))
+)
+MAX_EXTRACTED_BYTES = int(
+    os.getenv("ARXIV_SOURCE_MAX_EXTRACTED_BYTES", str(200 * 1024 * 1024))
+)
+MAX_ARCHIVE_MEMBERS = int(os.getenv("ARXIV_SOURCE_MAX_ARCHIVE_MEMBERS", "1000"))
+MAX_ARCHIVE_MEMBER_BYTES = int(
+    os.getenv("ARXIV_SOURCE_MAX_ARCHIVE_MEMBER_BYTES", str(50 * 1024 * 1024))
+)
 
 
-def _archive_member_target(extract_dir: Path, member_name: str) -> Path:
-    extract_root = extract_dir.resolve()
-    target = (extract_root / member_name).resolve()
-    try:
-        target.relative_to(extract_root)
-    except ValueError as exc:
-        raise ValueError(f"unsafe archive member: {member_name}") from exc
-    return target
-
-
-def _archive_target_parent_paths(extract_root: Path, target: Path) -> list[Path]:
-    relative_target = target.relative_to(extract_root)
-    parent_paths: list[Path] = []
-    parent_path = extract_root
-    for part in relative_target.parts[:-1]:
-        parent_path = parent_path / part
-        parent_paths.append(parent_path)
-    return parent_paths
-
-
-def _check_archive_member_layout(
-    extract_root: Path,
-    target: Path,
-    member_name: str,
-    is_dir: bool,
-    archive_files: set[Path],
-    archive_dirs: set[Path],
-) -> None:
-    parent_paths = _archive_target_parent_paths(extract_root, target)
-    for parent_path in parent_paths:
-        if parent_path in archive_files or (
-            parent_path.exists() and not parent_path.is_dir()
-        ):
-            raise ValueError(f"unsafe archive member: {member_name}")
-
-    if is_dir:
-        if target in archive_files or (target.exists() and not target.is_dir()):
-            raise ValueError(f"unsafe archive member: {member_name}")
-        archive_dirs.update(parent_paths)
-        archive_dirs.add(target)
-        return
-
-    if target in archive_dirs or (target.exists() and target.is_dir()):
-        raise ValueError(f"unsafe archive member: {member_name}")
-    archive_dirs.update(parent_paths)
-    archive_files.add(target)
+def _archive_limits() -> ArchiveLimits:
+    return ArchiveLimits(
+        max_members=MAX_ARCHIVE_MEMBERS,
+        max_member_bytes=MAX_ARCHIVE_MEMBER_BYTES,
+        max_extracted_bytes=MAX_EXTRACTED_BYTES,
+        copy_chunk_bytes=COPY_CHUNK_BYTES,
+    )
 
 
 def extract_source_archive(
     archive_path: str | Path,
     extract_dir: str | Path,
 ) -> list[Path]:
-    archive_path = Path(archive_path)
     extract_dir = Path(extract_dir)
-    extract_dir.mkdir(parents=True, exist_ok=True)
-    extract_root = extract_dir.resolve()
-
-    with tarfile.open(archive_path, "r:gz") as tar:
-        members = tar.getmembers()
-        archive_files: set[Path] = set()
-        archive_dirs: set[Path] = {extract_root}
-        for member in members:
-            target = _archive_member_target(extract_dir, member.name)
-            if not (member.isdir() or member.isfile()):
-                raise ValueError(f"unsafe archive member: {member.name}")
-            _check_archive_member_layout(
-                extract_root,
-                target,
-                member.name,
-                member.isdir(),
-                archive_files,
-                archive_dirs,
-            )
-
-        for member in members:
-            target = _archive_member_target(extract_dir, member.name)
-            if member.isdir():
-                try:
-                    target.mkdir(parents=True, exist_ok=True)
-                except (FileExistsError, NotADirectoryError) as exc:
-                    raise ValueError(f"unsafe archive member: {member.name}") from exc
-                continue
-
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-            except (FileExistsError, NotADirectoryError) as exc:
-                raise ValueError(f"unsafe archive member: {member.name}") from exc
-            source = tar.extractfile(member)
-            if source is None:
-                raise ValueError(f"unsafe archive member: {member.name}")
-            try:
-                with source, target.open("wb") as output:
-                    shutil.copyfileobj(source, output)
-            except IsADirectoryError as exc:
-                raise ValueError(f"unsafe archive member: {member.name}") from exc
-
-    files = [f for f in extract_dir.rglob("*") if f.is_file()]
+    try:
+        files = safe_extract_tar_gz(archive_path, extract_dir, limits=_archive_limits())
+    except Exception:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise
     logger.info("arxiv_source.extracted_tar", file_count=len(files))
     return files
 
@@ -178,35 +119,51 @@ async def download_arxiv_source(
 
     # Check cache
     if archive_path.exists() and archive_path.stat().st_size > 0:
+        if archive_path.stat().st_size > MAX_DOWNLOAD_BYTES:
+            archive_path.unlink(missing_ok=True)
+            raise ArchiveLimitExceededError("arXiv source download exceeds maximum size")
         logger.info("arxiv_source.cache_hit", arxiv_id=arxiv_id)
         return archive_path
 
     url = ARXIV_EPRINT_URL.format(arxiv_id=arxiv_id)
     logger.info("arxiv_source.downloading", arxiv_id=arxiv_id, url=url)
+    tmp_archive_path = archive_path.with_name(f"{archive_path.name}.tmp")
 
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(timeout),
         follow_redirects=True,
     ) as client:
-        response = await client.get(url)
+        try:
+            async with client.stream("GET", url) as response:
+                if response.status_code >= 400:
+                    raise ValueError(
+                        f"arXiv download failed with status {response.status_code} for {arxiv_id}"
+                    )
 
-        if response.status_code >= 400:
-            raise ValueError(
-                f"arXiv download failed with status {response.status_code} for {arxiv_id}"
-            )
+                content_type = response.headers.get("content-type", "")
+                if "application/pdf" in content_type:
+                    raise ValueError(
+                        f"LaTeX source not available for {arxiv_id} (got PDF - submission is PDF-only)"
+                    )
 
-        content_type = response.headers.get("content-type", "")
-        if "application/pdf" in content_type:
-            raise ValueError(
-                f"LaTeX source not available for {arxiv_id} (got PDF - submission is PDF-only)"
-            )
-
-        archive_path.write_bytes(response.content)
-        logger.info(
-            "arxiv_source.downloaded",
-            arxiv_id=arxiv_id,
-            size=len(response.content),
-        )
+                downloaded_size = 0
+                with tmp_archive_path.open("wb") as output:
+                    async for chunk in response.aiter_bytes():
+                        downloaded_size += len(chunk)
+                        if downloaded_size > MAX_DOWNLOAD_BYTES:
+                            raise ArchiveLimitExceededError(
+                                "arXiv source download exceeds maximum size"
+                            )
+                        output.write(chunk)
+                tmp_archive_path.replace(archive_path)
+                logger.info(
+                    "arxiv_source.downloaded",
+                    arxiv_id=arxiv_id,
+                    size=downloaded_size,
+                )
+        except Exception:
+            tmp_archive_path.unlink(missing_ok=True)
+            raise
 
     return archive_path
 
@@ -229,39 +186,73 @@ def extract_arxiv_source(
     archive_path = Path(archive_path)
     extract_dir = Path(extract_dir)
     extract_dir.mkdir(parents=True, exist_ok=True)
+    limits = _archive_limits()
+
+    def reset_extract_dir() -> None:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        extract_dir.mkdir(parents=True, exist_ok=True)
 
     # Try tar.gz first
     try:
         return extract_source_archive(archive_path, extract_dir)
-    except tarfile.TarError:
+    except ArchiveLimitExceededError:
+        reset_extract_dir()
+        raise
+    except ValueError:
+        reset_extract_dir()
+        raise
+    except (tarfile.TarError, EOFError, gzip.BadGzipFile, zlib.error):
+        reset_extract_dir()
         pass
 
     # Try gzip single file
+    temp_output = extract_dir / "_single_source.tmp"
     try:
         with gzip.open(archive_path, "rb") as gz:
-            content = gz.read()
-            # Detect if it's LaTeX
+            copy_stream_limited(
+                gz,
+                temp_output,
+                limits=limits,
+                member_name=archive_path.name,
+                member_limit=MAX_ARCHIVE_MEMBER_BYTES,
+            )
+            content = temp_output.read_bytes()
             text = content.decode("utf-8", errors="replace")
             if "\\documentclass" in text or "\\begin{document}" in text:
                 output_file = extract_dir / "main.tex"
-                output_file.write_text(text, encoding="utf-8")
+                temp_output.write_text(text, encoding="utf-8")
+                temp_output.replace(output_file)
                 logger.info("arxiv_source.extracted_single_tex")
                 return [output_file]
-            else:
-                # Write as generic file
-                output_file = extract_dir / "paper.tex"
-                output_file.write_bytes(content)
-                return [output_file]
-    except Exception:
+            output_file = extract_dir / "paper.tex"
+            temp_output.replace(output_file)
+            return [output_file]
+    except ArchiveLimitExceededError:
+        reset_extract_dir()
+        raise
+    except (gzip.BadGzipFile, EOFError, zlib.error, OSError):
+        temp_output.unlink(missing_ok=True)
         pass
 
     # Try as plain text
     try:
+        plain_size = archive_path.stat().st_size
+        if plain_size > MAX_ARCHIVE_MEMBER_BYTES:
+            raise ArchiveLimitExceededError(
+                f"Archive member exceeds maximum size: {archive_path.name}"
+            )
+        if plain_size > MAX_EXTRACTED_BYTES:
+            raise ArchiveLimitExceededError(
+                "Archive extracted content exceeds maximum size"
+            )
         content = archive_path.read_text(encoding="utf-8")
         if "\\documentclass" in content or "\\begin{document}" in content:
             output_file = extract_dir / "main.tex"
             output_file.write_text(content, encoding="utf-8")
             return [output_file]
+    except ArchiveLimitExceededError:
+        reset_extract_dir()
+        raise
     except Exception:
         pass
 

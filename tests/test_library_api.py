@@ -780,10 +780,10 @@ def _patch_upload_ingestion_pipeline(
     return calls
 
 
-def _assert_no_partial_extract_dirs(upload_dir: Path) -> None:
+def _assert_upload_dir_empty(upload_dir: Path) -> None:
     if not upload_dir.exists():
         return
-    assert [path for path in upload_dir.iterdir() if path.is_dir()] == []
+    assert list(upload_dir.iterdir()) == []
 
 
 def test_library_upload_file_rejects_payload_over_limit_with_413(
@@ -812,7 +812,7 @@ def test_library_upload_file_rejects_payload_over_limit_with_413(
 
     assert response.status_code == 413
     assert "upload" in response.json()["detail"].lower()
-    _assert_no_partial_extract_dirs(upload_dir)
+    _assert_upload_dir_empty(upload_dir)
 
 
 def test_library_upload_file_rejects_unsafe_filename_with_400(
@@ -838,7 +838,7 @@ def test_library_upload_file_rejects_unsafe_filename_with_400(
 
     assert response.status_code == 400
     assert "filename" in response.json()["detail"].lower()
-    _assert_no_partial_extract_dirs(upload_dir)
+    _assert_upload_dir_empty(upload_dir)
 
 
 def test_library_upload_file_rejects_gzip_decompression_over_limit_with_413(
@@ -869,7 +869,39 @@ def test_library_upload_file_rejects_gzip_decompression_over_limit_with_413(
 
     assert response.status_code == 413
     assert "extracted" in response.json()["detail"].lower()
-    _assert_no_partial_extract_dirs(upload_dir)
+    _assert_upload_dir_empty(upload_dir)
+
+
+def test_library_upload_file_rejects_gzip_member_over_limit_with_413(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import gzip
+
+    import apps.api.routes_library as routes_library
+    import services.library.tools_storage as tools_storage
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
+    monkeypatch.setattr(routes_library, "MAX_ARCHIVE_MEMBER_BYTES", 12, raising=False)
+    monkeypatch.setattr(routes_library, "MAX_EXTRACTED_BYTES", 1024, raising=False)
+    _patch_upload_ingestion_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={
+            "file": (
+                "main.tex.gz",
+                gzip.compress(b"\\documentclass{article}\nhello"),
+                "application/gzip",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert "member" in response.json()["detail"].lower()
+    _assert_upload_dir_empty(upload_dir)
 
 
 def test_library_archive_upload_rejects_tar_member_over_limit(
@@ -903,7 +935,7 @@ def test_library_archive_upload_rejects_tar_member_over_limit(
 
     assert response.status_code == 413
     assert "member" in response.json()["detail"].lower()
-    _assert_no_partial_extract_dirs(upload_dir)
+    _assert_upload_dir_empty(upload_dir)
 
 
 def test_library_archive_upload_rejects_tar_declared_member_over_limit_before_data_read(
@@ -954,7 +986,7 @@ def test_library_archive_upload_rejects_zip_member_over_limit(
 
     assert response.status_code == 413
     assert "member" in response.json()["detail"].lower()
-    _assert_no_partial_extract_dirs(upload_dir)
+    _assert_upload_dir_empty(upload_dir)
 
 
 def test_library_upload_file_allows_valid_nested_tar_and_passes_latex_text(
@@ -976,7 +1008,8 @@ def test_library_upload_file_allows_valid_nested_tar_and_passes_latex_text(
         tar.addfile(info, io.BytesIO(payload))
     archive.seek(0)
 
-    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", tmp_path / "uploads")
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
     calls = _patch_upload_ingestion_pipeline(monkeypatch)
 
     response = client.post(
@@ -1016,7 +1049,8 @@ def test_library_upload_file_rejects_tar_path_traversal_with_400(
         tar.addfile(info, io.BytesIO(payload))
     archive.seek(0)
 
-    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", tmp_path / "uploads")
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
 
     response = client.post(
         "/api/v1/library/upload-file",
@@ -1026,6 +1060,7 @@ def test_library_upload_file_rejects_tar_path_traversal_with_400(
     assert response.status_code == 400
     assert "unsafe archive member" in response.json()["detail"]
     assert not (tmp_path / "escape.txt").exists()
+    _assert_upload_dir_empty(upload_dir)
 
 
 def test_library_upload_file_rejects_tar_file_parent_conflict_with_400(
@@ -1051,7 +1086,8 @@ def test_library_upload_file_rejects_tar_file_parent_conflict_with_400(
         tar.addfile(child, io.BytesIO(child_payload))
     archive.seek(0)
 
-    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", tmp_path / "uploads")
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
 
     response = client.post(
         "/api/v1/library/upload-file",
@@ -1060,6 +1096,7 @@ def test_library_upload_file_rejects_tar_file_parent_conflict_with_400(
 
     assert response.status_code == 400
     assert "unsafe archive member" in response.json()["detail"]
+    _assert_upload_dir_empty(upload_dir)
 
 
 def test_library_upload_file_rejects_malformed_tar_with_400(

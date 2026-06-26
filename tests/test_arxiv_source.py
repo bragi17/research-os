@@ -1,6 +1,9 @@
 """Tests for arXiv source downloader (offline tests only)."""
+from __future__ import annotations
+
 from pathlib import Path
 
+import httpx
 import pytest
 from services.parser.arxiv_source import parse_arxiv_id, find_main_tex, extract_arxiv_source
 
@@ -135,3 +138,126 @@ def test_extract_source_rejects_tar_file_parent_conflict(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="unsafe archive member"):
         extract_source_archive(archive_path, extract_dir)
+
+
+def test_extract_source_rejects_tar_member_count_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import io
+    import tarfile
+
+    import services.parser.arxiv_source as arxiv_source
+
+    archive_path = tmp_path / "too-many.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for index in range(2):
+            payload = b"\\documentclass{article}"
+            info = tarfile.TarInfo(f"paper-{index}.tex")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+
+    monkeypatch.setattr(arxiv_source, "MAX_ARCHIVE_MEMBERS", 1, raising=False)
+
+    with pytest.raises(ValueError, match="member count"):
+        arxiv_source.extract_source_archive(archive_path, tmp_path / "extract")
+
+
+def test_extract_source_rejects_tar_total_size_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import io
+    import tarfile
+
+    import services.parser.arxiv_source as arxiv_source
+
+    archive_path = tmp_path / "too-large.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for index in range(2):
+            payload = b"12345678"
+            info = tarfile.TarInfo(f"paper-{index}.tex")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+
+    monkeypatch.setattr(arxiv_source, "MAX_ARCHIVE_MEMBER_BYTES", 100, raising=False)
+    monkeypatch.setattr(arxiv_source, "MAX_EXTRACTED_BYTES", 12, raising=False)
+
+    with pytest.raises(ValueError, match="extracted"):
+        arxiv_source.extract_source_archive(archive_path, tmp_path / "extract")
+
+
+def test_extract_arxiv_source_rejects_gzip_decompression_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import gzip
+
+    import services.parser.arxiv_source as arxiv_source
+
+    gz_path = tmp_path / "paper.gz"
+    gz_path.write_bytes(gzip.compress(b"\\documentclass{article}\nhello"))
+
+    monkeypatch.setattr(arxiv_source, "MAX_ARCHIVE_MEMBER_BYTES", 12, raising=False)
+    monkeypatch.setattr(arxiv_source, "MAX_EXTRACTED_BYTES", 1024, raising=False)
+
+    with pytest.raises(ValueError, match="member"):
+        arxiv_source.extract_arxiv_source(gz_path, tmp_path / "extract")
+
+
+@pytest.mark.asyncio
+async def test_download_arxiv_source_rejects_response_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import services.parser.arxiv_source as arxiv_source
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/gzip"}
+        content = b"123456789"
+
+        async def aiter_bytes(self):
+            yield b"12345"
+            yield b"6789"
+
+    class FakeStream:
+        async def __aenter__(self) -> FakeResponse:
+            return FakeResponse()
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: object | None,
+        ) -> None:
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: object | None,
+        ) -> None:
+            return None
+
+        async def get(self, url: str) -> FakeResponse:
+            return FakeResponse()
+
+        def stream(self, method: str, url: str) -> FakeStream:
+            return FakeStream()
+
+    monkeypatch.setattr(arxiv_source, "MAX_DOWNLOAD_BYTES", 8, raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(ValueError, match="download"):
+        await arxiv_source.download_arxiv_source("2301.07041", cache_dir=tmp_path)
+
+    assert not (tmp_path / "2301.07041.tar.gz").exists()
