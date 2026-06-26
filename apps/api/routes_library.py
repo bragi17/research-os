@@ -202,7 +202,7 @@ async def list_pools() -> dict[str, Any]:
         items = await list_library_pools()
         return {"items": items, "total": len(items)}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # POST /pools — create knowledge-base pool
@@ -214,7 +214,7 @@ async def create_pool(body: LibraryPoolCreate) -> dict[str, Any]:
             description=body.description,
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # PATCH /pools/{pool_id}
@@ -231,7 +231,7 @@ async def patch_pool(pool_id: UUID, body: LibraryPoolUpdate) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # DELETE /pools/{pool_id}
@@ -246,11 +246,11 @@ async def delete_pool(
             raise HTTPException(status_code=404, detail="Pool not found")
         return result
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # POST /pools/{pool_id}/papers/{paper_id}/copy
@@ -294,7 +294,7 @@ async def pool_duplicates(pool_id: UUID) -> dict[str, Any]:
         items = await get_pool_duplicate_candidates(pool_id)
         return {"items": items, "total": len(items)}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # POST /papers — add paper to library (full ingestion pipeline)
@@ -323,7 +323,7 @@ async def add_paper(body: dict[str, Any]) -> dict[str, Any]:
         raise
     except Exception as exc:
         logger.error("library.add_paper_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # GET /papers — list with filters
@@ -351,7 +351,7 @@ async def list_papers(
         )
         return {"items": papers, "total": total}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # GET /papers/{id}
@@ -409,7 +409,7 @@ async def trigger_analysis(paper_id: UUID) -> dict[str, Any]:
         raise
     except Exception as exc:
         logger.error("analyze.failed", paper_id=str(paper_id), error=str(exc))
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 async def _resolve_arxiv_id_for_paper(paper: dict[str, Any]) -> str | None:
@@ -574,7 +574,7 @@ async def upload_paper(body: dict[str, Any]) -> dict[str, Any]:
         raise
     except Exception as exc:
         logger.error("library.upload_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # POST /upload-file — upload .tar.gz / .gz / .zip (full ingestion pipeline)
@@ -665,7 +665,7 @@ async def upload_file(
         raise
     except Exception as exc:
         logger.error("library.file_upload_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def _classify_section(title: str) -> str:

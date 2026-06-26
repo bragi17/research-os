@@ -64,7 +64,7 @@ async def get_run_hypotheses(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("get_hypotheses_run_check_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
 
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -73,7 +73,7 @@ async def get_run_hypotheses(
         return await db.list_hypotheses(run_id)
     except Exception as exc:
         logger.error("list_hypotheses_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to list hypotheses")
+        raise HTTPException(status_code=500, detail="Failed to list hypotheses") from exc
 
 
 @router.post("/{run_id}/export", response_model=ExportResponse)
@@ -88,7 +88,7 @@ async def export_run_results(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("export_run_get_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
 
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -129,7 +129,7 @@ async def download_export(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("download_export_get_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
 
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -139,7 +139,7 @@ async def download_export(
         hypotheses = await db.list_hypotheses(run_id)
     except Exception as exc:
         logger.error("download_export_data_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to fetch run data")
+        raise HTTPException(status_code=500, detail="Failed to fetch run data") from exc
 
     if format == "markdown":
         try:
@@ -201,7 +201,7 @@ async def get_run_papers(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("get_papers_run_check_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
 
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -211,7 +211,7 @@ async def get_run_papers(
         papers = await db.list_papers_by_run(run_id, limit=limit, offset=offset)
     except Exception as exc:
         logger.error("list_papers_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to list papers")
+        raise HTTPException(status_code=500, detail="Failed to list papers") from exc
 
     return {
         "run_id": str(run_id),

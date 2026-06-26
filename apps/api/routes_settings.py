@@ -363,7 +363,7 @@ async def update_model_settings(
         return {"status": "updated", "keys": list(body.keys())}
     except Exception as exc:
         logger.error("settings.update_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.put("/llm")
@@ -388,7 +388,7 @@ async def update_llm_settings(
     except Exception as exc:
         error = redact_secret_text(str(exc), secrets=[body.api_key])[:200]
         logger.error("settings.llm_update_failed", error=error)
-        raise HTTPException(status_code=_llm_settings_error_status(error), detail=error)
+        raise HTTPException(status_code=_llm_settings_error_status(error), detail=error) from exc
 
 
 @router.delete("/llm/api-key")
@@ -409,7 +409,7 @@ async def delete_llm_api_key(
         raise HTTPException(
             status_code=_llm_settings_error_status(error),
             detail=error,
-        )
+        ) from exc
 
 
 @router.put("/literature/{source}")
@@ -440,7 +440,7 @@ async def update_literature_source(
             source=source.value,
             error=error,
         )
-        raise HTTPException(status_code=400, detail=error)
+        raise HTTPException(status_code=400, detail=error) from exc
     except Exception as exc:
         secrets = new_credentials + await _literature_secret_values(repo, source)
         error = redact_secret_text(str(exc), secrets=secrets)[:200]
@@ -452,7 +452,7 @@ async def update_literature_source(
         raise HTTPException(
             status_code=_llm_settings_error_status(error),
             detail=error,
-        )
+        ) from exc
 
 
 @router.post("/literature/{source}/test")

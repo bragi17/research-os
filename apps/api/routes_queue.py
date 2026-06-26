@@ -27,7 +27,7 @@ async def get_queue_status(
         by_status = await db.count_runs_by_status(workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("queue_status_runs_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to query run status")
+        raise HTTPException(status_code=500, detail="Failed to query run status") from exc
 
     return {
         "redis_available": redis_available,

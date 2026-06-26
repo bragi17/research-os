@@ -38,7 +38,7 @@ async def _require_project_access(
         project = await db.get_project(project_id)
     except Exception as exc:
         logger.error("get_project_failed", project_id=str(project_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve project")
+        raise HTTPException(status_code=500, detail="Failed to retrieve project") from exc
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     owner_user_id = project.get("owner_user_id")
@@ -82,7 +82,7 @@ async def create_run(
         row = await db.create_run(run_data)
     except Exception as exc:
         logger.error("create_run_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to create run")
+        raise HTTPException(status_code=500, detail="Failed to create run") from exc
 
     try:
         await db.create_event(
@@ -117,7 +117,7 @@ async def list_runs(
         )
     except Exception as exc:
         logger.error("list_runs_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to list runs")
+        raise HTTPException(status_code=500, detail="Failed to list runs") from exc
 
 
 @router.get("/{run_id}", response_model=RunResponse)
@@ -131,7 +131,7 @@ async def get_run(
         row = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("get_run_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to get run")
+        raise HTTPException(status_code=500, detail="Failed to get run") from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -164,7 +164,7 @@ async def patch_run(
         raise
     except Exception as exc:
         logger.error("patch_run_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to update run")
+        raise HTTPException(status_code=500, detail="Failed to update run") from exc
 
 
 @router.delete("/{run_id}")
@@ -189,7 +189,7 @@ async def delete_run(
         raise
     except Exception as exc:
         logger.error("delete_run_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to delete run")
+        raise HTTPException(status_code=500, detail="Failed to delete run") from exc
 
 
 @router.post("/{run_id}/start")
@@ -203,7 +203,7 @@ async def start_run(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("start_run_get_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
 
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -226,7 +226,7 @@ async def start_run(
         await db.update_run(run_id, updates)
     except Exception as exc:
         logger.error("start_run_update_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to update run")
+        raise HTTPException(status_code=500, detail="Failed to update run") from exc
 
     enqueued = await enqueue_run(run_id, run)
 
@@ -262,7 +262,7 @@ async def pause_run(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("pause_run_get_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
 
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -282,7 +282,7 @@ async def pause_run(
         })
     except Exception as exc:
         logger.error("pause_run_update_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to update run")
+        raise HTTPException(status_code=500, detail="Failed to update run") from exc
 
     try:
         await db.create_event(
@@ -310,7 +310,7 @@ async def resume_run(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("resume_run_get_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
 
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -329,7 +329,7 @@ async def resume_run(
         })
     except Exception as exc:
         logger.error("resume_run_update_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to update run")
+        raise HTTPException(status_code=500, detail="Failed to update run") from exc
 
     patch_applied = request.patch or {}
     try:
@@ -357,7 +357,7 @@ async def cancel_run(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("cancel_run_get_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
 
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -378,7 +378,7 @@ async def cancel_run(
         })
     except Exception as exc:
         logger.error("cancel_run_update_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to update run")
+        raise HTTPException(status_code=500, detail="Failed to update run") from exc
 
     try:
         await db.create_event(

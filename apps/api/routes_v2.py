@@ -118,7 +118,7 @@ async def _require_run(run_id: UUID, ctx: WorkspaceContext) -> dict[str, Any]:
         run = await db_get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("get_run_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
@@ -137,7 +137,7 @@ async def _get_visible_context_bundle(
             bundle_id=str(bundle_id),
             error=str(exc),
         )
-        raise HTTPException(status_code=500, detail="Failed to get context bundle")
+        raise HTTPException(status_code=500, detail="Failed to get context bundle") from exc
     if bundle is None:
         return None
 
@@ -161,7 +161,7 @@ async def _get_visible_context_bundle(
             source_run_id=str(source_run_id),
             error=str(exc),
         )
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
     if source_run is None:
         return None
     return bundle
@@ -192,7 +192,7 @@ async def _require_project_access(
         project = await db_get_project(project_id)
     except Exception as exc:
         logger.error("get_project_failed", project_id=str(project_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve project")
+        raise HTTPException(status_code=500, detail="Failed to retrieve project") from exc
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     owner_user_id = project.get("owner_user_id")
@@ -263,7 +263,7 @@ async def create_run_v2(
         row = await db_create_run(run_data)
     except Exception as exc:
         logger.error("create_run_v2_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to create run")
+        raise HTTPException(status_code=500, detail="Failed to create run") from exc
 
     # Emit initial event
     try:
@@ -341,7 +341,7 @@ async def spawn_run(
         row = await db_create_run(child_data)
     except Exception as exc:
         logger.error("spawn_run_failed", parent_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to spawn child run")
+        raise HTTPException(status_code=500, detail="Failed to spawn child run") from exc
 
     # Record event on parent
     try:
@@ -391,7 +391,7 @@ async def get_pain_points(
         items = await list_pain_points(run_id, limit=limit, offset=offset)
     except Exception as exc:
         logger.error("list_pain_points_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to list pain points")
+        raise HTTPException(status_code=500, detail="Failed to list pain points") from exc
     return {"run_id": str(run_id), "items": items}
 
 
@@ -414,7 +414,7 @@ async def get_idea_cards(
         items = await list_idea_cards(run_id, limit=limit, offset=offset)
     except Exception as exc:
         logger.error("list_idea_cards_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to list idea cards")
+        raise HTTPException(status_code=500, detail="Failed to list idea cards") from exc
     return {"run_id": str(run_id), "items": items}
 
 
@@ -436,7 +436,7 @@ async def get_figures(
         items = await list_figures_by_run(run_id, limit=limit)
     except Exception as exc:
         logger.error("list_figures_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to list figures")
+        raise HTTPException(status_code=500, detail="Failed to list figures") from exc
     return {"run_id": str(run_id), "items": items}
 
 
@@ -457,7 +457,7 @@ async def get_run_reading_path(
         path = await get_reading_path(run_id)
     except Exception as exc:
         logger.error("get_reading_path_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to get reading path")
+        raise HTTPException(status_code=500, detail="Failed to get reading path") from exc
     return {"run_id": str(run_id), "reading_path": path}
 
 
@@ -611,7 +611,7 @@ async def perform_action(
         )
     except Exception as exc:
         logger.error("create_action_event_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to record action")
+        raise HTTPException(status_code=500, detail="Failed to record action") from exc
 
     # Publish to Redis for the worker
     await _publish_event(run_id, {

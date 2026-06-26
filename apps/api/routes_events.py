@@ -31,7 +31,7 @@ async def get_run_events(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("get_events_run_check_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
 
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -41,7 +41,7 @@ async def get_run_events(
         events = await db.list_events(run_id, limit=limit, offset=offset)
     except Exception as exc:
         logger.error("list_events_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to list events")
+        raise HTTPException(status_code=500, detail="Failed to list events") from exc
 
     return {
         "run_id": str(run_id),
@@ -71,7 +71,7 @@ async def stream_run_events(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
     except Exception as exc:
         logger.error("stream_events_run_check_failed", run_id=str(run_id), error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to retrieve run")
+        raise HTTPException(status_code=500, detail="Failed to retrieve run") from exc
 
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
