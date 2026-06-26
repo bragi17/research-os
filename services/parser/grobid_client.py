@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import Any
+
 import httpx
 from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
@@ -400,7 +402,7 @@ class GROBIDClient:
 
     def _parse_sections(
         self,
-        element: ElementTree.Element,
+        element: Any,
         ns: dict[str, str],
     ) -> list[ParsedSection]:
         """Parse sections from body element."""
@@ -434,7 +436,7 @@ class GROBIDClient:
 
     def _parse_reference(
         self,
-        bibl: ElementTree.Element,
+        bibl: Any,
         ns: dict[str, str],
     ) -> ParsedReference | None:
         """Parse a single reference entry."""
