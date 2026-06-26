@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_COPY_CHUNK_BYTES = 1024 * 1024
+UNSUPPORTED_ZIP_FLAG_BITS = 0x1 | 0x20 | 0x40
 
 
 class ArchiveLimitExceededError(ValueError):
@@ -134,6 +135,11 @@ def _add_archive_extracted_size(
     return next_total
 
 
+def _check_zip_member_supported(info: zipfile.ZipInfo) -> None:
+    if info.flag_bits & UNSUPPORTED_ZIP_FLAG_BITS:
+        raise ValueError(f"unsafe archive member: {info.filename}")
+
+
 def _read_limited_tar_members(
     tar: tarfile.TarFile,
     limits: ArchiveLimits,
@@ -234,6 +240,7 @@ def safe_extract_zip(
         archive_dirs = {extract_root}
         extracted_size = 0
         for info in infos:
+            _check_zip_member_supported(info)
             target = _archive_member_target(extract_dir, info.filename)
             if not info.is_dir():
                 extracted_size = _add_archive_extracted_size(

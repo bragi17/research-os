@@ -586,7 +586,7 @@ async def upload_file(
             ) from exc
 
         # Find main .tex and read content
-        tex_files = list(extract_dir.rglob("*.tex"))
+        tex_files = [path for path in extract_dir.rglob("*.tex") if path.is_file()]
         if not tex_files:
             raise HTTPException(status_code=400, detail="No .tex files found in archive")
 

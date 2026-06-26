@@ -989,6 +989,67 @@ def test_library_archive_upload_rejects_zip_member_over_limit(
     _assert_upload_dir_empty(upload_dir)
 
 
+def test_library_upload_file_rejects_directory_named_tex_with_400(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import io
+    import zipfile
+
+    import services.library.tools_storage as tools_storage
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("main.tex/", "")
+    archive.seek(0)
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={"file": ("directory-tex.zip", archive.getvalue(), "application/zip")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "No .tex files found in archive"
+    _assert_upload_dir_empty(upload_dir)
+
+
+def test_library_upload_file_rejects_encrypted_zip_with_400(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import io
+    import zipfile
+
+    import services.library.tools_storage as tools_storage
+
+    archive = io.BytesIO()
+    info = zipfile.ZipInfo("main.tex")
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(info, "\\documentclass{article}")
+    archive_bytes = bytearray(archive.getvalue())
+    local_header_index = archive_bytes.index(b"PK\x03\x04")
+    central_header_index = archive_bytes.index(b"PK\x01\x02")
+    archive_bytes[local_header_index + 6] |= 0x1
+    archive_bytes[central_header_index + 8] |= 0x1
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(tools_storage, "UPLOADS_DIR", upload_dir)
+
+    response = client.post(
+        "/api/v1/library/upload-file",
+        files={"file": ("encrypted.zip", bytes(archive_bytes), "application/zip")},
+    )
+
+    assert response.status_code == 400
+    assert "unsafe archive member" in response.json()["detail"]
+    _assert_upload_dir_empty(upload_dir)
+
+
 def test_library_upload_file_allows_valid_nested_tar_and_passes_latex_text(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
