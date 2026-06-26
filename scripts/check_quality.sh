@@ -11,6 +11,9 @@ Runs the focused repository quality gate:
   - npm audit --audit-level=moderate in apps/web
   - npm run build in apps/web
 
+Note: apps/web currently overrides PostCSS to the root fixed version so Next's
+nested dependency also satisfies npm audit.
+
 Pytest is intentionally opt-in because the full suite is slower than the
 default lint/security/frontend gate.
 
