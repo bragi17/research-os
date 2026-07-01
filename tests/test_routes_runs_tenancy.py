@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock
@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-
 
 WORKSPACE_A = UUID("11111111-1111-1111-1111-111111111111")
 WORKSPACE_B = UUID("22222222-2222-2222-2222-222222222222")
@@ -350,6 +349,101 @@ def test_run_actions_scope_get_before_update(
     assert response.status_code == 200
     assert response.json()["status"] == expected_status
     assert calls == ["get", "update"]
+
+
+def test_start_run_uses_timezone_aware_utc_timestamps(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.database as database
+    import apps.api.routes_runs as routes_runs
+
+    run_id = uuid4()
+    update_calls: list[dict[str, Any]] = []
+
+    async def fake_get_run(run_id_arg: UUID, *, workspace_id: UUID) -> dict[str, Any]:
+        assert run_id_arg == run_id
+        assert workspace_id == WORKSPACE_A
+        return _run(run_id, WORKSPACE_A, "Timezone-safe run")
+
+    async def fake_update_run(
+        run_id_arg: UUID,
+        updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        assert run_id_arg == run_id
+        update_calls.append(updates)
+        updated = _run(run_id, WORKSPACE_A, "Timezone-safe run", status=updates["status"])
+        updated.update(updates)
+        return updated
+
+    async def fake_create_event(**_kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    async def fake_enqueue_run(_run_id: UUID, _run: dict[str, Any]) -> bool:
+        return True
+
+    async def fake_publish_event(_run_id: UUID, _event: dict[str, Any]) -> None:
+        return None
+
+    monkeypatch.setattr(database, "get_run", fake_get_run)
+    monkeypatch.setattr(database, "update_run", fake_update_run)
+    monkeypatch.setattr(database, "create_event", fake_create_event)
+    monkeypatch.setattr(routes_runs, "enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr(routes_runs, "publish_event", fake_publish_event)
+
+    response = client.post(f"/api/v1/runs/{run_id}/start")
+
+    assert response.status_code == 200
+    assert len(update_calls) == 1
+    assert update_calls[0]["started_at"].tzinfo is timezone.utc
+    assert update_calls[0]["updated_at"].tzinfo is timezone.utc
+
+
+def test_start_run_returns_503_without_marking_running_when_enqueue_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.database as database
+    import apps.api.routes_runs as routes_runs
+
+    run_id = uuid4()
+    update_calls: list[dict[str, Any]] = []
+
+    async def fake_get_run(run_id_arg: UUID, *, workspace_id: UUID) -> dict[str, Any]:
+        assert run_id_arg == run_id
+        assert workspace_id == WORKSPACE_A
+        return _run(run_id, WORKSPACE_A, "Queue failure run")
+
+    async def fake_update_run(
+        run_id_arg: UUID,
+        updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        assert run_id_arg == run_id
+        update_calls.append(updates)
+        updated = _run(run_id, WORKSPACE_A, "Queue failure run", status=updates["status"])
+        updated.update(updates)
+        return updated
+
+    async def fake_create_event(**_kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    async def fake_enqueue_run(_run_id: UUID, _run: dict[str, Any]) -> bool:
+        return False
+
+    async def fake_publish_event(_run_id: UUID, _event: dict[str, Any]) -> None:
+        return None
+
+    monkeypatch.setattr(database, "get_run", fake_get_run)
+    monkeypatch.setattr(database, "update_run", fake_update_run)
+    monkeypatch.setattr(database, "create_event", fake_create_event)
+    monkeypatch.setattr(routes_runs, "enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr(routes_runs, "publish_event", fake_publish_event)
+
+    response = client.post(f"/api/v1/runs/{run_id}/start")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Failed to enqueue run"
+    assert update_calls == []
 
 
 @pytest.mark.parametrize(

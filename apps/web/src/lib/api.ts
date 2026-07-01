@@ -84,10 +84,17 @@ export const getModelSettings = () =>
   apiFetch<SettingsModelsResponse>("/api/v1/settings/models");
 
 // Auth
-export const login = (email: string, password: string) =>
-  apiFetch<{ access_token: string }>("/api/v1/auth/login", {
+export interface AuthResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  user: User;
+}
+
+export const login = (identifier: string, password: string) =>
+  apiFetch<AuthResponse>("/api/v1/auth/login", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ identifier, password }),
   });
 
 export const register = (data: Record<string, unknown>) =>
@@ -166,7 +173,12 @@ export interface Paper {
 export interface User {
   id: string;
   email: string;
-  name: string;
+  username: string;
+  role: string;
+  workspace_id: string | null;
+  is_active?: boolean;
+  created_at?: string;
+  name?: string;
 }
 
 // V2 types

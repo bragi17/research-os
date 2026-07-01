@@ -14,7 +14,7 @@ from apps.api.auth import (
     create_access_token,
     create_user,
     get_current_user,
-    get_user_by_email,
+    get_user_by_identifier,
     verify_password,
 )
 
@@ -60,7 +60,11 @@ async def register(request: RegisterRequest) -> dict[str, Any]:
 @router.post("/login", response_model=TokenResponse)
 async def login(request: LoginRequest) -> dict[str, Any]:
     """Authenticate a user and return a JWT token."""
-    user = await get_user_by_email(request.email)
+    identifier = request.identifier or request.email
+    if not identifier:
+        raise HTTPException(status_code=422, detail="identifier or email is required")
+
+    user = await get_user_by_identifier(identifier)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 

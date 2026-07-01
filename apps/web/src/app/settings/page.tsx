@@ -92,13 +92,14 @@ export default function SettingsPage() {
       await apiFetch("/api/v1/settings/llm", {
         method: "PUT",
         body: JSON.stringify({
+          provider: llmEdit.provider,
           label: llmEdit.label,
           base_url: llmEdit.base_url,
           model: llmEdit.model,
           api_key: llmEdit.api_key.trim() ? llmEdit.api_key : null,
         }),
       });
-      setSaveResult("DeepSeek settings saved successfully.");
+      setSaveResult("LLM settings saved successfully.");
       fetchSettings({ forceLlmReset: true });
     } catch (e) {
       setSaveResult(`Error: ${e}`);
@@ -114,7 +115,7 @@ export default function SettingsPage() {
         llmDirtyRef.current = isDirtyLlmEdit(next, savedLlmEditRef.current);
         return next;
       });
-      setSaveResult("Unsaved DeepSeek API key cleared.");
+      setSaveResult("Unsaved LLM API key cleared.");
       return;
     }
     if (!cat.profile?.is_key_set) return;
@@ -123,7 +124,7 @@ export default function SettingsPage() {
     setSaveResult(null);
     try {
       await apiFetch("/api/v1/settings/llm/api-key", { method: "DELETE" });
-      setSaveResult("DeepSeek API key cleared.");
+      setSaveResult("LLM API key cleared.");
       fetchSettings({ forceLlmReset: true });
     } catch (e) {
       setSaveResult(`Error: ${e}`);
@@ -191,7 +192,7 @@ export default function SettingsPage() {
     if (type === "llm" && isLlmDirty) {
       setTestResults((prev) => ({
         ...prev,
-        llm: { status: "error", detail: "Save DeepSeek settings before testing." },
+        llm: { status: "error", detail: "Save LLM settings before testing." },
       }));
       return;
     }

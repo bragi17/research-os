@@ -1,6 +1,6 @@
 """Research run lifecycle API routes."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -22,6 +22,10 @@ from libs.schemas.run import (
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _same_id(left: Any, right: Any) -> bool:
@@ -56,7 +60,7 @@ async def create_run(
     await _require_project_access(request.project_id, user)
 
     run_id = uuid4()
-    now = datetime.utcnow()
+    now = _utcnow()
 
     run_data = {
         "id": run_id,
@@ -155,7 +159,7 @@ async def patch_run(
         run = await db.get_run(run_id, workspace_id=ctx.workspace_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
-        updates["updated_at"] = datetime.utcnow()
+        updates["updated_at"] = _utcnow()
         result = await db.update_run(run_id, updates)
         if result is None:
             raise HTTPException(status_code=404, detail="Run not found")
@@ -213,7 +217,21 @@ async def start_run(
             detail=f"Cannot start run in status: {run['status']}",
         )
 
-    now = datetime.utcnow()
+    enqueued = await enqueue_run(run_id, run)
+    if not enqueued:
+        try:
+            await db.create_event(
+                run_id=run_id,
+                event_type="run.enqueue_failed",
+                severity=Severity.ERROR.value,
+                payload={"reason": "queue_unavailable"},
+            )
+        except Exception as exc:
+            logger.warning("create_event_failed", run_id=str(run_id), error=str(exc))
+        logger.warning("run_enqueue_failed", run_id=str(run_id))
+        raise HTTPException(status_code=503, detail="Failed to enqueue run")
+
+    now = _utcnow()
     updates: dict[str, Any] = {
         "status": RunStatus.RUNNING.value,
         "updated_at": now,
@@ -227,8 +245,6 @@ async def start_run(
     except Exception as exc:
         logger.error("start_run_update_failed", run_id=str(run_id), error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to update run") from exc
-
-    enqueued = await enqueue_run(run_id, run)
 
     try:
         await db.create_event(
@@ -272,7 +288,7 @@ async def pause_run(
             detail=f"Cannot pause run in status: {run['status']}",
         )
 
-    now = datetime.utcnow()
+    now = _utcnow()
     pause_reason = f"user_{request.mode}_pause"
     try:
         await db.update_run(run_id, {
@@ -320,7 +336,7 @@ async def resume_run(
             detail=f"Cannot resume run in status: {run['status']}",
         )
 
-    now = datetime.utcnow()
+    now = _utcnow()
     try:
         await db.update_run(run_id, {
             "status": RunStatus.RUNNING.value,
@@ -369,7 +385,7 @@ async def cancel_run(
             detail=f"Cannot cancel run in status: {run['status']}",
         )
 
-    now = datetime.utcnow()
+    now = _utcnow()
     try:
         await db.update_run(run_id, {
             "status": RunStatus.CANCELLED.value,

@@ -249,7 +249,7 @@ class OpenAlexAdapter:
                         retry_after_seconds=parsed_retry_after,
                     )
                 delay = (
-                    parsed_retry_after
+                    min(parsed_retry_after, self.config.retry_max_delay)
                     if parsed_retry_after is not None
                     else self._retry_delay(attempt)
                 )

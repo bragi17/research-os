@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class LLMSettingsUpdate(BaseModel):
+    provider: str = Field(default="deepseek", min_length=1)
     label: str = "DeepSeek"
     base_url: str = Field(default="https://api.deepseek.com", min_length=1)
     model: str = Field(default="deepseek-v4-pro", min_length=1)

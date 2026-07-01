@@ -12,14 +12,14 @@ from apps.api.auth import get_current_user
 from apps.api.tenancy import WorkspaceContext
 from libs.schemas.literature import LiteratureSource, LiteratureSourceUpdate
 from libs.schemas.settings import LLMSettingsUpdate, LLMTestRequest
-from services.literature_source_probe import probe_literature_source
 from services.literature_settings import LiteratureSettingsRepository
+from services.literature_source_probe import probe_literature_source
 from services.llm_settings import (
+    DEEPSEEK_PROVIDER,
     DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_DEEPSEEK_LABEL,
     DEFAULT_DEEPSEEK_MODEL,
     DEFAULT_WORKSPACE_ID,
-    DEEPSEEK_PROVIDER,
     LLMProfile,
     LLMSettingsRepository,
     invalidate_llm_config,
@@ -345,7 +345,7 @@ async def update_model_settings(
     if requested_deepseek_keys:
         raise HTTPException(
             status_code=400,
-            detail="DeepSeek LLM settings must be updated via /api/v1/settings/llm",
+            detail="LLM settings must be updated via /api/v1/settings/llm",
         )
 
     try:
@@ -371,12 +371,13 @@ async def update_llm_settings(
     body: LLMSettingsUpdate,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Update active DeepSeek LLM profile without returning plaintext secrets."""
+    """Update the active LLM profile without returning plaintext secrets."""
     ctx = WorkspaceContext.from_user(user)
     try:
         profile = await LLMSettingsRepository(
             workspace_id=ctx.workspace_id,
         ).upsert_active_profile(
+            provider=body.provider,
             label=body.label,
             base_url=body.base_url,
             model=body.model,
@@ -395,7 +396,7 @@ async def update_llm_settings(
 async def delete_llm_api_key(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Clear the active DeepSeek API key."""
+    """Clear the active LLM API key."""
     ctx = WorkspaceContext.from_user(user)
     try:
         profile = await LLMSettingsRepository(
@@ -490,7 +491,7 @@ async def _test_saved_llm_connection(workspace_id: Any) -> dict[str, Any]:
     if profile is None or not profile.is_key_set:
         return {
             "status": "error",
-            "error": "DeepSeek API key is not configured",
+            "error": "LLM API key is not configured",
         }
 
     try:
@@ -516,7 +517,7 @@ async def test_llm_settings(
     body: LLMTestRequest | None = None,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Test the saved active DeepSeek profile."""
+    """Test the saved active LLM profile."""
     ctx = WorkspaceContext.from_user(user)
     if body and (body.base_url or body.model or body.api_key):
         raise HTTPException(

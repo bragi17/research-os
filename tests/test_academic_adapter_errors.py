@@ -256,6 +256,51 @@ async def test_openalex_429_raises_rate_limited_error(
 
 
 @pytest.mark.asyncio
+async def test_openalex_retry_after_delay_is_capped_by_retry_max_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleep_calls: list[float] = []
+    request_count = 0
+
+    async def capture_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "35589"},
+                request=request,
+                text="too many requests",
+            )
+        return httpx.Response(200, request=request, json={"results": []})
+
+    adapter = OpenAlexAdapter(
+        config=OpenAlexConfig(
+            requests_per_second=100.0,
+            retry_attempts=2,
+            retry_base_delay=1.0,
+            retry_max_delay=3.0,
+        )
+    )
+    adapter._client = httpx.AsyncClient(
+        base_url=OPENALEX_API_BASE,
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(openalex_module.asyncio, "sleep", capture_sleep)
+
+    result = await adapter._request("/works", params={"search": "rag"}, use_cache=False)
+
+    assert result == {"results": []}
+    assert sleep_calls[0] == 3.0
+    assert request_count == 2
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_openalex_5xx_after_retries_raises_transient_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -11,11 +11,15 @@ from structlog import get_logger
 
 logger = get_logger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 REDIS_QUEUE_KEY = "research_os:run_queue"
 REDIS_EVENTS_CHANNEL = "research_os:events"
 
 _redis = None
+
+
+def _redis_url() -> str:
+    return os.getenv("REDIS_URL", DEFAULT_REDIS_URL)
 
 
 async def init_redis() -> None:
@@ -24,9 +28,9 @@ async def init_redis() -> None:
     try:
         import redis.asyncio as aioredis
 
-        _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+        _redis = aioredis.from_url(_redis_url(), decode_responses=True)
         await _redis.ping()
-        logger.info("redis_connected", url=REDIS_URL)
+        logger.info("redis_connected")
     except Exception as exc:
         logger.warning("redis_unavailable", error=str(exc))
         _redis = None

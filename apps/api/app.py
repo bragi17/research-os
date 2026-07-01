@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from structlog import get_logger
 
 import apps.api.database as database
+from apps.api.auth import ensure_first_admin_user
 from apps.api.redis_queue import close_redis, init_redis
 from apps.api.routes_auth import router as auth_router
 from apps.api.routes_events import router as events_router
@@ -33,6 +34,8 @@ async def lifespan(app: FastAPI):
     logger.info("research_os_starting", version="0.1.0")
     await database.init_pool()
     logger.info("database_pool_initialized")
+    await ensure_first_admin_user()
+    logger.info("first_admin_user_ensured")
     await init_redis()
     yield
     logger.info("research_os_shutting_down")

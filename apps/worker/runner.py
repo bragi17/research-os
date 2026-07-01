@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -27,6 +27,10 @@ from services.research_memory import persist_run_memory
 from services.workspace_context import workspace_context
 
 logger = get_logger(__name__)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class WorkerRunner:
@@ -121,7 +125,7 @@ class WorkerRunner:
             logger.error("worker.run_failed", run_id=str(run_id), error=str(exc),
                          traceback=traceback.format_exc())
             try:
-                now = datetime.utcnow()
+                now = _utcnow()
                 await update_run(run_id, {
                     "status": "failed",
                     "updated_at": now,
@@ -158,7 +162,7 @@ class WorkerRunner:
         mode = job.get("mode", run.get("mode", "frontier"))
 
         # Update status to running
-        now = datetime.utcnow()
+        now = _utcnow()
         await update_run(run_id, {
             "status": "running",
             "started_at": run.get("started_at") or now,
@@ -273,7 +277,7 @@ class WorkerRunner:
             final_status = "completed"
             final_step = result_state.current_step
 
-        now = datetime.utcnow()
+        now = _utcnow()
         update_fields: dict[str, Any] = {
             "status": final_status,
             "current_step": final_step,

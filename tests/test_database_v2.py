@@ -9,11 +9,10 @@ the right parameters and returns the expected data structures.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4, UUID
-
 
 # ---------------------------------------------------------------------------
 # Helpers — fake asyncpg.Record
@@ -711,3 +710,16 @@ class TestPaperVerification:
         assert "FROM paper_verification" in sql
         assert "source_run_id = $1" in sql
         assert result[0]["verification_status"] == "verified"
+
+
+def test_llm_provider_generalization_migration_drops_deepseek_only_constraint():
+    migration_sql = Path(
+        "scripts/migration/014_generalize_llm_provider_credentials.sql"
+    ).read_text()
+
+    assert (
+        "DROP CONSTRAINT IF EXISTS llm_provider_credentials_provider_deepseek"
+        in migration_sql
+    )
+    assert "provider <> 'deepseek'" in migration_sql
+    assert "idx_llm_provider_credentials_active_workspace" in migration_sql

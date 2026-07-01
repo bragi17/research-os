@@ -58,6 +58,11 @@ def _row(**overrides: Any) -> dict[str, Any]:
     return row
 
 
+def _is_select_active(sql: str) -> bool:
+    normalized = " ".join(sql.upper().split())
+    return normalized.startswith("SELECT") and "FROM LLM_PROVIDER_CREDENTIALS" in normalized
+
+
 @pytest.mark.parametrize(
     ("api_key", "expected"),
     [
@@ -86,7 +91,7 @@ def test_encrypt_api_key_requires_credential_key(
 
     with pytest.raises(
         RuntimeError,
-        match="CREDENTIAL_ENCRYPTION_KEY is required to store DeepSeek API keys",
+        match="CREDENTIAL_ENCRYPTION_KEY is required to store LLM API keys",
     ):
         encrypt_api_key("test-secret-key")
 
@@ -112,7 +117,7 @@ def test_encrypt_api_key_requires_cryptography(
 
     with pytest.raises(
         RuntimeError,
-        match="cryptography is required to store DeepSeek API keys",
+        match="cryptography is required to store LLM API keys",
     ):
         encrypt_api_key("test-secret-key")
 
@@ -206,6 +211,140 @@ async def test_upsert_preserves_existing_encrypted_key_when_api_key_omitted(
     assert profile.is_key_set is True
     assert profile.api_key is None
     assert updates
+
+
+@pytest.mark.asyncio
+async def test_upsert_saves_provider_and_deactivates_other_active_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "unit-test-encryption-secret")
+    updates: list[tuple[Any, ...]] = []
+
+    def handler(sql: str, args: tuple[Any, ...]) -> dict[str, Any] | None:
+        if _is_select_active(sql):
+            return None
+        if sql.lstrip().upper().startswith("UPDATE"):
+            updates.append(("deactivate", *args))
+            return None
+        updates.append(args)
+        return _row(
+            provider=args[1],
+            label=args[2],
+            base_url=args[3],
+            model=args[4],
+            api_key_encrypted=args[5],
+            api_key_preview=args[6],
+        )
+
+    pool = FakePool(handler)
+    repo = LLMSettingsRepository(pool_getter=lambda: pool)
+
+    profile = await repo.upsert_active_profile(
+        provider="openai-compatible",
+        label="OpenAI-compatible",
+        base_url="https://example.test/v1",
+        model="research-pro",
+    )
+
+    assert profile.provider == "openai-compatible"
+    assert profile.label == "OpenAI-compatible"
+    assert pool.execute_calls
+    assert pool.execute_calls[0][1] == (
+        UUID(DEFAULT_WORKSPACE_ID),
+        "openai-compatible",
+    )
+    assert updates[-1][1] == "openai-compatible"
+
+
+@pytest.mark.asyncio
+async def test_get_active_profile_resets_legacy_qwen_deepseek_profile_to_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "unit-test-encryption-secret")
+    existing_encrypted = encrypt_api_key("test-secret-key")
+    stored_row = _row(
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model="qwen-max",
+        api_key_encrypted=existing_encrypted,
+        api_key_preview="test****-key",
+    )
+    updates: list[tuple[Any, ...]] = []
+
+    def handler(sql: str, args: tuple[Any, ...]) -> dict[str, Any] | None:
+        nonlocal stored_row
+        if _is_select_active(sql):
+            return stored_row
+        if sql.lstrip().upper().startswith("UPDATE"):
+            updates.append(("deactivate", *args))
+            return None
+        updates.append(args)
+        stored_row = _row(
+            provider=args[1],
+            label=args[2],
+            base_url=args[3],
+            model=args[4],
+            api_key_encrypted=args[5],
+            api_key_preview=args[6],
+        )
+        return stored_row
+
+    pool = FakePool(handler)
+    repo = LLMSettingsRepository(pool_getter=lambda: pool)
+
+    profile = await repo.get_active_profile()
+
+    assert profile.provider == "deepseek"
+    assert profile.base_url == DEFAULT_DEEPSEEK_BASE_URL
+    assert profile.model == DEFAULT_DEEPSEEK_MODEL
+    assert profile.api_key_preview == "test****-key"
+    assert updates[-1][3] == DEFAULT_DEEPSEEK_BASE_URL
+    assert updates[-1][4] == DEFAULT_DEEPSEEK_MODEL
+
+
+@pytest.mark.asyncio
+async def test_get_active_profile_deactivates_legacy_non_deepseek_qwen_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "unit-test-encryption-secret")
+    stored_row = _row(
+        provider="openai",
+        label="Qwen",
+        base_url="https://yunwu.ai/v1",
+        model="qwen-max",
+        api_key_encrypted=encrypt_api_key("old-qwen-key"),
+        api_key_preview="old****-key",
+    )
+
+    class MutatingFakePool(FakePool):
+        async def execute(self, sql: str, *args: Any) -> str:
+            nonlocal stored_row
+            stored_row = None
+            return await super().execute(sql, *args)
+
+    def handler(sql: str, args: tuple[Any, ...]) -> dict[str, Any] | None:
+        nonlocal stored_row
+        if _is_select_active(sql):
+            return stored_row
+        stored_row = _row(
+            provider=args[1],
+            label=args[2],
+            base_url=args[3],
+            model=args[4],
+            api_key_encrypted=args[5],
+            api_key_preview=args[6],
+        )
+        return stored_row
+
+    pool = MutatingFakePool(handler)
+    repo = LLMSettingsRepository(pool_getter=lambda: pool)
+
+    profile = await repo.get_active_profile()
+
+    assert profile.provider == "deepseek"
+    assert profile.base_url == DEFAULT_DEEPSEEK_BASE_URL
+    assert profile.model == DEFAULT_DEEPSEEK_MODEL
+    assert profile.is_key_set is False
+    assert pool.execute_calls
 
 
 @pytest.mark.asyncio

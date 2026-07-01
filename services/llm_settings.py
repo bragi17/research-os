@@ -1,4 +1,4 @@
-"""Encrypted DeepSeek LLM settings storage."""
+"""Encrypted LLM settings storage."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import inspect
 import os
 import re
 import time
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 from uuid import UUID
 
 from services.workspace_context import DEFAULT_WORKSPACE_UUID, current_workspace_id
@@ -96,7 +96,7 @@ def _settings_secret() -> str:
     secret = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
     if not secret:
         raise RuntimeError(
-            "CREDENTIAL_ENCRYPTION_KEY is required to store DeepSeek API keys"
+            "CREDENTIAL_ENCRYPTION_KEY is required to store LLM API keys"
         )
     return secret
 
@@ -110,7 +110,7 @@ def _get_fernet() -> Any:
         from cryptography.fernet import Fernet
     except ImportError as exc:
         raise RuntimeError(
-            "cryptography is required to store DeepSeek API keys"
+            "cryptography is required to store LLM API keys"
         ) from exc
     key = base64.urlsafe_b64encode(_raw_encryption_key())
     return Fernet(key)
@@ -133,6 +133,16 @@ class LLMSettingsRepository:
             if self.workspace_id != DEFAULT_WORKSPACE_UUID:
                 return _empty_profile(self.workspace_id)
             return await self.bootstrap_from_env(include_secret=include_secret)
+        if _is_legacy_llm_profile(row):
+            if _profile_provider(row) != DEEPSEEK_PROVIDER:
+                return await self._deactivate_legacy_profile_and_bootstrap(
+                    row,
+                    include_secret=include_secret,
+                )
+            return await self._reset_legacy_deepseek_profile(
+                row,
+                include_secret=include_secret,
+            )
         return _profile_from_row(row, include_secret=include_secret)
 
     async def peek_active_profile(
@@ -142,6 +152,16 @@ class LLMSettingsRepository:
         row = await self._fetch_active_row()
         if row is None:
             return None
+        if _is_legacy_llm_profile(row):
+            if _profile_provider(row) != DEEPSEEK_PROVIDER:
+                return await self._deactivate_legacy_profile_and_bootstrap(
+                    row,
+                    include_secret=include_secret,
+                )
+            return await self._reset_legacy_deepseek_profile(
+                row,
+                include_secret=include_secret,
+            )
         return _profile_from_row(row, include_secret=include_secret)
 
     async def bootstrap_from_env(self, include_secret: bool = False) -> LLMProfile:
@@ -155,6 +175,7 @@ class LLMSettingsRepository:
         encrypted = encrypt_api_key(api_key) if api_key else None
         preview = mask_api_key(api_key)
         row = await self._upsert_row(
+            provider=DEEPSEEK_PROVIDER,
             label=DEFAULT_DEEPSEEK_LABEL,
             base_url=os.getenv("DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_BASE_URL),
             model=os.getenv("DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL),
@@ -167,6 +188,7 @@ class LLMSettingsRepository:
     async def upsert_active_profile(
         self,
         *,
+        provider: str | None = None,
         label: str | None = None,
         base_url: str | None = None,
         model: str | None = None,
@@ -177,7 +199,9 @@ class LLMSettingsRepository:
         existing = await self._fetch_active_row()
         existing_data = dict(existing) if existing is not None else {}
         encrypted, preview = _next_key_values(existing_data, api_key, clear_api_key)
+        next_provider = _clean(provider) or existing_data.get("provider") or DEEPSEEK_PROVIDER
         row = await self._upsert_row(
+            provider=next_provider,
             label=_clean(label) or existing_data.get("label") or DEFAULT_DEEPSEEK_LABEL,
             base_url=_clean(base_url)
             or existing_data.get("base_url")
@@ -202,17 +226,15 @@ class LLMSettingsRepository:
         row = await pool.fetchrow(
             """
             UPDATE llm_provider_credentials
-            SET last_test_status = $3,
-                last_test_error = $4,
+            SET last_test_status = $2,
+                last_test_error = $3,
                 last_test_at = NOW(),
                 updated_at = NOW()
             WHERE workspace_id = $1
-              AND provider = $2
               AND is_active
             RETURNING *
             """,
             self.workspace_id,
-            DEEPSEEK_PROVIDER,
             status,
             safe_error,
         )
@@ -235,24 +257,26 @@ class LLMSettingsRepository:
             SELECT *
             FROM llm_provider_credentials
             WHERE workspace_id = $1
-              AND provider = $2
               AND is_active
+            ORDER BY updated_at DESC, created_at DESC
             LIMIT 1
             """,
             self.workspace_id,
-            DEEPSEEK_PROVIDER,
         )
 
     async def _upsert_row(
         self,
         *,
+        provider: str,
         label: str,
         base_url: str,
         model: str,
         api_key_encrypted: str | None,
         api_key_preview: str,
     ) -> Any:
+        provider = _clean(provider) or DEEPSEEK_PROVIDER
         pool = await self._get_pool()
+        await self._deactivate_other_active_profiles(provider, pool=pool)
         return await pool.fetchrow(
             """
             INSERT INTO llm_provider_credentials (
@@ -277,13 +301,76 @@ class LLMSettingsRepository:
             RETURNING *
             """,
             self.workspace_id,
-            DEEPSEEK_PROVIDER,
+            provider,
             label,
             base_url,
             model,
             api_key_encrypted,
             api_key_preview,
         )
+
+    async def _deactivate_other_active_profiles(
+        self,
+        provider: str,
+        *,
+        pool: Any | None = None,
+    ) -> None:
+        resolved_pool = pool or await self._get_pool()
+        await resolved_pool.execute(
+            """
+            UPDATE llm_provider_credentials
+            SET is_active = FALSE,
+                updated_at = NOW()
+            WHERE workspace_id = $1
+              AND provider <> $2
+              AND is_active
+            """,
+            self.workspace_id,
+            provider,
+        )
+
+    async def _reset_legacy_deepseek_profile(
+        self,
+        row: Any,
+        *,
+        include_secret: bool,
+    ) -> LLMProfile:
+        data = dict(row)
+        updated = await self._upsert_row(
+            provider=DEEPSEEK_PROVIDER,
+            label=data.get("label") or DEFAULT_DEEPSEEK_LABEL,
+            base_url=DEFAULT_DEEPSEEK_BASE_URL,
+            model=DEFAULT_DEEPSEEK_MODEL,
+            api_key_encrypted=data.get("api_key_encrypted"),
+            api_key_preview=data.get("api_key_preview") or "",
+        )
+        invalidate_llm_config()
+        return _profile_from_row(updated, include_secret=include_secret)
+
+    async def _deactivate_legacy_profile_and_bootstrap(
+        self,
+        row: Any,
+        *,
+        include_secret: bool,
+    ) -> LLMProfile:
+        provider = _profile_provider(row)
+        pool = await self._get_pool()
+        await pool.execute(
+            """
+            UPDATE llm_provider_credentials
+            SET is_active = FALSE,
+                updated_at = NOW()
+            WHERE workspace_id = $1
+              AND provider = $2
+              AND is_active
+            """,
+            self.workspace_id,
+            provider,
+        )
+        invalidate_llm_config()
+        if self.workspace_id != DEFAULT_WORKSPACE_UUID:
+            return _empty_profile(self.workspace_id)
+        return await self.bootstrap_from_env(include_secret=include_secret)
 
     async def _get_pool(self) -> Any:
         getter = self._pool_getter or _default_pool_getter
@@ -307,6 +394,19 @@ def _next_key_values(
         existing_data.get("api_key_encrypted"),
         existing_data.get("api_key_preview") or "",
     )
+
+
+def _profile_provider(row: Any) -> str:
+    data = dict(row)
+    return str(data.get("provider") or DEEPSEEK_PROVIDER).strip().lower()
+
+
+def _is_legacy_llm_profile(row: Any) -> bool:
+    data = dict(row)
+    base_url = str(data.get("base_url") or "").strip().lower()
+    model = str(data.get("model") or "").strip().lower()
+    legacy_markers = ("qwen", "dashscope", "aliyun", "yunwu")
+    return any(marker in base_url or marker in model for marker in legacy_markers)
 
 
 def _profile_from_row(row: Any, include_secret: bool) -> LLMProfile:

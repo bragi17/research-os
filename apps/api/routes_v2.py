@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -19,20 +19,27 @@ from pydantic import BaseModel, Field
 from structlog import get_logger
 
 from apps.api.auth import get_current_user
-from apps.api.tenancy import WorkspaceContext
-
 from apps.api.database import (
     create_event,
-    create_run as db_create_run,
     get_context_bundle,
-    get_project as db_get_project,
     get_reading_path,
-    get_run as db_get_run,
     list_figures_by_run,
     list_idea_cards,
     list_pain_points,
+)
+from apps.api.database import (
+    create_run as db_create_run,
+)
+from apps.api.database import (
+    get_project as db_get_project,
+)
+from apps.api.database import (
+    get_run as db_get_run,
+)
+from apps.api.database import (
     update_run as db_update_run,
 )
+from apps.api.tenancy import WorkspaceContext
 from apps.worker.production.workspaces import run_workspace_record
 from libs.schemas.multimode import ResearchMode, SpawnRunRequest
 
@@ -43,6 +50,10 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_EVENTS_CHANNEL = "research_os:events"
 
 router = APIRouter(prefix="/api/v1", tags=["v1-multimode"])
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +229,7 @@ async def create_run_v2(
     await _require_context_bundle_access(request.context_bundle_id, ctx)
 
     run_id = request.run_id or uuid4()
-    now = datetime.utcnow()
+    now = _utcnow()
     try:
         experiment_workspace = run_workspace_record(
             run_id=run_id,
@@ -310,7 +321,7 @@ async def spawn_run(
     await _require_context_bundle_access(request.context_bundle_id, ctx)
 
     child_id = uuid4()
-    now = datetime.utcnow()
+    now = _utcnow()
 
     child_data: dict[str, Any] = {
         "id": child_id,
@@ -600,7 +611,7 @@ async def perform_action(
     await _require_run(run_id, ctx)
 
     event_type = f"user.action.{action}"
-    now = datetime.utcnow()
+    now = _utcnow()
 
     try:
         await create_event(

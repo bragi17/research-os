@@ -17,7 +17,6 @@ from services.llm_settings import (
 )
 from services.workspace_context import current_workspace_id
 
-
 WORKSPACE_A = UUID("11111111-1111-1111-1111-111111111111")
 USER_A = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
@@ -272,6 +271,7 @@ def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
     response = _client().put(
         "/api/v1/settings/llm",
         json={
+            "provider": "openai-compatible",
             "label": "Primary DeepSeek",
             "base_url": DEFAULT_DEEPSEEK_BASE_URL,
             "model": DEFAULT_DEEPSEEK_MODEL,
@@ -281,6 +281,7 @@ def test_put_llm_updates_repository_resets_runtime_and_masks_secret(
 
     assert response.status_code == 200
     repo.upsert_active_profile.assert_awaited_once_with(
+        provider="openai-compatible",
         label="Primary DeepSeek",
         base_url=DEFAULT_DEEPSEEK_BASE_URL,
         model=DEFAULT_DEEPSEEK_MODEL,
@@ -421,7 +422,7 @@ def test_put_llm_missing_credential_encryption_key_returns_configuration_error(
 ) -> None:
     repo = FakeRepository(_profile())
     repo.upsert_active_profile.side_effect = RuntimeError(
-        "CREDENTIAL_ENCRYPTION_KEY is required to store DeepSeek API keys"
+        "CREDENTIAL_ENCRYPTION_KEY is required to store LLM API keys"
     )
     monkeypatch.setattr(
         routes_settings,
@@ -640,7 +641,7 @@ def test_llm_test_requires_saved_active_profile_with_key_without_persisting(
     assert response.status_code == 200
     assert response.json() == {
         "status": "error",
-        "error": "DeepSeek API key is not configured",
+        "error": "LLM API key is not configured",
     }
     gateway.chat.assert_not_called()
     repo.peek_active_profile.assert_awaited_once_with(include_secret=True)

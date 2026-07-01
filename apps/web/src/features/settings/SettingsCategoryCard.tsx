@@ -118,8 +118,16 @@ export function SettingsCategoryCard({
       ) : category.id === "llm" ? (
         <div className="px-5 py-4 space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-[160px_1fr] gap-3 items-center">
-            <span className="text-[12px] text-[var(--text-secondary)] font-medium">Provider</span>
-            <div className="text-[13px] text-[var(--text-primary)]">DeepSeek</div>
+            <label htmlFor="llm-provider" className="text-[12px] text-[var(--text-secondary)] font-medium">
+              Provider
+            </label>
+            <input
+              id="llm-provider"
+              type="text"
+              className="input-field text-[13px] py-1.5"
+              value={llmEdit.provider}
+              onChange={(e) => onLlmEdit("provider", e.target.value)}
+            />
 
             <label htmlFor="llm-base-url" className="text-[12px] text-[var(--text-secondary)] font-medium">
               Base URL
@@ -179,7 +187,7 @@ export function SettingsCategoryCard({
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button onClick={onSaveLlm} disabled={saving} className="btn-primary text-[11px] px-3 py-1">
-                {saving ? "Saving..." : "Save DeepSeek"}
+                {saving ? "Saving..." : "Save"}
               </button>
               <button
                 onClick={() => onTest("llm")}

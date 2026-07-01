@@ -50,6 +50,7 @@ export interface Category {
 }
 
 export interface LLMEdit {
+  provider: string;
   api_key: string;
   base_url: string;
   model: string;
