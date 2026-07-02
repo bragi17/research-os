@@ -21,12 +21,16 @@ class OpenAlexSource:
         self.options = dict(options or {})
         self.email = dependencies.get("email") or self.options.get("email")
         self.api_key = dependencies.get("api_key") or self.options.get("api_key")
+        self.api_keys = dependencies.get("api_keys") or self.options.get("api_keys")
+        self.source_key_pool = dependencies.get("source_key_pool")
         self.adapter_class = dependencies.get("adapter_class", OpenAlexAdapter)
 
     async def search(self, query: str, limit: int = 50) -> SourceSearchResult:
         adapter = self.adapter_class(
             email=str(self.email) if self.email else None,
             api_key=str(self.api_key) if self.api_key else None,
+            api_keys=list(self.api_keys) if isinstance(self.api_keys, (list, tuple)) else None,
+            source_key_pool=self.source_key_pool,
         )
         try:
             data = await adapter.search_works(query, per_page=limit)

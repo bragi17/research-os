@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -41,6 +42,20 @@ class FakeLiteratureRepository:
     async def get_active_credentials(self, source: LiteratureSource) -> list[Any]:
         assert source == self.settings.source
         return []
+
+
+class CredentialRepository(FakeLiteratureRepository):
+    def __init__(
+        self,
+        settings: LiteratureSourceSettings,
+        credentials: list[Any],
+    ) -> None:
+        super().__init__(settings)
+        self.credentials = credentials
+
+    async def get_active_credentials(self, source: LiteratureSource) -> list[Any]:
+        assert source == self.settings.source
+        return self.credentials
 
 
 class StubAdapter:
@@ -129,3 +144,20 @@ async def test_probe_literature_source_reports_classified_adapter_errors(
         "candidate_count": 0,
     }
     assert adapter.closed is True
+
+
+@pytest.mark.asyncio
+async def test_openalex_probe_adapter_receives_all_credentials() -> None:
+    from services.literature_source_probe import _adapter_for_source
+    from services.literature_sources.openalex import OpenAlexSource
+
+    adapter = _adapter_for_source(
+        _source(LiteratureSource.OPENALEX, options={"email": "owner@example.com"}),
+        [
+            SimpleNamespace(id="one", secret="openalex-one"),
+            SimpleNamespace(id="two", secret="openalex-two"),
+        ],
+    )
+
+    assert isinstance(adapter, OpenAlexSource)
+    assert adapter.source_key_pool is not None

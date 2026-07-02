@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
   getRun,
+  getRunChildren,
   getRunEvents,
   getRunPapers,
   pauseRun,
@@ -53,6 +54,10 @@ export default function RunConsole() {
   const [run, setRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [papers, setPapers] = useState<Paper[]>([]);
+  const [divergentRun, setDivergentRun] = useState<Run | null>(null);
+  const [divergentEvents, setDivergentEvents] = useState<RunEvent[]>([]);
+  const [divergentPapers, setDivergentPapers] = useState<Paper[]>([]);
+  const [showResultPapers, setShowResultPapers] = useState(false);
   const [loading, setLoading] = useState(true);
   const [elapsed, setElapsed] = useState("0:00");
   const esRef = useRef<EventSource | null>(null);
@@ -76,6 +81,34 @@ export default function RunConsole() {
         return;
       setRun(runData);
       setEvents(eventsData.events || []);
+      let nextDivergentRun: Run | null = null;
+      let nextDivergentEvents: RunEvent[] = [];
+      let nextDivergentPapers: Paper[] = [];
+      if (runData.mode === "frontier" && !runData.parent_run_id) {
+        try {
+          const children = await getRunChildren(requestedRunId, "divergent");
+          nextDivergentRun = children[0] || null;
+          if (nextDivergentRun) {
+            const [childEventsData, childPaperData] = await Promise.all([
+              getRunEvents(nextDivergentRun.id),
+              getRunPapers(nextDivergentRun.id).catch(() => [] as Paper[]),
+            ]);
+            nextDivergentEvents = childEventsData.events || [];
+            nextDivergentPapers = childPaperData || [];
+          }
+        } catch {
+          nextDivergentRun = null;
+        }
+      }
+      if (
+        !mountedRef.current ||
+        activeRunRef.current !== requestedRunId ||
+        fetchId !== fetchSeqRef.current
+      )
+        return;
+      setDivergentRun(nextDivergentRun);
+      setDivergentEvents(nextDivergentEvents);
+      setDivergentPapers(nextDivergentPapers);
       if (runData.status === "running" || runData.status === "completed") {
         try {
           const paperData = (await getRunPapers(requestedRunId)) ?? [];
@@ -176,6 +209,24 @@ export default function RunConsole() {
   const progressPct = parseFloat(String(run.progress_pct)) || 0;
   const isTerminal = ["completed", "failed", "cancelled"].includes(run.status);
   const modeLink = run.mode ? `/runs/${runId}/${run.mode}` : null;
+  const shouldShowDivergentStep = run.mode === "frontier" && !run.parent_run_id;
+  const divergentProgressPct = divergentRun ? parseFloat(String(divergentRun.progress_pct)) || 0 : 0;
+  const divergentLink = divergentRun ? `/runs/${divergentRun.id}/divergent` : null;
+  const shouldShowModeLink = Boolean(
+    modeLink && !(run.mode === "frontier" && divergentRun),
+  );
+  const divergentContinuation = shouldShowDivergentStep
+    ? {
+        title: "Explore innovations for these gaps",
+        runStatus: divergentRun?.status ?? "waiting",
+        currentStep: divergentRun?.current_step ?? null,
+        progressPct: divergentProgressPct,
+        events: divergentEvents,
+        pendingMessage: isTerminal
+          ? "Preparing innovation exploration from the mined gaps."
+          : "Explore innovations will start after gap mining completes.",
+      }
+    : undefined;
 
   return (
     <div className="max-w-[1060px] mx-auto px-8 py-8">
@@ -206,6 +257,7 @@ export default function RunConsole() {
           mode={run.mode ?? "review"}
           topic={run.topic}
           isExecuting={run.status === "running"}
+          extraSteps={shouldShowDivergentStep ? ["Explore innovations for these gaps"] : []}
         />
       </div>
 
@@ -217,6 +269,7 @@ export default function RunConsole() {
           currentStep={run.current_step}
           progressPct={progressPct}
           mode={run.mode ?? undefined}
+          continuation={divergentContinuation}
         />
       </div>
 
@@ -225,42 +278,79 @@ export default function RunConsole() {
       </div>
 
       {/* Results */}
-      {(papers.length > 0 || isTerminal || modeLink) && (
+      {(papers.length > 0 || divergentRun || isTerminal || shouldShowModeLink) && (
         <div className="card-static p-5 mb-5 animate-fade-up delay-300">
           <h3 className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">
             Results
           </h3>
           {papers.length > 0 && (
-            <div className="space-y-2 mb-4">
-              <p className="text-[12px] text-[var(--text-secondary)]">
-                {papers.length} paper{papers.length !== 1 ? "s" : ""} found
-              </p>
-              {papers.slice(0, 5).map((paper) => (
-                <div
-                  key={paper.id}
-                  className="p-3 rounded-lg border border-[var(--border-subtle)] hover:border-[var(--accent)] transition-colors"
-                >
-                  <h4 className="text-[13px] font-medium text-[var(--text-primary)] leading-snug mb-1">
-                    {paper.title}
-                  </h4>
-                  <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
-                    {paper.authors?.length > 0 && (
-                      <span className="truncate max-w-[200px]">
-                        {paper.authors.slice(0, 3).join(", ")}
-                        {paper.authors.length > 3 ? " et al." : ""}
-                      </span>
-                    )}
-                    {paper.year && (
-                      <span style={{ fontFamily: "var(--font-mono)" }}>
-                        {paper.year}
-                      </span>
-                    )}
-                  </div>
+            <div className="mb-4">
+              <button
+                type="button"
+                onClick={() => setShowResultPapers((value) => !value)}
+                className="flex w-full items-center justify-between gap-3 rounded-lg border border-[var(--border-subtle)] px-3 py-2 text-left transition-colors hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]"
+                aria-expanded={showResultPapers}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    className="shrink-0 text-[var(--text-muted)] transition-transform duration-200"
+                    style={{ transform: showResultPapers ? "rotate(90deg)" : "rotate(0deg)" }}
+                  >
+                    <path
+                      d="M4 2.5L7.5 6L4 9.5"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <span className="truncate text-[12px] text-[var(--text-secondary)]">
+                    {papers.length} paper{papers.length !== 1 ? "s" : ""} found
+                  </span>
+                </span>
+                <span className="shrink-0 text-[12px] font-medium text-[var(--accent)]">
+                  {showResultPapers ? "Hide papers" : "Show papers"}
+                </span>
+              </button>
+              {showResultPapers && (
+                <div className="mt-3 space-y-2">
+                  {papers.slice(0, 5).map((paper) => (
+                    <div
+                      key={paper.id}
+                      className="p-3 rounded-lg border border-[var(--border-subtle)] hover:border-[var(--accent)] transition-colors"
+                    >
+                      <h4 className="text-[13px] font-medium text-[var(--text-primary)] leading-snug mb-1">
+                        {paper.title}
+                      </h4>
+                      <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
+                        {paper.authors?.length > 0 && (
+                          <span className="truncate max-w-[200px]">
+                            {paper.authors.slice(0, 3).join(", ")}
+                            {paper.authors.length > 3 ? " et al." : ""}
+                          </span>
+                        )}
+                        {paper.year && (
+                          <span style={{ fontFamily: "var(--font-mono)" }}>
+                            {paper.year}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {papers.length > 5 && (
+                    <p className="text-[11px] text-[var(--text-muted)]">
+                      Showing 5 of {papers.length}. Open full results for the complete list.
+                    </p>
+                  )}
                 </div>
-              ))}
+              )}
             </div>
           )}
-          {modeLink && (
+          {shouldShowModeLink && modeLink && (
             <Link
               href={modeLink}
               className="flex items-center justify-between p-3 rounded-lg border border-[var(--border-subtle)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] transition-all group"
@@ -274,6 +364,38 @@ export default function RunConsole() {
                 viewBox="0 0 14 14"
                 fill="none"
                 className="text-[var(--text-muted)] group-hover:text-[var(--accent)] transition-colors"
+              >
+                <path
+                  d="M5 3L9 7L5 11"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </Link>
+          )}
+          {divergentLink && (
+            <Link
+              href={divergentLink}
+              className="mt-3 flex items-center justify-between p-3 rounded-lg border border-[var(--border-subtle)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] transition-all group"
+            >
+              <span className="min-w-0">
+                <span className="block text-[13px] font-medium text-[var(--text-primary)]">
+                  View full Divergent results
+                </span>
+                <span className="block text-[11px] text-[var(--text-muted)] mt-0.5">
+                  {divergentPapers.length > 0
+                    ? `${divergentPapers.length} paper${divergentPapers.length !== 1 ? "s" : ""} and innovation cards`
+                    : "Papers and innovation cards"}
+                </span>
+              </span>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 14 14"
+                fill="none"
+                className="text-[var(--text-muted)] group-hover:text-[var(--accent)] transition-colors shrink-0"
               >
                 <path
                   d="M5 3L9 7L5 11"

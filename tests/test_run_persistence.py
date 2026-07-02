@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from uuid import uuid4
+import json
+from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -8,6 +10,7 @@ from apps.worker.modes.base import ModeGraphState
 from apps.worker.run_persistence import (
     _listify_idea_value,
     _normalize_idea_card_payload,
+    _persist_paper_summaries,
     persist_results,
 )
 
@@ -78,3 +81,69 @@ async def test_persist_results_logs_memory_error_without_failing() -> None:
             {"run_id": str(run_id), "error": "ledger unavailable"},
         )
     ]
+
+
+class _FakeLog:
+    def __init__(self) -> None:
+        self.infos: list[tuple[str, dict]] = []
+        self.warnings: list[tuple[str, dict]] = []
+
+    def info(self, event: str, **kwargs) -> None:
+        self.infos.append((event, kwargs))
+
+    def warning(self, event: str, **kwargs) -> None:
+        self.warnings.append((event, kwargs))
+
+
+class _FakePool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def execute(self, query: str, *params) -> str:
+        self.calls.append((query, params))
+        assert isinstance(params[-1], dict)
+        return "INSERT 0 1"
+
+
+@pytest.mark.asyncio
+async def test_persist_paper_summaries_writes_valid_json_and_arxiv(monkeypatch) -> None:
+    import apps.api.database as database
+
+    run_id = uuid4()
+    pool = _FakePool()
+
+    async def fake_get_pool():
+        return pool
+
+    monkeypatch.setattr(database, "get_pool", fake_get_pool)
+
+    long_summary = "x" * 6000
+    state = SimpleNamespace(
+        context_bundle={
+            "paper_summaries": [
+                {
+                    "title": "Structured light with a million light planes per second",
+                    "paper_id": "arxiv:2411.18597",
+                    "doi": "10.1234/example",
+                    "summary": long_summary,
+                    "year": 2024,
+                    "venue": "arXiv",
+                }
+            ]
+        }
+    )
+    log = _FakeLog()
+
+    await _persist_paper_summaries(run_id, state, log=log)
+
+    assert len(pool.calls) == 1
+    _, params = pool.calls[0]
+    assert isinstance(params[0], UUID)
+    assert params[3] == "10.1234/example"
+    assert params[4] == "2411.18597"
+    metadata = params[-1]
+    assert metadata["source_run_id"] == str(run_id)
+    assert metadata["summary"] == long_summary
+    assert state.context_bundle["selected_paper_ids"] == [str(params[0])]
+    assert log.infos[-1] == ("worker.papers_persisted", {"count": 1, "failed": 0})
+    assert log.warnings == []

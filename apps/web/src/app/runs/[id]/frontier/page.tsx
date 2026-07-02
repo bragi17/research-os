@@ -25,6 +25,10 @@ interface BenchmarkEntry {
 interface PaperSummary {
   title?: string;
   paper_title?: string;
+  paper_id?: string;
+  arxiv_id?: string;
+  doi?: string;
+  authors?: string[];
   year?: number;
   venue?: string;
   abstract?: string;
@@ -41,6 +45,16 @@ interface ComparisonData {
   papers_discovered: number;
   pain_points_count: number;
   paper_summaries?: PaperSummary[];
+}
+
+function arxivIdFromSummary(summary: PaperSummary): string | undefined {
+  const raw = summary.arxiv_id || summary.paper_id;
+  if (!raw) return undefined;
+  const text = String(raw).trim();
+  const lower = text.toLowerCase();
+  if (lower.startsWith("arxiv:")) return text.slice("arxiv:".length).trim() || undefined;
+  if (lower.startsWith("arxiv/")) return text.slice("arxiv/".length).trim() || undefined;
+  return text.includes(".") ? text : undefined;
 }
 
 export default function FrontierPage() {
@@ -128,15 +142,27 @@ export default function FrontierPage() {
   // Discovered papers: prefer paper table, fallback to paper_summaries from context_bundle
   const paperSummaries: PaperSummary[] = compData?.paper_summaries ?? [];
   const discoveredPapers = papers.length > 0
-    ? papers.map((p) => ({ title: p.title, year: p.year, venue: "", arxiv_id: p.arxiv_id, authors: p.authors, id: p.id }))
-    : paperSummaries.map((ps, i) => ({
-        title: ps.title || ps.paper_title || `Paper ${i + 1}`,
-        year: ps.year,
-        venue: ps.venue || "",
-        arxiv_id: undefined as string | undefined,
-        authors: [] as string[],
-        id: `summary-${i}`,
-      }));
+    ? papers.map((p) => ({
+        title: p.title,
+        year: p.year,
+        venue: "",
+        arxiv_id: p.arxiv_id,
+        doi: p.doi,
+        authors: p.authors,
+        id: p.id,
+      }))
+    : paperSummaries.map((ps, i) => {
+        const arxiv_id = arxivIdFromSummary(ps);
+        return {
+          title: ps.title || ps.paper_title || (arxiv_id ? `arXiv:${arxiv_id}` : `Paper ${i + 1}`),
+          year: ps.year,
+          venue: ps.venue || "",
+          arxiv_id,
+          doi: ps.doi,
+          authors: Array.isArray(ps.authors) ? ps.authors : [] as string[],
+          id: arxiv_id ? `summary-arxiv-${arxiv_id}` : `summary-${i}`,
+        };
+      });
 
   const hasAnyResults = gaps.length > 0 || benchmarks.length > 0 || effectivePainPoints.length > 0 || papersDiscovered > 0;
 

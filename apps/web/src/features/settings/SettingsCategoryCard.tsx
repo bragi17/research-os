@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Database,
   GraduationCap,
+  Gauge,
   RotateCw,
   Ruler,
   Search,
@@ -41,6 +42,7 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
   academic: GraduationCap,
   literature_sources: Search,
   storage: Database,
+  runtime: Gauge,
 };
 
 export function SettingsCategoryCard({
@@ -221,7 +223,9 @@ export function SettingsCategoryCard({
                 </div>
                 <div className="flex-1">
                   <input
-                    type={item.is_sensitive ? "password" : "text"}
+                    type={item.input_type || (item.is_sensitive ? "password" : "text")}
+                    min={item.min}
+                    max={item.max}
                     className={`input-field text-[13px] py-1.5 ${isEdited ? "border-[var(--accent)]" : ""}`}
                     style={{ fontFamily: "var(--font-mono)" }}
                     value={isEdited ? editValue : item.value}

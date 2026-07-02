@@ -50,7 +50,15 @@ MODEL_CATEGORIES = {
         "label": "Rerank Models",
     },
     "academic": {
-        "keys": ["S2_API_KEY", "SEMANTIC_SCHOLAR_API_KEY", "OPENALEX_EMAIL", "CROSSREF_EMAIL", "UNPAYWALL_EMAIL"],
+        "keys": [
+            "S2_API_KEY",
+            "SEMANTIC_SCHOLAR_API_KEY",
+            "OPENALEX_API_KEY",
+            "OPENALEX_API_KEYS",
+            "OPENALEX_EMAIL",
+            "CROSSREF_EMAIL",
+            "UNPAYWALL_EMAIL",
+        ],
         "label": "Academic APIs",
     },
     "storage": {
@@ -62,16 +70,29 @@ MODEL_CATEGORIES = {
         ],
         "label": "Storage & Services",
     },
+    "runtime": {
+        "keys": ["WORKER_CONCURRENCY"],
+        "label": "Runtime",
+    },
 }
 
 DEFAULT_SETTING_VALUES = {
     "RESEARCH_OS_WORKSPACE_ROOT": DEFAULT_EXPERIMENT_ROOT,
+    "WORKER_CONCURRENCY": "2",
 }
 MISSING_CREDENTIAL_ENCRYPTION_KEY_FRAGMENT = "CREDENTIAL_ENCRYPTION_KEY is required"
 GLOBAL_SETTINGS_OPERATOR_ROLES = {"admin", "operator", "production_operator"}
 
 # Keys that should be masked in GET responses
-SENSITIVE_KEYS = {"DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "S2_API_KEY", "SEMANTIC_SCHOLAR_API_KEY", "JWT_SECRET"}
+SENSITIVE_KEYS = {
+    "DEEPSEEK_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "S2_API_KEY",
+    "SEMANTIC_SCHOLAR_API_KEY",
+    "OPENALEX_API_KEY",
+    "OPENALEX_API_KEYS",
+    "JWT_SECRET",
+}
 
 
 def _read_env() -> dict[str, str]:
@@ -130,6 +151,27 @@ def _effective_setting_value(key: str, env: dict[str, str]) -> str:
     if value is None or value.strip() == "":
         value = DEFAULT_SETTING_VALUES.get(key, "")
     return value
+
+
+def _validate_model_setting_updates(body: dict[str, str]) -> dict[str, str]:
+    """Validate and normalize settings updated through the generic model API."""
+    normalized = dict(body)
+    if "WORKER_CONCURRENCY" in normalized:
+        raw_value = str(normalized["WORKER_CONCURRENCY"]).strip()
+        try:
+            parsed = int(raw_value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="WORKER_CONCURRENCY must be an integer between 1 and 16",
+            ) from exc
+        if parsed < 1 or parsed > 16:
+            raise HTTPException(
+                status_code=400,
+                detail="WORKER_CONCURRENCY must be an integer between 1 and 16",
+            )
+        normalized["WORKER_CONCURRENCY"] = str(parsed)
+    return normalized
 
 
 def _llm_settings_error_status(error: str) -> int:
@@ -309,6 +351,11 @@ async def get_model_settings(
                 "value": _mask_value(key, value),
                 "is_set": bool(value),
                 "is_sensitive": key in SENSITIVE_KEYS,
+                **(
+                    {"input_type": "number", "min": 1, "max": 16}
+                    if key == "WORKER_CONCURRENCY"
+                    else {}
+                ),
             })
         categories.append({
             "id": cat_id,
@@ -339,6 +386,7 @@ async def update_model_settings(
     unknown = set(body.keys()) - all_known_keys
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown keys: {unknown}")
+    body = _validate_model_setting_updates(body)
 
     deepseek_keys = set(MODEL_CATEGORIES["llm"]["keys"])
     requested_deepseek_keys = set(body.keys()) & deepseek_keys

@@ -100,6 +100,7 @@ from apps.api.db.runs import (
     create_run,
     delete_run,
     get_run,
+    list_child_runs,
     list_runs,
     update_run,
 )
@@ -159,6 +160,7 @@ __all__ = [
     "heartbeat_experiment_job_if_lease",
     "init_pool",
     "list_claim_ledger",
+    "list_child_runs",
     "list_code_artifacts",
     "list_coding_events",
     "list_coding_tasks",

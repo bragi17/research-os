@@ -224,6 +224,24 @@ async def mock_get_library_paper(paper_id: UUID) -> dict[str, Any] | None:
     return _mock_library_papers.get(str(paper_id))
 
 
+def _normalize_mock_paper_key(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+async def mock_find_existing_library_paper(data: dict[str, Any]) -> dict[str, Any] | None:
+    arxiv_id = _normalize_mock_paper_key(data.get("arxiv_id")).removeprefix("arxiv:")
+    doi = _normalize_mock_paper_key(data.get("doi")).removeprefix("doi:")
+    title = _normalize_mock_paper_key(data.get("title"))
+    for paper in _mock_library_papers.values():
+        if arxiv_id and _normalize_mock_paper_key(paper.get("arxiv_id")).removeprefix("arxiv:") == arxiv_id:
+            return paper
+        if doi and _normalize_mock_paper_key(paper.get("doi")).removeprefix("doi:") == doi:
+            return paper
+        if title and _normalize_mock_paper_key(paper.get("title")) == title:
+            return paper
+    return None
+
+
 async def mock_list_library_papers(
     field: str | None = None,
     project_tag: str | None = None,
@@ -529,6 +547,9 @@ def client():
         "services.library.tools_db.insert_library_paper": AsyncMock(
             side_effect=mock_insert_library_paper
         ),
+        "services.library.tools_db.find_existing_library_paper": AsyncMock(
+            side_effect=mock_find_existing_library_paper
+        ),
         "services.library.tools_db.get_library_paper": AsyncMock(
             side_effect=mock_get_library_paper
         ),
@@ -596,6 +617,8 @@ def client():
         importlib.reload(routes_library_mod)
         importlib.reload(routes_v2_mod)
         importlib.reload(main_mod)
+        import apps.api.app as app_mod
+        app_mod.ensure_first_admin_user = AsyncMock(return_value={})
         app = main_mod.app
         main_mod._redis = None
 
@@ -1276,6 +1299,21 @@ class TestAddPaper:
         data = r.json()
         assert data["title"] == "BERT: Pre-training"
         assert "id" in data
+
+    def test_add_paper_returns_existing_for_duplicate_title(self, client: TestClient):
+        first = client.post(
+            "/api/v1/library/papers",
+            json={"title": "Structured Light Telecentric Reconstruction"},
+        )
+        second = client.post(
+            "/api/v1/library/papers",
+            json={"title": "  structured   light telecentric reconstruction  "},
+        )
+
+        assert first.status_code == 201
+        assert second.status_code == 201
+        assert second.json()["id"] == first.json()["id"]
+        assert len(_mock_library_papers) == 1
 
 
 # ===================================================================

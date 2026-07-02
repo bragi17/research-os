@@ -9,6 +9,14 @@ interface ThinkingStreamProps {
   currentStep: string | null;
   progressPct: number;
   mode?: string;
+  continuation?: {
+    title: string;
+    runStatus: string;
+    currentStep: string | null;
+    progressPct: number;
+    events: RunEvent[];
+    pendingMessage?: string;
+  };
 }
 
 /* ── Stage display names ── */
@@ -60,7 +68,76 @@ function formatTime(ts: string): string {
   } catch { return ""; }
 }
 
-export default function ThinkingStream({ events, runStatus, currentStep, progressPct, mode }: ThinkingStreamProps) {
+function ProgressRows({ progressEvents, runStatus }: { progressEvents: RunEvent[]; runStatus: string }) {
+  return (
+    <div className="space-y-0.5">
+      {progressEvents.map((ev, idx) => {
+        const action = (ev.payload?.action as string) || "";
+        const message = (ev.payload?.message as string) || ev.event_type;
+        const isDone = action === "done" || action === "search_done" || action === "result";
+        const isStart = action === "start";
+
+        return (
+          <div
+            key={`${ev.event_type}-${ev.timestamp}-${idx}`}
+            className={`flex items-start gap-2 py-1 ${isStart ? "mt-2 first:mt-0" : ""}`}
+          >
+            <div className="w-5 shrink-0 flex items-center justify-center mt-0.5">
+              <ActionIcon action={action} />
+            </div>
+            <span className={`text-[12px] leading-relaxed flex-1 ${
+              isDone ? "text-[var(--accent-green)] font-medium" :
+              isStart ? "text-[var(--text-primary)] font-medium" :
+              "text-[var(--text-muted)]"
+            }`}>
+              {message}
+            </span>
+            <span className="text-[10px] text-[var(--text-muted)] shrink-0 mt-0.5" style={{ fontFamily: "var(--font-mono)" }}>
+              {formatTime(ev.timestamp)}
+            </span>
+          </div>
+        );
+      })}
+
+      {runStatus === "running" && (
+        <div className="flex items-center gap-2 py-1 mt-1">
+          <div className="w-5 shrink-0 flex items-center justify-center">
+            <div className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] animate-pulse-dot" />
+          </div>
+          <span className="text-[12px] text-[var(--text-muted)] italic">
+            working...
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatusIcon({ status }: { status: string }) {
+  const isTerminal = ["completed", "failed", "cancelled"].includes(status);
+  if (status === "running") {
+    return <div className="h-4 w-4 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />;
+  }
+  if (isTerminal && status === "completed") {
+    return (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <circle cx="8" cy="8" r="7" fill="var(--accent-green-soft)" />
+        <path d="M5 8L7 10L11 6" stroke="var(--accent-green)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (isTerminal && status === "failed") {
+    return (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <circle cx="8" cy="8" r="7" fill="var(--accent-red-soft)" />
+        <path d="M5.5 5.5L10.5 10.5M10.5 5.5L5.5 10.5" stroke="var(--accent-red)" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  return <span className="h-2 w-2 rounded-full bg-[var(--text-muted)]" />;
+}
+
+export default function ThinkingStream({ events, runStatus, currentStep, progressPct, mode, continuation }: ThinkingStreamProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isTerminal = ["completed", "failed", "cancelled"].includes(runStatus);
 
@@ -79,6 +156,20 @@ export default function ThinkingStream({ events, runStatus, currentStep, progres
     }
     return currentStep?.replace(/_init$/, "") || "";
   }, [progressEvents, currentStep]);
+
+  const continuationProgressEvents = useMemo(() => {
+    return (continuation?.events || [])
+      .filter((e) => e.event_type.startsWith("progress."))
+      .reverse();
+  }, [continuation?.events]);
+
+  const continuationStage = useMemo(() => {
+    if (continuationProgressEvents.length > 0) {
+      const latest = continuationProgressEvents[continuationProgressEvents.length - 1];
+      return latest.payload?.stage as string || "";
+    }
+    return continuation?.currentStep?.replace(/_init$/, "") || "";
+  }, [continuationProgressEvents, continuation?.currentStep]);
 
   // Auto-scroll to bottom when new events arrive
   useEffect(() => {
@@ -103,21 +194,7 @@ export default function ThinkingStream({ events, runStatus, currentStep, progres
       {/* Header with current stage */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border-subtle)]">
         <div className="flex items-center gap-2.5">
-          {runStatus === "running" && (
-            <div className="h-4 w-4 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
-          )}
-          {isTerminal && runStatus === "completed" && (
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="7" fill="var(--accent-green-soft)" />
-              <path d="M5 8L7 10L11 6" stroke="var(--accent-green)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          )}
-          {isTerminal && runStatus === "failed" && (
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="7" fill="var(--accent-red-soft)" />
-              <path d="M5.5 5.5L10.5 10.5M10.5 5.5L5.5 10.5" stroke="var(--accent-red)" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          )}
+          <StatusIcon status={runStatus} />
           <div>
             <span className="text-[13px] font-medium text-[var(--text-primary)]">
               {isTerminal
@@ -142,55 +219,58 @@ export default function ThinkingStream({ events, runStatus, currentStep, progres
             Initializing research pipeline...
           </div>
         ) : (
-          <div className="space-y-0.5">
-            {progressEvents.map((ev, idx) => {
-              const stage = (ev.payload?.stage as string) || "";
-              const action = (ev.payload?.action as string) || "";
-              const message = (ev.payload?.message as string) || ev.event_type;
-              const isDone = action === "done" || action === "search_done" || action === "result";
-              const isStart = action === "start";
-
-              return (
-                <div
-                  key={`${ev.event_type}-${ev.timestamp}-${idx}`}
-                  className={`flex items-start gap-2 py-1 ${isStart ? "mt-2 first:mt-0" : ""}`}
-                >
-                  {/* Icon */}
-                  <div className="w-5 shrink-0 flex items-center justify-center mt-0.5">
-                    <ActionIcon action={action} />
-                  </div>
-
-                  {/* Message */}
-                  <span className={`text-[12px] leading-relaxed flex-1 ${
-                    isDone ? "text-[var(--accent-green)] font-medium" :
-                    isStart ? "text-[var(--text-primary)] font-medium" :
-                    "text-[var(--text-muted)]"
-                  }`}>
-                    {message}
-                  </span>
-
-                  {/* Timestamp */}
-                  <span className="text-[10px] text-[var(--text-muted)] shrink-0 mt-0.5" style={{ fontFamily: "var(--font-mono)" }}>
-                    {formatTime(ev.timestamp)}
-                  </span>
-                </div>
-              );
-            })}
-
-            {/* Active indicator at bottom when running */}
-            {runStatus === "running" && (
-              <div className="flex items-center gap-2 py-1 mt-1">
-                <div className="w-5 shrink-0 flex items-center justify-center">
-                  <div className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] animate-pulse-dot" />
-                </div>
-                <span className="text-[12px] text-[var(--text-muted)] italic">
-                  working...
-                </span>
-              </div>
-            )}
-          </div>
+          <ProgressRows progressEvents={progressEvents} runStatus={runStatus} />
         )}
       </div>
+
+      {continuation && (
+        <div className="border-t border-[var(--border-subtle)]">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)]/40">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <StatusIcon status={continuation.runStatus} />
+              <div className="min-w-0">
+                <div className="text-[13px] font-medium text-[var(--text-primary)] truncate">
+                  {continuation.title}
+                </div>
+                <div className="text-[11px] text-[var(--text-muted)]">
+                  {continuation.runStatus === "waiting"
+                    ? "Waiting for frontier results"
+                    : continuation.runStatus === "queued"
+                      ? "Queued — waiting for worker"
+                      : ["completed", "failed", "cancelled"].includes(continuation.runStatus)
+                        ? `Divergent ${continuation.runStatus}`
+                        : STAGE_LABELS[continuationStage] || "Processing..."}
+                </div>
+              </div>
+            </div>
+            {continuation.progressPct > 0 && (
+              <span className="text-[11px] text-[var(--text-muted)]" style={{ fontFamily: "var(--font-mono)" }}>
+                {Math.round(continuation.progressPct)}%
+              </span>
+            )}
+          </div>
+          <div className="max-h-[220px] overflow-y-auto px-5 py-3">
+            {continuation.runStatus === "waiting" ? (
+              <div className="flex items-center gap-2 py-2 text-[12px] text-[var(--text-muted)] italic">
+                <span className="h-2 w-2 rounded-full bg-[var(--text-muted)]" />
+                {continuation.pendingMessage || "Explore innovations will start after gap mining completes."}
+              </div>
+            ) : continuation.runStatus === "queued" ? (
+              <div className="flex items-center gap-2 py-2 text-[12px] text-[var(--text-muted)] italic">
+                <span className="h-2 w-2 rounded-full bg-[var(--text-muted)]" />
+                Queued — waiting for worker...
+              </div>
+            ) : continuationProgressEvents.length === 0 && !["completed", "failed", "cancelled"].includes(continuation.runStatus) ? (
+              <div className="flex items-center gap-2 py-2 text-[12px] text-[var(--text-muted)] italic">
+                <div className="h-3 w-3 rounded-full border border-[var(--accent)] border-t-transparent animate-spin" />
+                Initializing innovation exploration...
+              </div>
+            ) : (
+              <ProgressRows progressEvents={continuationProgressEvents} runStatus={continuation.runStatus} />
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Footer with stats */}
       {events.length > 0 && (

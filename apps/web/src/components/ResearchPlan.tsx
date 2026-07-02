@@ -6,6 +6,7 @@ interface ResearchPlanProps {
   mode: string;
   topic: string;
   isExecuting: boolean;
+  extraSteps?: string[];
 }
 
 const MODE_PLANS: Record<string, string[]> = {
@@ -44,9 +45,9 @@ const MODE_PLANS: Record<string, string[]> = {
   ],
 };
 
-export default function ResearchPlan({ mode, topic, isExecuting }: ResearchPlanProps) {
+export default function ResearchPlan({ mode, topic, isExecuting, extraSteps = [] }: ResearchPlanProps) {
   const [collapsed, setCollapsed] = useState(isExecuting);
-  const steps = MODE_PLANS[mode] ?? MODE_PLANS.frontier;
+  const steps = [...(MODE_PLANS[mode] ?? MODE_PLANS.frontier), ...extraSteps];
 
   return (
     <div className="card-static overflow-hidden">

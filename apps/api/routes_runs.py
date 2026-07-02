@@ -142,6 +142,31 @@ async def get_run(
     return row
 
 
+@router.get("/{run_id}/children", response_model=list[RunResponse])
+async def get_run_children(
+    run_id: UUID,
+    mode: str | None = Query(None, description="Filter child runs by mode"),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    """List child runs for a parent run within the current workspace."""
+    ctx = WorkspaceContext.from_user(user)
+    try:
+        parent = await db.get_run(run_id, workspace_id=ctx.workspace_id)
+        if parent is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        children = await db.list_child_runs(run_id, mode=mode)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("list_run_children_failed", run_id=str(run_id), error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to list run children") from exc
+
+    return [
+        child for child in children
+        if str(child.get("workspace_id")) == str(ctx.workspace_id)
+    ]
+
+
 @router.patch("/{run_id}")
 async def patch_run(
     run_id: UUID,
@@ -232,16 +257,12 @@ async def start_run(
         raise HTTPException(status_code=503, detail="Failed to enqueue run")
 
     now = _utcnow()
-    updates: dict[str, Any] = {
-        "status": RunStatus.RUNNING.value,
-        "updated_at": now,
-        "current_step": "plan_research",
-    }
-    if run.get("started_at") is None:
-        updates["started_at"] = now
-
     try:
-        await db.update_run(run_id, updates)
+        await db.update_run(run_id, {
+            "status": RunStatus.QUEUED.value,
+            "pause_reason": None,
+            "updated_at": now,
+        })
     except Exception as exc:
         logger.error("start_run_update_failed", run_id=str(run_id), error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to update run") from exc
@@ -249,12 +270,12 @@ async def start_run(
     try:
         await db.create_event(
             run_id=run_id,
-            event_type="run.started",
+            event_type="run.enqueued",
             severity=Severity.INFO.value,
             payload={"enqueued": enqueued},
         )
         await publish_event(run_id, {
-            "event_type": "run.started",
+            "event_type": "run.enqueued",
             "severity": "info",
             "payload": {"enqueued": enqueued},
             "timestamp": now.isoformat(),
@@ -262,8 +283,8 @@ async def start_run(
     except Exception as exc:
         logger.warning("create_event_failed", run_id=str(run_id), error=str(exc))
 
-    logger.info("run_started", run_id=str(run_id), enqueued=enqueued)
-    return {"status": "started", "run_id": str(run_id), "enqueued": enqueued}
+    logger.info("run_enqueued", run_id=str(run_id), enqueued=enqueued)
+    return {"status": "queued", "run_id": str(run_id), "enqueued": enqueued}
 
 
 @router.post("/{run_id}/pause")

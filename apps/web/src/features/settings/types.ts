@@ -4,6 +4,9 @@ export interface SettingItem {
   display_value?: string;
   is_set: boolean;
   is_sensitive: boolean;
+  input_type?: "text" | "password" | "number";
+  min?: number;
+  max?: number;
 }
 
 export interface LLMProfile {

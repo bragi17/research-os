@@ -219,6 +219,83 @@ async def test_openalex_api_key_is_sent_as_query_param_without_mutating_params()
 
 
 @pytest.mark.asyncio
+async def test_openalex_rotates_to_next_api_key_after_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_keys: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        api_key = request.url.params.get("api_key")
+        seen_keys.append(api_key)
+        if api_key == "key-one":
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "60"},
+                request=request,
+                text="too many requests",
+            )
+        return httpx.Response(200, request=request, json={"results": [{"id": "ok"}]})
+
+    adapter = OpenAlexAdapter(
+        api_keys=["key-one", "key-two"],
+        config=OpenAlexConfig(
+            requests_per_second=100.0,
+            retry_attempts=2,
+            retry_base_delay=0.0,
+            retry_max_delay=0.0,
+        ),
+    )
+    adapter._client = httpx.AsyncClient(
+        base_url=OPENALEX_API_BASE,
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(openalex_module.asyncio, "sleep", _no_sleep)
+
+    result = await adapter._request("/works", params={"search": "rag"}, use_cache=False)
+
+    assert result == {"results": [{"id": "ok"}]}
+    assert seen_keys == ["key-one", "key-two"]
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_openalex_rotates_to_next_api_key_after_credential_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_keys: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        api_key = request.url.params.get("api_key")
+        seen_keys.append(api_key)
+        if api_key == "bad-key":
+            return httpx.Response(403, request=request, text="forbidden")
+        return httpx.Response(200, request=request, json={"results": []})
+
+    adapter = OpenAlexAdapter(
+        api_keys=["bad-key", "good-key"],
+        config=OpenAlexConfig(
+            requests_per_second=100.0,
+            retry_attempts=2,
+            retry_base_delay=0.0,
+            retry_max_delay=0.0,
+        ),
+    )
+    adapter._client = httpx.AsyncClient(
+        base_url=OPENALEX_API_BASE,
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(openalex_module.asyncio, "sleep", _no_sleep)
+
+    result = await adapter._request("/works", params={"search": "rag"}, use_cache=False)
+
+    assert result == {"results": []}
+    assert seen_keys == ["bad-key", "good-key"]
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_openalex_429_raises_rate_limited_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

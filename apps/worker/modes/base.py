@@ -18,7 +18,7 @@ from structlog import get_logger
 from apps.worker.llm_gateway import LLMGateway, ModelTier
 from libs.adapters.openalex import OpenAlexAdapter
 from libs.adapters.semantic_scholar import SemanticScholarAdapter
-from libs.adapters.scholar_fusion import ScholarFusionService
+from libs.adapters.scholar_fusion import FusedPaper, ScholarFusionService
 from libs.prompts.templates import (
     CLAIM_OUTPUT_SCHEMA,
     PAPER_SUMMARY_SCHEMA,
@@ -538,11 +538,29 @@ async def _build_literature_search_coordinator() -> Any:
             )
         elif source is LiteratureSource.OPENALEX:
             credentials = await repo.get_active_credentials(source)
+            key_pool = None
+            if credentials:
+                key_pool = SourceKeyPool(
+                    [
+                        KeyMaterial(
+                            id=str(credential.id) if credential.id else None,
+                            secret=credential.secret,
+                            preview=mask_api_key(credential.secret),
+                        )
+                        for credential in credentials
+                    ],
+                    requests_per_second=_positive_float(
+                        options.get("requests_per_second"),
+                        2.0,
+                    ),
+                    burst_capacity=_positive_int(options.get("burst_capacity"), 1),
+                )
             adapters.append(
                 OpenAlexSource(
                     options=options,
                     email=options.get("email"),
                     api_key=_first_literature_secret(credentials),
+                    source_key_pool=key_pool,
                 )
             )
         elif source is LiteratureSource.DEEPXIV:
@@ -582,6 +600,10 @@ def _legacy_candidate_id(candidate: Any) -> str | None:
     if openalex_id:
         return f"OA:{openalex_id}"
 
+    arxiv_id = _clean_identifier(getattr(candidate, "arxiv_id", None))
+    if arxiv_id:
+        return arxiv_id if arxiv_id.lower().startswith("arxiv:") else f"arxiv:{arxiv_id}"
+
     candidate_id = _clean_identifier(getattr(candidate, "candidate_id", None))
     if candidate_id:
         lower = candidate_id.lower()
@@ -596,7 +618,15 @@ def _legacy_candidate_id(candidate: Any) -> str | None:
     doi = _legacy_bare_doi(getattr(candidate, "doi", None))
     if doi:
         return doi
-    return _legacy_bare_doi(candidate_id)
+    if fallback_doi := _legacy_bare_doi(candidate_id):
+        return fallback_doi
+
+    title = _clean_identifier(getattr(candidate, "title", None))
+    normalized_title = _normalize_title(title or "")
+    if normalized_title:
+        return f"title:{normalized_title}"
+
+    return None
 
 
 def _verification_candidate_id(candidate: Any) -> str | None:
@@ -624,7 +654,16 @@ def _verification_candidate_id(candidate: Any) -> str | None:
             else f"OPENALEX:{openalex_id}"
         )
 
-    return _clean_identifier(getattr(candidate, "candidate_id", None))
+    candidate_id = _clean_identifier(getattr(candidate, "candidate_id", None))
+    if candidate_id:
+        return candidate_id
+
+    title = _clean_identifier(getattr(candidate, "title", None))
+    normalized_title = _normalize_title(title or "")
+    if normalized_title:
+        return f"title:{normalized_title}"
+
+    return None
 
 
 def _clean_identifier(value: object) -> str | None:
@@ -772,10 +811,15 @@ async def tool_resolve_metadata(pid: str) -> tuple[Any | None, list[str]]:
     try:
         kwargs: dict[str, str] = {}
         lower_pid = pid.lower()
+        parsed_arxiv_id = detect_arxiv_id(pid)
         if lower_pid.startswith(("oa:", "openalex:")):
             kwargs["openalex_id"] = pid.split(":", 1)[1].strip()
         elif lower_pid.startswith(("s2:", "semanticscholar:")):
             kwargs["s2_id"] = pid.split(":", 1)[1].strip()
+        elif lower_pid.startswith("title:"):
+            kwargs["title"] = pid.split(":", 1)[1].strip()
+        elif parsed_arxiv_id:
+            kwargs["s2_id"] = f"ARXIV:{parsed_arxiv_id}"
         elif pid.startswith("10."):
             kwargs["doi"] = pid
         else:
@@ -783,6 +827,26 @@ async def tool_resolve_metadata(pid: str) -> tuple[Any | None, list[str]]:
 
         fused = await fusion.resolve_paper(**kwargs)
         if fused is None:
+            if parsed_arxiv_id:
+                try:
+                    parsed = await parse_paper(parsed_arxiv_id)
+                    title = getattr(parsed, "title", "") or pid
+                    abstract = getattr(parsed, "abstract", None)
+                    fused = FusedPaper(
+                        canonical_title=title,
+                        normalized_title=_normalize_title(title),
+                        arxiv_id=parsed_arxiv_id,
+                        abstract=abstract,
+                        sources=["arxiv"],
+                        source_trust_score=0.25,
+                    )
+                    return fused, errors
+                except Exception as exc:
+                    logger.debug(
+                        "tool_resolve_metadata.arxiv_parse_fallback_failed",
+                        pid=pid,
+                        error=str(exc),
+                    )
             errors.append(f"Could not resolve paper for deep read: {pid}")
             return None, errors
         return fused, errors

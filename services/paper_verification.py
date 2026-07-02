@@ -122,6 +122,8 @@ def candidate_from_id(
         fields["openalex_id"] = _normalize_openalex_id(clean)
     elif lower.startswith(("s2:", "semanticscholar:")):
         fields["s2_id"] = clean.split(":", 1)[1].strip()
+    elif lower.startswith("title:"):
+        fields["title"] = title or clean.split(":", 1)[1].strip()
     elif arxiv_id := normalize_arxiv_id(clean):
         fields["arxiv_id"] = arxiv_id
     elif clean:

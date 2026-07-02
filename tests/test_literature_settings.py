@@ -231,6 +231,35 @@ async def test_env_bootstrap_for_s2_and_openalex_hides_plaintext(
 
 
 @pytest.mark.asyncio
+async def test_env_bootstrap_supports_multiple_openalex_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENALEX_API_KEYS", "openalex-key-one, openalex-key-two")
+    monkeypatch.setenv("OPENALEX_API_KEY", "openalex-key-three")
+    pool = FakePool()
+    repo = LiteratureSettingsRepository(pool_getter=lambda: pool)
+
+    sources = {settings.source: settings for settings in await repo.list_sources()}
+    openalex = sources[LiteratureSource.OPENALEX]
+
+    assert openalex.configured is True
+    assert [credential.label for credential in openalex.credentials] == [
+        "env-1",
+        "env-2",
+        "env-3",
+    ]
+    assert [credential.preview for credential in openalex.credentials] == [
+        mask_api_key("openalex-key-one"),
+        mask_api_key("openalex-key-two"),
+        mask_api_key("openalex-key-three"),
+    ]
+    serialized = repr(openalex.model_dump(mode="json"))
+    assert "openalex-key-one" not in serialized
+    assert "openalex-key-two" not in serialized
+    assert "openalex-key-three" not in serialized
+
+
+@pytest.mark.asyncio
 async def test_env_fallbacks_cover_non_openalex_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

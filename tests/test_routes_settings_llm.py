@@ -342,6 +342,53 @@ def test_put_models_allows_operator_global_settings_update(
     reset_embedding.assert_called_once_with()
 
 
+def test_get_models_exposes_worker_concurrency_runtime_setting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("WORKER_CONCURRENCY=4\n")
+    repo = FakeRepository(_profile())
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(
+        routes_settings,
+        "LLMSettingsRepository",
+        lambda *args, **kwargs: repo,
+        raising=False,
+    )
+
+    response = _client().get("/api/v1/settings/models")
+
+    assert response.status_code == 200
+    runtime = next(category for category in response.json()["categories"] if category["id"] == "runtime")
+    concurrency = runtime["items"][0]
+    assert concurrency["key"] == "WORKER_CONCURRENCY"
+    assert concurrency["value"] == "4"
+    assert concurrency["input_type"] == "number"
+    assert concurrency["min"] == 1
+    assert concurrency["max"] == 16
+
+
+def test_put_models_rejects_invalid_worker_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("WORKER_CONCURRENCY=2\n")
+    write_env = Mock()
+    monkeypatch.setattr(routes_settings, "ENV_PATH", env_path)
+    monkeypatch.setattr(routes_settings, "_write_env", write_env)
+
+    response = _client(user=_operator_user()).put(
+        "/api/v1/settings/models",
+        json={"WORKER_CONCURRENCY": "0"},
+    )
+
+    assert response.status_code == 400
+    assert "WORKER_CONCURRENCY must be an integer" in response.json()["detail"]
+    write_env.assert_not_called()
+
+
 def test_embedding_test_rejects_non_operator_global_credential_probe() -> None:
     response = _client(user=_user()).post("/api/v1/settings/models/test-embedding")
 

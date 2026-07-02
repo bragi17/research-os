@@ -29,6 +29,7 @@ from services.library.pools_db import (
     update_library_pool,
 )
 from services.library.tools_db import (
+    find_existing_library_paper,
     get_library_paper,
     list_library_papers,
     delete_library_paper,
@@ -249,6 +250,10 @@ async def add_paper(body: dict[str, Any]) -> dict[str, Any]:
     if not body.get("title") and not body.get("arxiv_id"):
         raise HTTPException(status_code=400, detail="title or arxiv_id is required")
     try:
+        existing = await find_existing_library_paper(body)
+        if existing is not None:
+            return existing
+
         from apps.worker.agents.paper_ingestion import PaperIngestionPipeline
         pipeline = PaperIngestionPipeline()
         return await pipeline.ingest(
@@ -505,6 +510,10 @@ async def upload_paper(body: dict[str, Any]) -> dict[str, Any]:
     if not arxiv_id:
         raise HTTPException(status_code=400, detail="arxiv_id is required")
     try:
+        existing = await find_existing_library_paper(body)
+        if existing is not None:
+            return existing
+
         from apps.worker.agents.paper_ingestion import PaperIngestionPipeline
         pipeline = PaperIngestionPipeline()
         return await pipeline.ingest(

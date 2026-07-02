@@ -152,6 +152,9 @@ const INPUT_CLASS =
 const TEXTAREA_CLASS =
   "min-h-[72px] w-full resize-y rounded-md border border-[var(--border-subtle)] bg-[var(--bg-primary)] px-2 py-2 text-[12px] leading-relaxed text-[var(--text-secondary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] disabled:opacity-50";
 
+const COMPACT_TEXTAREA_CLASS =
+  "h-8 min-h-8 w-full resize-y rounded-md border border-[var(--border-subtle)] bg-[var(--bg-primary)] px-2 py-1.5 text-[12px] leading-4 text-[var(--text-secondary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] disabled:opacity-50";
+
 const DEFAULT_EXPERIMENT_ROOT = "/data/research-os/experiments";
 
 const REQUIRED_ACCEPTANCE_CRITERIA = {
@@ -1390,12 +1393,13 @@ export default function ExperimentWorkspace({
             </select>
             <textarea
               aria-label="Coding task prompt"
+              rows={1}
               value={createDraft.taskPrompt}
               onChange={(event) =>
                 updateCreateDraft("taskPrompt", event.target.value)
               }
               placeholder={`Implement the experiment workspace for ${topicLabel}`}
-              className={TEXTAREA_CLASS}
+              className={COMPACT_TEXTAREA_CLASS}
               disabled={!selectedProjectId}
             />
           </div>

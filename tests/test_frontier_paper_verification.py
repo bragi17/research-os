@@ -301,3 +301,61 @@ async def test_candidate_retrieval_dedupes_candidates_before_verify_and_append(
         "s2-paper-1",
         "s2-paper-2",
     ]
+
+
+@pytest.mark.asyncio
+async def test_candidate_retrieval_includes_seed_papers_as_priority_candidates(
+    monkeypatch,
+):
+    run_id = uuid4()
+    verified_candidate_ids: list[list[str]] = []
+
+    async def fake_emit_progress(*args, **kwargs):
+        return None
+
+    async def fake_search_academic_sources(**kwargs):
+        return ([], [], [], {})
+
+    async def fake_verify_paper_candidates_for_run(
+        run_id_arg,
+        candidate_ids,
+        title_map=None,
+        source=None,
+    ):
+        assert run_id_arg == run_id
+        verified_candidate_ids.append(candidate_ids)
+        return {
+            candidate_id: {
+                "candidate_id": candidate_id,
+                "verification_status": "verified",
+            }
+            for candidate_id in candidate_ids
+        }
+
+    class FakeSemanticScholarAdapter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(frontier, "emit_progress", fake_emit_progress)
+    monkeypatch.setattr(frontier, "search_academic_sources", fake_search_academic_sources)
+    monkeypatch.setattr(
+        frontier,
+        "verify_paper_candidates_for_run",
+        fake_verify_paper_candidates_for_run,
+    )
+    monkeypatch.setattr(frontier, "SemanticScholarAdapter", FakeSemanticScholarAdapter)
+
+    state = ModeGraphState(
+        run_id=run_id,
+        topic="structured light",
+        pending_queries=[{"query": "structured light", "source": "both"}],
+        seed_paper_ids=["arxiv:2501.14659"],
+    )
+
+    updates = await frontier.candidate_retrieval(state)
+
+    assert verified_candidate_ids == [["arxiv:2501.14659"]]
+    assert updates["candidate_paper_ids"] == ["arxiv:2501.14659"]

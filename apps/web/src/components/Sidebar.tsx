@@ -119,16 +119,9 @@ export default function Sidebar() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [confirmModal, setConfirmModal] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
-  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try { return new Set(JSON.parse(localStorage.getItem("ros_pinned") || "[]")); }
-    catch { return new Set(); }
-  });
-  const [projects, setProjects] = useState<Project[]>(() => {
-    if (typeof window === "undefined") return [];
-    try { return JSON.parse(localStorage.getItem("ros_projects") || "[]"); }
-    catch { return []; }
-  });
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => new Set());
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [storageReady, setStorageReady] = useState(false);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
@@ -141,15 +134,32 @@ export default function Sidebar() {
   }, []);
 
   const fetchRuns = useCallback(async () => {
-    try { setRuns((await listRuns()).items ?? []); }
+    try {
+      const items = (await listRuns()).items ?? [];
+      setRuns(items.filter((run) => !run.parent_run_id));
+    }
     catch { /* silent */ }
     finally { setLoading(false); }
   }, []);
 
+  useEffect(() => {
+    try {
+      setPinnedIds(new Set(JSON.parse(localStorage.getItem("ros_pinned") || "[]")));
+    } catch {
+      setPinnedIds(new Set());
+    }
+    try {
+      const storedProjects = JSON.parse(localStorage.getItem("ros_projects") || "[]");
+      setProjects(Array.isArray(storedProjects) ? storedProjects : []);
+    } catch {
+      setProjects([]);
+    }
+    setStorageReady(true);
+  }, []);
   useEffect(() => { fetchRuns(); const i = setInterval(fetchRuns, 3000); return () => clearInterval(i); }, [fetchRuns]);
   useEffect(() => { fetchRuns(); const t = setTimeout(fetchRuns, 500); return () => clearTimeout(t); }, [pathname, fetchRuns]);
-  useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("ros_pinned", JSON.stringify([...pinnedIds])); }, [pinnedIds]);
-  useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("ros_projects", JSON.stringify(projects)); }, [projects]);
+  useEffect(() => { if (storageReady) localStorage.setItem("ros_pinned", JSON.stringify([...pinnedIds])); }, [pinnedIds, storageReady]);
+  useEffect(() => { if (storageReady) localStorage.setItem("ros_projects", JSON.stringify(projects)); }, [projects, storageReady]);
 
   const activeRunId = pathname.match(/\/runs\/([^/]+)/)?.[1] ?? null;
   const isNewPage = pathname === "/new";

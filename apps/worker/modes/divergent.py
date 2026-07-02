@@ -38,6 +38,8 @@ DivergentState = ModeGraphState
 
 _DEDUP_KEY_MAX_LENGTH = 140
 _DEDUP_KEY_HASH_LENGTH = 8
+_TARGET_IDEA_CARD_COUNT = 6
+_MAX_IDEA_CARD_COUNT = 8
 _VERIFIER_PAYLOAD_MAX_CHARS = 7600
 _VERIFIER_TEXT_MAX_LENGTH = 240
 _VERIFIER_LIST_MAX_ITEMS = 3
@@ -156,6 +158,27 @@ def _topic_bootstrap_pain_points(topic: str) -> list[dict[str, Any]]:
             ),
             "pain_type": "topic_bootstrap",
         },
+        {
+            "statement": (
+                f"{topic_text} needs calibration and uncertainty propagation "
+                "that explain where reconstruction errors enter the pipeline."
+            ),
+            "pain_type": "calibration_gap",
+        },
+        {
+            "statement": (
+                f"{topic_text} needs benchmarkable acquisition geometry variants "
+                "that isolate projector, optics, and camera contributions."
+            ),
+            "pain_type": "benchmark_gap",
+        },
+        {
+            "statement": (
+                f"{topic_text} needs robust failure-mode analysis for occlusion, "
+                "surface reflectance, and depth discontinuities."
+            ),
+            "pain_type": "robustness_gap",
+        },
     ]
 
 
@@ -203,7 +226,7 @@ def _derive_problem_signatures(
     signatures: list[dict[str, Any]] = []
     topic_keywords = _bootstrap_keywords(topic, limit=4)
 
-    for point in pain_points[:5]:
+    for point in pain_points[:_TARGET_IDEA_CARD_COUNT]:
         if isinstance(point, dict):
             statement = str(
                 point.get("statement")
@@ -282,7 +305,7 @@ def _fallback_idea_cards(
         )
 
     cards: list[dict[str, Any]] = []
-    for idx, point in enumerate(pain_points[:3]):
+    for idx, point in enumerate(pain_points[:_TARGET_IDEA_CARD_COUNT]):
         transfer = transfers[idx % len(transfers)]
         if isinstance(point, dict):
             statement = str(
@@ -1286,6 +1309,9 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
         f"- feasibility_score: float (0-1)\n\n"
         f"Do not recreate failed_idea_memory entries unless the new mechanism "
         f"directly resolves the recorded strongest_objection.\n\n"
+        f"Generate {_TARGET_IDEA_CARD_COUNT}-{_MAX_IDEA_CARD_COUNT} distinct idea "
+        f"cards when the evidence supports it. Prefer coverage across different "
+        f"pain points and transfer mechanisms over minor variants of one idea.\n\n"
         f"Output MUST be a JSON array of idea card objects."
     )
 
@@ -1300,7 +1326,8 @@ async def idea_composition(state: ModeGraphState) -> dict[str, Any]:
         f"{json.dumps(transfers[:10], default=str)}\n\n"
         f"## Failed Idea Memory\n"
         f"{json.dumps(failed_memory_payload, default=str)}\n\n"
-        f"Generate idea cards that combine pain points with transferable methods.\n"
+        f"Generate {_TARGET_IDEA_CARD_COUNT}-{_MAX_IDEA_CARD_COUNT} idea cards "
+        f"that combine pain points with transferable methods.\n"
     )
 
     result, delta, errs = await generate_llm_json(

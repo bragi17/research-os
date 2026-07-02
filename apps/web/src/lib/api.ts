@@ -31,6 +31,11 @@ export const listRuns = async (params?: string): Promise<{ items: Run[]; total: 
 
 export const getRun = (id: string) => apiFetch<Run>(`/api/v1/runs/${id}`);
 
+export const getRunChildren = (id: string, mode?: RunMode) => {
+  const params = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+  return apiFetch<Run[]>(`/api/v1/runs/${id}/children${params}`);
+};
+
 export const startRun = (id: string) =>
   apiFetch(`/api/v1/runs/${id}/start`, { method: "POST" });
 
@@ -59,8 +64,29 @@ export const getRunEvents = (id: string) =>
 export const getRunHypotheses = (id: string) =>
   apiFetch<Hypothesis[]>(`/api/v1/runs/${id}/hypotheses`);
 
-export const getRunPapers = (id: string) =>
-  apiFetch<Paper[]>(`/api/v1/runs/${id}/papers`);
+type RawRunPaper = Paper & {
+  canonical_title?: string;
+  publication_year?: number;
+  metadata_json?: { authors?: string[] };
+};
+
+type RunPapersResponse = Paper[] | {
+  papers?: RawRunPaper[];
+};
+
+export const getRunPapers = async (id: string): Promise<Paper[]> => {
+  const raw = await apiFetch<RunPapersResponse>(`/api/v1/runs/${id}/papers`);
+  const papers: RawRunPaper[] = Array.isArray(raw) ? raw : raw.papers ?? [];
+  return papers.map((paper) => ({
+    id: paper.id,
+    title: paper.title || paper.canonical_title || "Untitled paper",
+    authors: paper.authors || paper.metadata_json?.authors || [],
+    doi: paper.doi,
+    arxiv_id: paper.arxiv_id,
+    abstract: paper.abstract,
+    year: paper.year ?? paper.publication_year,
+  }));
+};
 
 export interface SettingsItem {
   key: string;

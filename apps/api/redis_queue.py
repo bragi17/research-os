@@ -76,7 +76,7 @@ async def enqueue_run(run_id: UUID, run_data: dict[str, Any]) -> bool:
             "budget": run_data.get("budget_json", {}),
             "enqueued_at": datetime.utcnow().isoformat(),
         })
-        await _redis.lpush(REDIS_QUEUE_KEY, task)
+        await _redis.rpush(REDIS_QUEUE_KEY, task)
         logger.info("run_enqueued", run_id=str(run_id))
         return True
     except Exception as exc:

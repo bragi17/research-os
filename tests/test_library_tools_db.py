@@ -110,6 +110,42 @@ async def test_get_library_paper_returns_none_for_missing():
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_find_existing_library_paper_prefers_arxiv_doi_then_normalized_title():
+    expected = {"id": uuid4(), "title": "Known Paper"}
+    pool = _make_pool(fetchrow_return=MagicMock())
+
+    with patch(POOL_PATH, AsyncMock(return_value=pool)), \
+         patch(RECORD_PATH, return_value=expected):
+        from services.library.tools_db import find_existing_library_paper
+        result = await find_existing_library_paper({
+            "title": "  Known   Paper ",
+            "arxiv_id": "arXiv:2401.00001v2",
+            "doi": "HTTPS://DOI.ORG/10.1000/ABC ",
+        })
+
+    assert result == expected
+    pool.fetchrow.assert_awaited_once()
+    sql = pool.fetchrow.call_args[0][0]
+    values = pool.fetchrow.call_args[0][1:]
+    assert "lower(arxiv_id)" in sql
+    assert "lower(doi)" in sql
+    assert "regexp_replace(lower(title)" in sql
+    assert values == ("2401.00001", "10.1000/abc", "known paper")
+
+
+@pytest.mark.asyncio
+async def test_find_existing_library_paper_returns_none_without_identifiers_or_title():
+    pool = _make_pool(fetchrow_return=MagicMock())
+
+    with patch(POOL_PATH, AsyncMock(return_value=pool)):
+        from services.library.tools_db import find_existing_library_paper
+        result = await find_existing_library_paper({})
+
+    assert result is None
+    pool.fetchrow.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # list_library_papers
 # ---------------------------------------------------------------------------

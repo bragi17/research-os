@@ -12,7 +12,7 @@ class FakeRedis:
     def __init__(self) -> None:
         self.items: list[tuple[str, str]] = []
 
-    async def lpush(self, key: str, value: str) -> None:
+    async def rpush(self, key: str, value: str) -> None:
         self.items.append((key, value))
 
     async def ping(self) -> bool:

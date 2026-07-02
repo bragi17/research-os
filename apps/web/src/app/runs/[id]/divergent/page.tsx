@@ -5,10 +5,14 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   getRun,
+  getRunPapers,
   getPainPoints,
   getIdeaCards,
   spawnRun,
+  startRun,
+  addToLibrary,
   type Run,
+  type Paper,
   type PainPoint,
   type IdeaCard,
 } from "@/lib/api";
@@ -20,10 +24,14 @@ export default function DivergentPage() {
   const runId = params.id as string;
 
   const [run, setRun] = useState<Run | null>(null);
+  const [papers, setPapers] = useState<Paper[]>([]);
   const [painPoints, setPainPoints] = useState<PainPoint[]>([]);
   const [ideaCards, setIdeaCards] = useState<IdeaCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [spawning, setSpawning] = useState(false);
+  const [addingPaperId, setAddingPaperId] = useState<string | null>(null);
+  const [libraryPaperIds, setLibraryPaperIds] = useState<Record<string, string>>({});
+  const [libraryError, setLibraryError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -32,12 +40,14 @@ export default function DivergentPage() {
         setRun(runData);
 
         const results = await Promise.allSettled([
+          getRunPapers(runId),
           getPainPoints(runId),
           getIdeaCards(runId),
         ]);
 
-        if (results[0].status === "fulfilled") setPainPoints(results[0].value.items ?? []);
-        if (results[1].status === "fulfilled") setIdeaCards(results[1].value.items ?? []);
+        if (results[0].status === "fulfilled") setPapers(results[0].value ?? []);
+        if (results[1].status === "fulfilled") setPainPoints(results[1].value.items ?? []);
+        if (results[2].status === "fulfilled") setIdeaCards(results[2].value.items ?? []);
       } catch (e) {
         console.error("Failed to fetch divergent data", e);
       } finally {
@@ -59,15 +69,43 @@ export default function DivergentPage() {
     setSpawning(true);
     try {
       const newRun = (await spawnRun(runId, {
-        mode: "frontier",
+        target_mode: "frontier",
         title: `Prior Art Check: ${run.topic}`,
         topic: run.topic,
       })) as { id: string };
+      await startRun(newRun.id);
       router.push(`/runs/${newRun.id}`);
     } catch (e) {
       console.error("Failed to spawn frontier run", e);
     } finally {
       setSpawning(false);
+    }
+  };
+
+  const handleAddPaperToLibrary = async (paper: Paper) => {
+    setAddingPaperId(paper.id);
+    setLibraryError(null);
+    try {
+      const libraryPaper = await addToLibrary({
+        title: paper.title,
+        authors: paper.authors ?? [],
+        year: paper.year,
+        doi: paper.doi,
+        arxiv_id: paper.arxiv_id,
+        source_run_id: runId,
+        project_tags: ["research-run", "divergent"],
+      });
+      if (libraryPaper.id) {
+        setLibraryPaperIds((current) => ({
+          ...current,
+          [paper.id]: libraryPaper.id,
+        }));
+      }
+    } catch (e) {
+      console.error("Failed to add paper to library", e);
+      setLibraryError("Failed to add paper to library.");
+    } finally {
+      setAddingPaperId(null);
     }
   };
 
@@ -148,6 +186,12 @@ export default function DivergentPage() {
 
         <div className="flex items-center gap-6 mt-4 pt-3 border-t border-[var(--border-subtle)]">
           <div className="text-center">
+            <p className="text-lg font-bold tabular-nums text-[var(--accent-cyan)]" style={{ fontFamily: "var(--font-mono)" }}>
+              {papers.length}
+            </p>
+            <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">Papers</p>
+          </div>
+          <div className="text-center">
             <p className="text-lg font-bold tabular-nums text-[var(--accent-amber)]" style={{ fontFamily: "var(--font-mono)" }}>
               {ideaCards.length}
             </p>
@@ -168,7 +212,98 @@ export default function DivergentPage() {
             </div>
           )}
         </div>
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <button
+            onClick={handleSpawnFrontier}
+            disabled={spawning}
+            className="btn-primary text-[13px] px-4"
+          >
+            {spawning ? (
+              <span className="flex items-center gap-2">
+                <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                Spawning...
+              </span>
+            ) : (
+              <span className="flex items-center gap-2">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5" />
+                  <path d="M7 4V7L9 8.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                </svg>
+                Check prior art further
+              </span>
+            )}
+          </button>
+        </div>
       </div>
+
+      {/* Papers explored */}
+      {papers.length > 0 && (
+        <div className="animate-fade-up delay-75">
+          <h3 className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-3">
+            Papers Explored ({papers.length})
+          </h3>
+          <div className="glass-card-static p-4">
+            <div className="space-y-3">
+              {papers.map((paper) => (
+                <div key={paper.id} className="flex flex-col gap-2 border-b border-[var(--border-subtle)] pb-3 last:border-b-0 last:pb-0 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-[var(--text-primary)] leading-snug">
+                      {paper.title}
+                    </p>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-[var(--text-muted)]">
+                      {paper.authors?.length > 0 && (
+                        <span className="truncate max-w-[360px]">
+                          {paper.authors.slice(0, 4).join(", ")}
+                          {paper.authors.length > 4 ? " et al." : ""}
+                        </span>
+                      )}
+                      {paper.year && (
+                        <span style={{ fontFamily: "var(--font-mono)" }}>
+                          {paper.year}
+                        </span>
+                      )}
+                      {paper.doi && (
+                        <span className="truncate max-w-[220px]" style={{ fontFamily: "var(--font-mono)" }}>
+                          {paper.doi}
+                        </span>
+                      )}
+                      {paper.arxiv_id && (
+                        <span style={{ fontFamily: "var(--font-mono)" }}>
+                          arXiv:{paper.arxiv_id}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {libraryPaperIds[paper.id] ? (
+                      <Link
+                        href={`/library/papers/${libraryPaperIds[paper.id]}`}
+                        className="btn-secondary px-3 py-1.5 text-[12px]"
+                      >
+                        Open in library
+                      </Link>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleAddPaperToLibrary(paper)}
+                        disabled={addingPaperId === paper.id}
+                        className="btn-secondary px-3 py-1.5 text-[12px]"
+                      >
+                        {addingPaperId === paper.id ? "Adding..." : "Add to library"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {libraryError && (
+              <p className="mt-3 text-[11px] text-[var(--accent-red)]">
+                {libraryError}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Problem signature (pain points) */}
       {painPoints.length > 0 && (
@@ -274,8 +409,7 @@ export default function DivergentPage() {
         <button
           onClick={handleSpawnFrontier}
           disabled={spawning}
-          className="btn-primary"
-          style={{ background: "linear-gradient(135deg, var(--accent-purple), #6d28d9)" }}
+          className="btn-primary text-[13px] px-4"
         >
           {spawning ? (
             <span className="flex items-center gap-2">

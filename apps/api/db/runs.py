@@ -135,6 +135,34 @@ async def list_runs(
     return [db_pool.record_to_dict(row) for row in rows]
 
 
+async def list_child_runs(
+    parent_run_id: UUID,
+    mode: str | None = None,
+) -> list[dict[str, Any]]:
+    """SELECT child runs for a parent run, optionally constrained by mode."""
+    pool = await db_pool.get_pool()
+    if mode is not None:
+        rows = await pool.fetch(
+            """
+            SELECT * FROM research_run
+            WHERE parent_run_id = $1 AND mode = $2
+            ORDER BY created_at DESC
+            """,
+            parent_run_id,
+            mode,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT * FROM research_run
+            WHERE parent_run_id = $1
+            ORDER BY created_at DESC
+            """,
+            parent_run_id,
+        )
+    return [db_pool.record_to_dict(row) for row in rows]
+
+
 _RUN_UPDATABLE_COLUMNS = frozenset({
     "title",
     "status",

@@ -622,6 +622,25 @@ def _env_credential_previews(
 def _env_credential_secrets(
     source: LiteratureSource,
 ) -> list[LiteratureCredentialSecret]:
+    if source is LiteratureSource.OPENALEX:
+        return [
+            LiteratureCredentialSecret(
+                id=None,
+                source=source,
+                label=f"env-{index}",
+                secret=secret,
+            )
+            for index, secret in enumerate(
+                _dedupe_secret_values(
+                    [
+                        *_split_secret_env(os.getenv("OPENALEX_API_KEYS")),
+                        *_split_secret_env(os.getenv("OPENALEX_API_KEY")),
+                    ]
+                ),
+                start=1,
+            )
+        ]
+
     secret = _env_secret_for_source(source)
     if not secret:
         return []
@@ -643,6 +662,30 @@ def _env_secret_for_source(source: LiteratureSource) -> str | None:
     if source is LiteratureSource.WEB_SEARCH:
         return _clean(os.getenv("WEB_SEARCH_API_KEY"))
     return None
+
+
+def _split_secret_env(value: str | None) -> list[str]:
+    if not value:
+        return []
+    import re
+
+    return [
+        part.strip()
+        for part in re.split(r"[\s,;]+", value)
+        if part.strip()
+    ]
+
+
+def _dedupe_secret_values(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        clean = value.strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        deduped.append(clean)
+    return deduped
 
 
 def _first_env(*keys: str) -> str | None:

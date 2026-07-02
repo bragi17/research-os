@@ -106,6 +106,14 @@ def test_candidate_from_raw_s2_id():
     assert candidate.s2_id == "abc123"
 
 
+def test_candidate_from_title_id_uses_title_matching():
+    candidate = candidate_from_id("title:known title", title="Known Title")
+
+    assert candidate.candidate_id == "title:known title"
+    assert candidate.title == "Known Title"
+    assert candidate.s2_id is None
+
+
 def test_candidate_from_bare_arxiv_id():
     candidate = candidate_from_id("2505.24431v2")
 

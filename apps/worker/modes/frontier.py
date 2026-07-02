@@ -274,6 +274,17 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
     existing_titles = {_normalize_title(pid) for pid in state.candidate_paper_ids}
     existing_ids = set(state.candidate_paper_ids)
 
+    # ── Manual seed papers: add as priority candidates, not only citation anchors ──
+    seed_ids = []
+    for seed_id in state.seed_paper_ids or []:
+        pid = str(seed_id).strip()
+        if pid and pid not in existing_ids:
+            seed_ids.append(pid)
+            existing_ids.add(pid)
+    if seed_ids:
+        await emit_progress(state.run_id, "candidate_retrieval", "seed_papers",
+                            f"Added {len(seed_ids)} seed papers")
+
     # ── Library seeds: add as priority candidates ──
     library_ids = []
     for seed in (state.library_seeds or []):
@@ -337,6 +348,8 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
                 seed_id = raw_seed_id
                 if raw_seed_id.startswith("10."):
                     seed_id = f"DOI:{raw_seed_id}"
+                elif raw_seed_id.lower().startswith("arxiv:"):
+                    seed_id = f"ARXIV:{raw_seed_id.split(':', 1)[1].strip()}"
                 elif not raw_seed_id.startswith("ARXIV:") and "." in raw_seed_id and len(raw_seed_id) < 20:
                     # Looks like an arXiv ID (e.g. "2505.24431")
                     seed_id = f"ARXIV:{raw_seed_id}"
@@ -408,7 +421,7 @@ async def candidate_retrieval(state: ModeGraphState) -> dict[str, Any]:
 
     all_new = [
         pid
-        for pid in _stable_unique(library_ids + new_candidates + chain_candidates)
+        for pid in _stable_unique(seed_ids + library_ids + new_candidates + chain_candidates)
         if pid not in state.candidate_paper_ids
     ]
     verification_map = await verify_paper_candidates_for_run(

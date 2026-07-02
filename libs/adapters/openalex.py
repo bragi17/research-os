@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import time
+import re
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
@@ -20,6 +22,12 @@ from structlog import get_logger
 
 from libs.schemas.literature import LiteratureErrorKind, LiteratureSource
 from services.literature_errors import SourceRequestError, retry_after_seconds
+from services.source_key_pool import (
+    KeyLease,
+    KeyMaterial,
+    NoAvailableSourceKey,
+    SourceKeyPool,
+)
 
 logger = get_logger(__name__)
 
@@ -130,12 +138,42 @@ class OpenAlexConfig:
 
     email: str | None = None  # For polite pool access
     api_key: str | None = None
+    api_keys: tuple[str, ...] = ()
     base_url: str = OPENALEX_API_BASE
     requests_per_second: float = 2.0
     max_results_per_query: int = 200
     retry_attempts: int = 3
     retry_base_delay: float = 1.0
     retry_max_delay: float = 30.0
+
+
+def _split_api_keys(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [
+        part.strip()
+        for part in re.split(r"[\s,;]+", value)
+        if part.strip()
+    ]
+
+
+def _dedupe_keys(keys: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for key in keys:
+        clean = key.strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        deduped.append(clean)
+    return deduped
+
+
+def _preview_key(key: str) -> str:
+    clean = key.strip()
+    if len(clean) <= 8:
+        return "****"
+    return f"{clean[:4]}...{clean[-4:]}"
 
 
 class OpenAlexAdapter:
@@ -154,19 +192,57 @@ class OpenAlexAdapter:
         self,
         email: str | None = None,
         api_key: str | None = None,
+        api_keys: list[str] | tuple[str, ...] | None = None,
         config: OpenAlexConfig | None = None,
+        source_key_pool: SourceKeyPool | None = None,
     ):
         if config is None:
-            self.config = OpenAlexConfig(email=email, api_key=api_key)
+            self.config = OpenAlexConfig(
+                email=email,
+                api_key=api_key,
+                api_keys=tuple(api_keys or ()),
+            )
         else:
             self.config = replace(
                 config,
                 email=email if email is not None else config.email,
                 api_key=api_key if api_key is not None else config.api_key,
+                api_keys=tuple(api_keys) if api_keys is not None else config.api_keys,
             )
         self._client: httpx.AsyncClient | None = None
         self._last_request_time: float = 0
         self._cache: dict[str, tuple[Any, float]] = {}
+        self._key_pool = source_key_pool or self._build_key_pool()
+        self._key_count = len(self._configured_api_keys())
+
+    def _configured_api_keys(self) -> list[str]:
+        keys = _dedupe_keys([*self.config.api_keys])
+        if self.config.api_key:
+            keys = _dedupe_keys([self.config.api_key, *keys])
+        if keys:
+            return keys
+        return _dedupe_keys([
+            *_split_api_keys(os.getenv("OPENALEX_API_KEYS")),
+            *_split_api_keys(os.getenv("OPENALEX_API_KEY")),
+        ])
+
+    def _build_key_pool(self) -> SourceKeyPool | None:
+        keys = self._configured_api_keys()
+        if not keys:
+            return None
+        return SourceKeyPool(
+            [
+                KeyMaterial(
+                    id=f"openalex-{index}",
+                    secret=key,
+                    preview=_preview_key(key),
+                )
+                for index, key in enumerate(keys)
+            ],
+            requests_per_second=self.config.requests_per_second,
+            burst_capacity=max(1, len(keys)),
+            default_cooldown_seconds=self.config.retry_max_delay,
+        )
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -205,19 +281,29 @@ class OpenAlexAdapter:
                 return cached[0]
 
         request_params = dict(params or {})
-        if self.config.api_key:
-            request_params["api_key"] = self.config.api_key
 
         client = await self._get_client()
-        attempts = max(1, self.config.retry_attempts)
+        attempts = max(1, self.config.retry_attempts, self._key_count)
         last_error: Exception | None = None
 
         for attempt in range(attempts):
             await self._rate_limit()
             final_attempt = attempt == attempts - 1
+            lease: KeyLease | None = None
+            current_params = dict(request_params)
+            if self._key_pool is not None:
+                try:
+                    lease = await self._key_pool.acquire()
+                except NoAvailableSourceKey as exc:
+                    raise SourceRequestError(
+                        source=LiteratureSource.OPENALEX,
+                        kind=LiteratureErrorKind.CREDENTIAL_ERROR,
+                        message="No OpenAlex API keys are currently available",
+                    ) from exc
+                current_params["api_key"] = lease.secret
 
             try:
-                response = await client.get(endpoint, params=request_params)
+                response = await client.get(endpoint, params=current_params)
             except (httpx.TimeoutException, httpx.RequestError) as e:
                 last_error = e
                 if final_attempt:
@@ -240,6 +326,13 @@ class OpenAlexAdapter:
                 parsed_retry_after = retry_after_seconds(
                     response.headers.get("Retry-After")
                 )
+                delay = (
+                    min(parsed_retry_after, self.config.retry_max_delay)
+                    if parsed_retry_after is not None
+                    else self._retry_delay(attempt)
+                )
+                if lease is not None and self._key_pool is not None:
+                    self._key_pool.record_rate_limit(lease, delay)
                 if final_attempt:
                     raise SourceRequestError(
                         source=LiteratureSource.OPENALEX,
@@ -248,13 +341,26 @@ class OpenAlexAdapter:
                         status_code=response.status_code,
                         retry_after_seconds=parsed_retry_after,
                     )
-                delay = (
-                    min(parsed_retry_after, self.config.retry_max_delay)
-                    if parsed_retry_after is not None
-                    else self._retry_delay(attempt)
-                )
                 logger.warning("openalex_rate_limited", attempt=attempt, delay=delay)
-                await asyncio.sleep(delay)
+                if self._key_pool is None:
+                    await asyncio.sleep(delay)
+                continue
+
+            if response.status_code in (401, 403):
+                if lease is not None and self._key_pool is not None:
+                    self._key_pool.record_credential_error(lease)
+                if final_attempt:
+                    raise SourceRequestError(
+                        source=LiteratureSource.OPENALEX,
+                        kind=LiteratureErrorKind.CREDENTIAL_ERROR,
+                        message="OpenAlex credentials were rejected",
+                        status_code=response.status_code,
+                    )
+                logger.warning(
+                    "openalex_credentials_rejected",
+                    attempt=attempt,
+                    status=response.status_code,
+                )
                 continue
 
             if response.status_code >= 500:

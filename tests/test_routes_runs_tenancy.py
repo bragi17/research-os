@@ -137,6 +137,47 @@ def test_get_run_passes_workspace_id_and_returns_404_when_missing(
     assert calls == [(run_id, WORKSPACE_A)]
 
 
+def test_get_run_children_requires_parent_workspace_and_filters_children(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.database as database
+
+    parent_id = uuid4()
+    visible_child_id = uuid4()
+    hidden_child_id = uuid4()
+    calls: list[tuple[str, Any]] = []
+
+    async def fake_get_run(run_id_arg: UUID, *, workspace_id: UUID) -> dict[str, Any]:
+        calls.append(("get_run", run_id_arg, workspace_id))
+        return _run(parent_id, WORKSPACE_A, "Parent run", status="completed")
+
+    async def fake_list_child_runs(
+        parent_run_id: UUID,
+        mode: str | None = None,
+    ) -> list[dict[str, Any]]:
+        calls.append(("list_child_runs", parent_run_id, mode))
+        visible = _run(visible_child_id, WORKSPACE_A, "Visible child", status="queued")
+        hidden = _run(hidden_child_id, WORKSPACE_B, "Hidden child", status="queued")
+        visible["parent_run_id"] = parent_run_id
+        hidden["parent_run_id"] = parent_run_id
+        visible["mode"] = mode
+        hidden["mode"] = mode
+        return [visible, hidden]
+
+    monkeypatch.setattr(database, "get_run", fake_get_run)
+    monkeypatch.setattr(database, "list_child_runs", fake_list_child_runs)
+
+    response = client.get(f"/api/v1/runs/{parent_id}/children?mode=divergent")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == [str(visible_child_id)]
+    assert calls == [
+        ("get_run", parent_id, WORKSPACE_A),
+        ("list_child_runs", parent_id, "divergent"),
+    ]
+
+
 def test_patch_run_scopes_get_before_update(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -285,7 +326,7 @@ def test_delete_run_scopes_get_before_child_and_run_deletes(
 @pytest.mark.parametrize(
     ("path_suffix", "method_body", "existing_status", "expected_status"),
     [
-        ("start", None, "queued", "started"),
+        ("start", None, "queued", "queued"),
         ("pause", {"mode": "soft"}, "running", "paused"),
         ("resume", {}, "paused", "resumed"),
         ("cancel", None, "running", "cancelled"),
@@ -351,7 +392,7 @@ def test_run_actions_scope_get_before_update(
     assert calls == ["get", "update"]
 
 
-def test_start_run_uses_timezone_aware_utc_timestamps(
+def test_start_run_keeps_run_queued_with_timezone_aware_update(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -395,7 +436,9 @@ def test_start_run_uses_timezone_aware_utc_timestamps(
 
     assert response.status_code == 200
     assert len(update_calls) == 1
-    assert update_calls[0]["started_at"].tzinfo is timezone.utc
+    assert update_calls[0]["status"] == "queued"
+    assert "started_at" not in update_calls[0]
+    assert "current_step" not in update_calls[0]
     assert update_calls[0]["updated_at"].tzinfo is timezone.utc
 
 

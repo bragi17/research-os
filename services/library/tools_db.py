@@ -9,6 +9,7 @@ All functions follow the same pattern as apps/api/database.py:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from uuid import UUID
 
@@ -33,8 +34,87 @@ _PAPER_UPDATABLE_COLUMNS = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# INSERT
+# LOOKUP / INSERT
 # ---------------------------------------------------------------------------
+
+
+def _normalize_library_arxiv_id(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text.startswith("arxiv:"):
+        text = text.removeprefix("arxiv:").strip()
+    text = re.sub(r"^https?://arxiv\.org/(?:abs|pdf)/", "", text)
+    text = text.removesuffix(".pdf")
+    text = re.sub(r"v\d+\Z", "", text)
+    return text or None
+
+
+def _normalize_library_doi(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    text = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", text)
+    text = text.removeprefix("doi:").strip()
+    return text or None
+
+
+def _normalize_library_title(value: Any) -> str | None:
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return text or None
+
+
+async def find_existing_library_paper(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Find a likely existing library paper by arXiv ID, DOI, or exact title."""
+    arxiv_id = _normalize_library_arxiv_id(data.get("arxiv_id"))
+    doi = _normalize_library_doi(data.get("doi"))
+    title = _normalize_library_title(data.get("title"))
+    if not arxiv_id and not doi and not title:
+        return None
+
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT *
+        FROM library_paper
+        WHERE
+            (
+                $1::text IS NOT NULL
+                AND arxiv_id IS NOT NULL
+                AND regexp_replace(
+                    regexp_replace(lower(arxiv_id), '^arxiv:', ''),
+                    'v[0-9]+$',
+                    ''
+                ) = $1
+            )
+            OR (
+                $2::text IS NOT NULL
+                AND doi IS NOT NULL
+                AND regexp_replace(
+                    regexp_replace(lower(doi), '^https?://(dx\\.)?doi\\.org/', ''),
+                    '^doi:',
+                    ''
+                ) = $2
+            )
+            OR (
+                $3::text IS NOT NULL
+                AND regexp_replace(lower(title), '\\s+', ' ', 'g') = $3
+            )
+        ORDER BY
+            CASE
+                WHEN $1::text IS NOT NULL AND arxiv_id IS NOT NULL THEN 0
+                WHEN $2::text IS NOT NULL AND doi IS NOT NULL THEN 1
+                ELSE 2
+            END,
+            created_at ASC,
+            id ASC
+        LIMIT 1
+        """,
+        arxiv_id,
+        doi,
+        title,
+    )
+    return _record_to_dict(row) if row is not None else None
 
 
 async def insert_library_paper(data: dict[str, Any]) -> dict[str, Any]:

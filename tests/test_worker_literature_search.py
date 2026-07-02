@@ -141,7 +141,13 @@ async def test_search_academic_sources_default_return_uses_legacy_ids(monkeypatc
                 doi="https://doi.org/10.1234/example",
             ),
             LiteratureCandidate(
-                candidate_id="LOCAL:unresolvable",
+                candidate_id="LOCAL:arxiv-paper",
+                title="Local arXiv Paper",
+                source=LiteratureSource.LOCAL_LIBRARY,
+                arxiv_id="2505.24431",
+            ),
+            LiteratureCandidate(
+                candidate_id="",
                 title="Local Paper Without External ID",
                 source=LiteratureSource.LOCAL_LIBRARY,
             ),
@@ -162,11 +168,19 @@ async def test_search_academic_sources_default_return_uses_legacy_ids(monkeypatc
         queries=[{"query": "query text"}],
     )
 
-    assert new_candidates == ["s2-paper-id", "OA:W123", "10.1234/example"]
+    assert new_candidates == [
+        "s2-paper-id",
+        "OA:W123",
+        "10.1234/example",
+        "arxiv:2505.24431",
+        "title:local paper without external id",
+    ]
     assert title_map == {
         "s2-paper-id": "S2 Paper",
         "OA:W123": "OpenAlex Paper",
         "10.1234/example": "DOI Paper",
+        "arxiv:2505.24431": "Local arXiv Paper",
+        "title:local paper without external id": "Local Paper Without External ID",
     }
     assert coordinator.closed is True
 
@@ -222,6 +236,101 @@ async def test_search_academic_sources_report_return_uses_verifiable_ids(monkeyp
     }
     assert report is not None
     assert coordinator.closed is True
+
+
+@pytest.mark.asyncio
+async def test_search_academic_sources_report_return_keeps_title_only_candidates(monkeypatch):
+    coordinator = FakeCoordinator(
+        candidates=[
+            LiteratureCandidate(
+                candidate_id="",
+                title="Title Only Local Paper",
+                source=LiteratureSource.LOCAL_LIBRARY,
+            ),
+        ]
+    )
+
+    async def fake_build_literature_search_coordinator():
+        return coordinator
+
+    monkeypatch.setattr(
+        base,
+        "_build_literature_search_coordinator",
+        fake_build_literature_search_coordinator,
+    )
+
+    new_candidates, _executed, _errors, title_map, report = await base.search_academic_sources(
+        topic="topic",
+        queries=[{"query": "query text"}],
+        return_report=True,
+    )
+
+    assert new_candidates == ["title:title only local paper"]
+    assert title_map == {"title:title only local paper": "Title Only Local Paper"}
+    assert report is not None
+    assert coordinator.closed is True
+
+
+@pytest.mark.asyncio
+async def test_tool_resolve_metadata_handles_arxiv_and_title_ids(monkeypatch):
+    calls: list[dict[str, str]] = []
+
+    class FakeFusion:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def resolve_paper(self, **kwargs):
+            calls.append(kwargs)
+            return object()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(base, "ScholarFusionService", FakeFusion)
+
+    await base.tool_resolve_metadata("arxiv:2505.24431")
+    await base.tool_resolve_metadata("title:structured light paper")
+
+    assert calls == [
+        {"s2_id": "ARXIV:2505.24431"},
+        {"title": "structured light paper"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tool_resolve_metadata_falls_back_to_arxiv_parser(monkeypatch):
+    class FakeFusion:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def resolve_paper(self, **_kwargs):
+            return None
+
+        async def close(self):
+            pass
+
+    class FakeParsedPaper:
+        title = "Parsed arXiv Paper"
+        abstract = "Parsed abstract"
+        parse_quality = "medium"
+        sections = []
+
+    async def fake_parse_paper(identifier: str):
+        assert identifier == "2505.24431"
+        return FakeParsedPaper()
+
+    monkeypatch.setattr(base, "ScholarFusionService", FakeFusion)
+    monkeypatch.setattr(base, "parse_paper", fake_parse_paper)
+
+    fused, errors = await base.tool_resolve_metadata("arxiv:2505.24431")
+
+    assert errors == []
+    assert fused is not None
+    assert fused.canonical_title == "Parsed arXiv Paper"
+    assert fused.normalized_title == "parsed arxiv paper"
+    assert fused.abstract == "Parsed abstract"
+    assert fused.arxiv_id == "2505.24431"
+    assert fused.sources == ["arxiv"]
 
 
 @pytest.mark.asyncio

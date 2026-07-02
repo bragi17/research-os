@@ -86,8 +86,9 @@ function NewResearchContent() {
 
   const [mode, setMode] = useState<RunMode>(initialMode);
   const [topic, setTopic] = useState("");
+  const [topicError, setTopicError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [draftRunId] = useState(createDraftRunId);
+  const [draftRunId, setDraftRunId] = useState("");
   const [experimentRoot, setExperimentRoot] = useState(DEFAULT_EXPERIMENT_ROOT);
   const [experimentWorkspace, setExperimentWorkspace] = useState("");
   const [workspaceEdited, setWorkspaceEdited] = useState(false);
@@ -125,6 +126,10 @@ function NewResearchContent() {
   }, [topic]);
 
   useEffect(() => {
+    setDraftRunId(createDraftRunId());
+  }, []);
+
+  useEffect(() => {
     listLibraryPools()
       .then((result) => setLibraryPools(result.items))
       .catch(() => setLibraryPools([]));
@@ -148,7 +153,7 @@ function NewResearchContent() {
   const defaultExperimentWorkspace = useMemo(
     () => joinWorkspacePath(
       experimentRoot,
-      `${slugifyRunTitle(runTitle)}-${draftRunId}`,
+      `${slugifyRunTitle(runTitle)}-${draftRunId || "draft"}`,
     ),
     [draftRunId, experimentRoot, runTitle],
   );
@@ -212,7 +217,13 @@ function NewResearchContent() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!topic.trim() || topic.trim().length < 10) return;
+    const currentTopic = (textareaRef.current?.value ?? topic).trim();
+    if (currentTopic.length < 10) {
+      setTopicError("Enter at least 10 characters to start research.");
+      textareaRef.current?.focus();
+      return;
+    }
+    setTopicError(null);
     setLoading(true);
     try {
       const manualSeeds = seedPapers.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -221,10 +232,11 @@ function NewResearchContent() {
         .filter(Boolean);
       const seeds = [...librarySeeds, ...manualSeeds];
       const kws = keywords.length > 0 ? keywords : keywordInput.split(",").map((k) => k.trim()).filter(Boolean);
+      const runId = draftRunId || createDraftRunId();
       const payload: Record<string, unknown> = {
-        run_id: draftRunId,
-        title: topic.trim().slice(0, 60),
-        topic: topic.trim(),
+        run_id: runId,
+        title: currentTopic.slice(0, 60),
+        topic: currentTopic,
         mode,
         keywords: kws,
         seed_papers: seeds,
@@ -298,13 +310,19 @@ function NewResearchContent() {
               <textarea
                 ref={textareaRef}
                 value={topic}
-                onChange={(e) => setTopic(e.target.value)}
+                onChange={(e) => {
+                  setTopic(e.target.value);
+                  if (topicError) setTopicError(null);
+                }}
                 placeholder={PLACEHOLDERS[mode]}
                 required
                 minLength={10}
                 rows={3}
                 className="input-field resize-none text-[15px] leading-relaxed"
               />
+              {topicError && (
+                <p className="mt-1.5 text-[12px] text-[var(--accent-red)]">{topicError}</p>
+              )}
             </div>
 
             {/* Knowledge pools */}
@@ -571,7 +589,7 @@ function NewResearchContent() {
             {/* Submit */}
             <button
               type="submit"
-              disabled={loading || topic.trim().length < 10}
+              disabled={loading}
               className="btn-primary w-full py-3 text-sm"
             >
               {loading ? (

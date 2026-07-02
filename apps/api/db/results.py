@@ -238,6 +238,17 @@ async def count_papers_by_run(run_id: UUID) -> int:
     pool = await db_pool.get_pool()
     row = await pool.fetchrow(
         """
+        SELECT COUNT(*) AS cnt
+        FROM paper
+        WHERE metadata_json->>'source_run_id' = $1
+        """,
+        str(run_id),
+    )
+    if row["cnt"] > 0:
+        return row["cnt"]
+
+    row = await pool.fetchrow(
+        """
         SELECT COUNT(DISTINCT p.id) AS cnt
         FROM paper p
         JOIN paper_cluster_membership pcm ON pcm.paper_id = p.id

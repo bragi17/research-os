@@ -24,6 +24,8 @@ class Settings(BaseSettings):
 
     # Academic APIs
     s2_api_key: str = ""
+    openalex_api_key: str = ""
+    openalex_api_keys: str = ""
     openalex_email: str = ""
     crossref_email: str = ""
     unpaywall_email: str = ""

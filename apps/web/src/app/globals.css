@@ -28,6 +28,10 @@
   --accent-red-soft: rgba(192, 80, 80, 0.10);
   --accent-blue: #6B8CAE;
   --accent-blue-soft: rgba(107, 140, 174, 0.10);
+  --accent-cyan: #4B93A6;
+  --accent-cyan-soft: rgba(75, 147, 166, 0.10);
+  --accent-purple: #7C6FA8;
+  --accent-purple-soft: rgba(124, 111, 168, 0.10);
   --font-display: "Newsreader", "Georgia", serif;
   --font-body: "DM Sans", "Helvetica Neue", sans-serif;
   --font-mono: "IBM Plex Mono", "SF Mono", monospace;

@@ -110,10 +110,28 @@ def _adapter_for_source(
             ),
         )
     if source is LiteratureSource.OPENALEX:
+        key_pool = None
+        if credentials:
+            key_pool = SourceKeyPool(
+                [
+                    KeyMaterial(
+                        id=str(credential.id) if credential.id else None,
+                        secret=str(credential.secret),
+                        preview=mask_api_key(str(credential.secret)),
+                    )
+                    for credential in credentials
+                ],
+                requests_per_second=_positive_float(
+                    options.get("requests_per_second"),
+                    2.0,
+                ),
+                burst_capacity=_positive_int(options.get("burst_capacity"), 1),
+            )
         return OpenAlexSource(
             options=options,
             email=options.get("email"),
             api_key=_first_secret(credentials),
+            source_key_pool=key_pool,
         )
     if source is LiteratureSource.DEEPXIV:
         return DeepXivSource(options=options)

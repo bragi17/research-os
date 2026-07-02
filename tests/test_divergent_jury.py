@@ -132,6 +132,31 @@ def test_dedupe_idea_cards_returns_copies_without_mutating_input():
     )
 
 
+def test_fallback_idea_cards_uses_six_input_pain_points_when_available():
+    pain_points = [
+        {"statement": f"Pain point {idx}", "pain_type": "evidence_gap"}
+        for idx in range(6)
+    ]
+    transfers = [
+        {
+            "core_mechanism": f"Transfer mechanism {idx}",
+            "source_domain": "metrology",
+        }
+        for idx in range(6)
+    ]
+
+    cards = divergent._fallback_idea_cards(
+        "structured light telecentric reconstruction",
+        pain_points,
+        transfers,
+    )
+
+    assert len(cards) == 6
+    assert [card["problem_statement"] for card in cards] == [
+        f"Pain point {idx}" for idx in range(6)
+    ]
+
+
 def test_attach_prior_art_details_keeps_only_verified_records():
     cards = [
         {
@@ -1905,8 +1930,8 @@ async def test_normalize_pain_package_derives_signatures_when_model_omits_them(
 
     updates = await divergent.normalize_pain_package(state)
 
-    assert len(updates["pain_points"]) == 3
-    assert len(updates["context_bundle"]["problem_signatures"]) == 3
+    assert len(updates["pain_points"]) == 6
+    assert len(updates["context_bundle"]["problem_signatures"]) == 6
     assert all(
         point["signature"]
         for point in updates["pain_points"]

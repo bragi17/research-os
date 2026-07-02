@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import suppress
 from typing import Any, Awaitable, Callable
 from uuid import UUID
 
@@ -38,6 +37,46 @@ def _normalize_idea_card_payload(idea_card: dict[str, Any]) -> dict[str, Any]:
             payload.get("source_domain")
         )
     return payload
+
+
+def _coerce_text(value: Any, *, max_len: int | None = None) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return text[:max_len] if max_len is not None else text
+
+
+def _extract_arxiv_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    lower = text.lower()
+    for prefix in ("arxiv:", "arxiv/"):
+        if lower.startswith(prefix):
+            return text[len(prefix):].strip() or None
+    if lower.startswith("arxiv.org/abs/"):
+        return text.rsplit("/", 1)[-1].strip() or None
+    if lower.startswith("https://arxiv.org/abs/") or lower.startswith("http://arxiv.org/abs/"):
+        return text.rsplit("/", 1)[-1].strip() or None
+    return text if any(char.isdigit() for char in text) and "." in text else None
+
+
+def _paper_summary_arxiv_id(summary: dict[str, Any]) -> str | None:
+    for key in ("arxiv_id", "paper_id", "candidate_id", "id"):
+        arxiv_id = _extract_arxiv_id(summary.get(key))
+        if arxiv_id:
+            return arxiv_id
+    return None
+
+
+def _paper_summary_doi(summary: dict[str, Any]) -> str | None:
+    for key in ("doi", "canonical_doi"):
+        value = _coerce_text(summary.get(key))
+        if value:
+            return value
+    return None
 
 
 async def persist_results(
@@ -144,29 +183,58 @@ async def _persist_paper_summaries(
             from apps.api.database import get_pool
             pool = await get_pool()
             from uuid import uuid4 as _uuid4
+            persisted_ids: list[str] = []
+            failed = 0
             for ps in paper_summaries:
                 if not isinstance(ps, dict):
                     continue
-                title = ps.get("title", ps.get("paper_title", ""))
+                title = _coerce_text(ps.get("title") or ps.get("paper_title"), max_len=500)
                 if not title:
                     continue
                 paper_id = _uuid4()
-                with suppress(Exception):
-                    await pool.execute("""
-                        INSERT INTO paper (id, canonical_title, normalized_title, abstract,
-                            publication_year, venue, metadata_json)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                arxiv_id = _paper_summary_arxiv_id(ps)
+                doi = _paper_summary_doi(ps)
+                metadata_json = json.loads(
+                    json.dumps({**ps, "source_run_id": str(run_id)}, default=str)
+                )
+                try:
+                    result = await pool.execute("""
+                        INSERT INTO paper (id, canonical_title, normalized_title, doi, arxiv_id,
+                            abstract, publication_year, venue, has_fulltext, fulltext_status,
+                            metadata_json)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, 'analyzed',
+                            $9)
                         ON CONFLICT DO NOTHING
                     """,
                         paper_id,
-                        title[:500],
+                        title,
                         title.lower().strip()[:500],
-                        ps.get("abstract", ps.get("summary", ""))[:2000],
+                        doi,
+                        arxiv_id,
+                        _coerce_text(ps.get("abstract") or ps.get("summary"), max_len=2000),
                         ps.get("year"),
-                        ps.get("venue", ""),
-                        json.dumps({**ps, "source_run_id": str(run_id)}, default=str)[:5000],
+                        _coerce_text(ps.get("venue")),
+                        metadata_json,
                     )
-            log.info("worker.papers_persisted", count=len(paper_summaries))
+                    if result.endswith(" 1"):
+                        persisted_ids.append(str(paper_id))
+                except Exception as exc:
+                    failed += 1
+                    log.warning(
+                        "worker.paper_persist_failed",
+                        title=title[:80],
+                        arxiv_id=arxiv_id,
+                        error=str(exc),
+                    )
+            if persisted_ids:
+                context_bundle = state.context_bundle or {}
+                context_bundle["selected_paper_ids"] = persisted_ids
+                state.context_bundle = context_bundle
+            log.info(
+                "worker.papers_persisted",
+                count=len(persisted_ids),
+                failed=failed,
+            )
         except Exception as exc:
             log.debug("persist_papers_failed", error=str(exc))
 
@@ -212,6 +280,7 @@ async def _persist_context_bundle(
                 "source_run_id": str(run_id),
                 "source_mode": state.mode or "frontier",
                 "summary_text": state.report_markdown[:5000] if state.report_markdown else "",
+                "selected_paper_ids": bundle_data.get("selected_paper_ids", []),
                 "benchmark_data": {
                     "comparison_matrix": state.comparison_matrix or [],
                     "gaps": state.gaps or [],
