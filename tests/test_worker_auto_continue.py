@@ -10,7 +10,53 @@ from apps.worker.modes.base import ModeGraphState
 
 
 @pytest.mark.asyncio
-async def test_completed_frontier_run_auto_spawns_divergent_child(
+async def test_completed_frontier_run_does_not_auto_spawn_divergent_child_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api import database
+    from apps.worker.runner import WorkerRunner
+
+    parent_id = UUID("11111111-1111-1111-1111-111111111111")
+    created_runs: list[dict[str, Any]] = []
+    listed_children: list[tuple[UUID, str | None]] = []
+
+    async def fake_list_child_runs(
+        parent_run_id: UUID,
+        mode: str | None = None,
+    ) -> list[dict[str, Any]]:
+        listed_children.append((parent_run_id, mode))
+        return []
+
+    async def fake_create_run(run_data: dict[str, Any]) -> dict[str, Any]:
+        created_runs.append(run_data)
+        return dict(run_data)
+
+    monkeypatch.setattr(database, "list_child_runs", fake_list_child_runs, raising=False)
+    monkeypatch.setattr(database, "create_run", fake_create_run)
+
+    child = await WorkerRunner()._maybe_spawn_next_mode(
+        parent_run_id=parent_id,
+        parent_run={
+            "id": parent_id,
+            "workspace_id": UUID("22222222-2222-2222-2222-222222222222"),
+            "title": "Frontier Run",
+            "topic": "structured light 3D reconstruction telecentric camera",
+            "goal_type": "survey_plus_innovations",
+            "policy_json": {},
+            "budget_json": {},
+        },
+        mode="frontier",
+        final_status="completed",
+        result_state=ModeGraphState(run_id=parent_id, mode="frontier"),
+    )
+
+    assert child is None
+    assert listed_children == []
+    assert created_runs == []
+
+
+@pytest.mark.asyncio
+async def test_completed_frontier_run_auto_spawns_divergent_child_when_policy_opts_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from apps.api import database
@@ -95,7 +141,11 @@ async def test_completed_frontier_run_auto_spawns_divergent_child(
         "goal_type": "survey_plus_innovations",
         "autonomy_mode": "default_autonomous",
         "budget_json": {"max_fulltext_reads": 5},
-        "policy_json": {"keywords": ["structured light"], "library_pool_ids": []},
+        "policy_json": {
+            "auto_spawn_next": True,
+            "keywords": ["structured light"],
+            "library_pool_ids": [],
+        },
         "context_bundle_id": None,
     }
 
@@ -169,7 +219,7 @@ async def test_completed_frontier_run_does_not_duplicate_existing_divergent_chil
             "title": "Frontier Run",
             "topic": "structured light 3D reconstruction telecentric camera",
             "goal_type": "survey_plus_innovations",
-            "policy_json": {},
+            "policy_json": {"auto_continue": True},
             "budget_json": {},
         },
         mode="frontier",

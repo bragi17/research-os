@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -56,6 +57,49 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _coerce_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _context_bundle_payload_from_record(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a persisted context bundle into the worker state payload shape."""
+    benchmark_data = _coerce_mapping(bundle.get("benchmark_data"))
+    payload: dict[str, Any] = dict(benchmark_data)
+    for field in ("summary_text", "selected_paper_ids", "mindmap_json"):
+        value = bundle.get(field)
+        if value not in (None, "", [], {}):
+            payload.setdefault(field, value)
+    for field in ("source_run_id", "source_mode"):
+        value = bundle.get(field)
+        if value is not None:
+            payload.setdefault(field, value)
+    return _json_safe(payload)
+
+
 # ---------------------------------------------------------------------------
 # Request / Response Models
 # ---------------------------------------------------------------------------
@@ -94,6 +138,7 @@ VALID_ACTIONS = frozenset({
     "request_more_figures",
     "send_to_mode_c",
     "recheck_prior_art",
+    "start_divergent",
 })
 
 
@@ -187,6 +232,152 @@ async def _require_context_bundle_access(
     bundle = await _get_visible_context_bundle(bundle_id, ctx)
     if bundle is None:
         raise HTTPException(status_code=404, detail="Context bundle not found")
+
+
+async def _start_divergent_same_run(
+    run_id: UUID,
+    run: dict[str, Any],
+    ctx: WorkspaceContext,
+    *,
+    now: datetime,
+    action_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Queue Divergent as the next phase of the same research run."""
+    if run.get("mode") != "frontier":
+        raise HTTPException(
+            status_code=409,
+            detail="Divergent can only be started from a Frontier run",
+        )
+    if run.get("status") != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="Divergent can only be started after Frontier completes",
+        )
+    current_stage = str(run.get("current_stage") or "")
+    if current_stage.startswith("divergent"):
+        raise HTTPException(
+            status_code=409,
+            detail="Divergent has already been started for this run",
+        )
+
+    bundle_id = run.get("output_bundle_id") or run.get("context_bundle_id")
+    if bundle_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Frontier results are not available for Divergent",
+        )
+
+    context_bundle: dict[str, Any]
+    context_bundle_id: UUID | None = None
+    try:
+        context_bundle_id = UUID(str(bundle_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Run has an invalid context bundle reference",
+        ) from exc
+    bundle = await _get_visible_context_bundle(context_bundle_id, ctx)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Context bundle not found")
+    context_bundle = _context_bundle_payload_from_record(bundle)
+
+    policy = _coerce_mapping(run.get("policy_json"))
+    budget = _coerce_mapping(run.get("budget_json"))
+    queue_payload = {
+        "project_id": str(run["project_id"]) if run.get("project_id") else None,
+        "topic": run.get("topic", ""),
+        "goal_type": run.get("goal_type", "survey_plus_innovations"),
+        "mode": "divergent",
+        "keywords": policy.get("keywords", []),
+        "seed_paper_ids": policy.get("seed_papers", []),
+        "library_pool_ids": policy.get("library_pool_ids", []),
+        "budget": budget,
+        "context_bundle": context_bundle,
+        "same_run_phase": True,
+        "triggered_by_action": "start_divergent",
+    }
+
+    update_payload: dict[str, Any] = {
+        "status": "queued",
+        "current_stage": "divergent_init",
+        "current_step": None,
+        "progress_pct": 0,
+        "started_at": None,
+        "completed_at": None,
+        "updated_at": now,
+        "context_bundle_id": context_bundle_id,
+    }
+
+    try:
+        await create_event(
+            run_id=run_id,
+            event_type="user.action.start_divergent",
+            severity="info",
+            payload=action_payload,
+        )
+    except Exception as exc:
+        logger.error("create_action_event_failed", run_id=str(run_id), error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to record action") from exc
+
+    await _publish_event(run_id, {
+        "event_type": "user.action.start_divergent",
+        "payload": action_payload,
+        "timestamp": now.isoformat(),
+    })
+
+    rollback_payload = {
+        "status": run.get("status"),
+        "current_stage": run.get("current_stage"),
+        "current_step": run.get("current_step"),
+        "progress_pct": run.get("progress_pct"),
+        "started_at": run.get("started_at"),
+        "completed_at": run.get("completed_at"),
+        "context_bundle_id": run.get("context_bundle_id"),
+        "updated_at": now,
+    }
+
+    try:
+        await db_update_run(run_id, update_payload)
+    except Exception as exc:
+        logger.error("start_divergent_update_failed", run_id=str(run_id), error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to queue divergent phase") from exc
+
+    try:
+        from apps.worker.task_queue import enqueue_run
+        await enqueue_run(run_id, queue_payload)
+    except Exception as exc:
+        logger.error("start_divergent_enqueue_failed", run_id=str(run_id), error=str(exc))
+        try:
+            await db_update_run(run_id, rollback_payload)
+        except Exception as rollback_exc:
+            logger.error(
+                "start_divergent_rollback_failed",
+                run_id=str(run_id),
+                error=str(rollback_exc),
+            )
+        raise HTTPException(status_code=500, detail="Failed to enqueue divergent phase") from exc
+
+    try:
+        await create_event(
+            run_id=run_id,
+            event_type="run.divergent_enqueued",
+            severity="info",
+            payload={"same_run_phase": True},
+        )
+    except Exception as exc:
+        logger.warning("start_divergent_event_failed", run_id=str(run_id), error=str(exc))
+
+    await _publish_event(run_id, {
+        "event_type": "run.divergent_enqueued",
+        "payload": {"same_run_phase": True},
+        "timestamp": now.isoformat(),
+    })
+
+    return {
+        "run_id": str(run_id),
+        "action": "start_divergent",
+        "status": "enqueued",
+    }
 
 
 def _same_id(left: Any, right: Any) -> bool:
@@ -480,12 +671,17 @@ async def get_run_reading_path(
 @router.get("/runs/{run_id}/context-bundle")
 async def get_run_context_bundle(
     run_id: UUID,
+    prefer_context: bool = Query(False),
     user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Get the output context bundle for a run."""
     ctx = WorkspaceContext.from_user(user)
     run = await _require_run(run_id, ctx)
-    bundle_id = run.get("output_bundle_id") or run.get("context_bundle_id")
+    bundle_id = (
+        (run.get("context_bundle_id") or run.get("output_bundle_id"))
+        if prefer_context
+        else (run.get("output_bundle_id") or run.get("context_bundle_id"))
+    )
     if bundle_id is None:
         return {"run_id": str(run_id), "context_bundle": None}
     bundle = await _get_visible_context_bundle(UUID(str(bundle_id)), ctx)
@@ -599,7 +795,8 @@ async def perform_action(
     and publishes it to Redis so the worker can pick it up on its next iteration.
 
     Valid actions: pin_paper, exclude_paper, tighten_scope, expand_scope,
-    switch_mode, request_more_figures, send_to_mode_c, recheck_prior_art.
+    switch_mode, request_more_figures, send_to_mode_c, recheck_prior_art,
+    start_divergent.
     """
     if action not in VALID_ACTIONS:
         raise HTTPException(
@@ -608,10 +805,20 @@ async def perform_action(
         )
 
     ctx = WorkspaceContext.from_user(user)
-    await _require_run(run_id, ctx)
+    run = await _require_run(run_id, ctx)
+
+    now = _utcnow()
+
+    if action == "start_divergent":
+        return await _start_divergent_same_run(
+            run_id,
+            run,
+            ctx,
+            now=now,
+            action_payload=request.payload,
+        )
 
     event_type = f"user.action.{action}"
-    now = _utcnow()
 
     try:
         await create_event(

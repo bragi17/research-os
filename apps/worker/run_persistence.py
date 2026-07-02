@@ -276,19 +276,34 @@ async def _persist_context_bundle(
     bundle_data = state.context_bundle or {}
     if bundle_data:
         try:
+            report_text = state.report_markdown[:5000] if state.report_markdown else ""
+            summary_text = bundle_data.get("summary_text") or report_text
+            benchmark_data = {
+                "comparison_matrix": state.comparison_matrix or [],
+                "gaps": state.gaps or [],
+                "pain_points_count": len(state.pain_points or []),
+                "papers_read": state.papers_read,
+                "papers_discovered": state.papers_discovered,
+            }
+            for field in (
+                "summary_text",
+                "key_findings",
+                "method_landscape",
+                "benchmark_status",
+                "entry_points",
+                "mode_c_suggestions",
+                "future_work",
+                "pain_point_package",
+                "paper_summaries",
+            ):
+                if field in bundle_data:
+                    benchmark_data[field] = bundle_data[field]
             bundle = await create_context_bundle({
                 "source_run_id": str(run_id),
                 "source_mode": state.mode or "frontier",
-                "summary_text": state.report_markdown[:5000] if state.report_markdown else "",
+                "summary_text": summary_text,
                 "selected_paper_ids": bundle_data.get("selected_paper_ids", []),
-                "benchmark_data": {
-                    "comparison_matrix": state.comparison_matrix or [],
-                    "gaps": state.gaps or [],
-                    "pain_points_count": len(state.pain_points or []),
-                    "papers_read": state.papers_read,
-                    "papers_discovered": state.papers_discovered,
-                    "paper_summaries": (state.context_bundle or {}).get("paper_summaries", []),
-                },
+                "benchmark_data": benchmark_data,
                 "mindmap_json": bundle_data.get("mindmap_json", {}),
             })
             from apps.api.database import update_run

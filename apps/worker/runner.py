@@ -92,9 +92,10 @@ def _should_auto_spawn_next_mode(
     if mode != "frontier" or final_status != "completed":
         return False
     policy = _coerce_mapping(run.get("policy_json"))
-    if policy.get("auto_continue") is False:
-        return False
-    if policy.get("auto_spawn_next") is False:
+    if not (
+        policy.get("auto_spawn_next") is True
+        or policy.get("auto_continue") is True
+    ):
         return False
     goal_type = run.get("goal_type") or "survey_plus_innovations"
     return goal_type == "survey_plus_innovations"

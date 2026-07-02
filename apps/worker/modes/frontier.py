@@ -1098,16 +1098,7 @@ def create_frontier_graph() -> StateGraph:
 
     workflow.add_edge("scope_pruning", "deep_reading")
 
-    # Check after deep reading
-    workflow.add_conditional_edges(
-        "deep_reading",
-        check_should_continue,
-        {
-            "continue": "comparison_build",
-            "pause": END,
-            "stop": "frontier_summary",
-        },
-    )
+    workflow.add_edge("deep_reading", "comparison_build")
 
     workflow.add_edge("comparison_build", "pain_mining")
 

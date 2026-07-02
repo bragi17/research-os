@@ -1,11 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef, type ReactNode } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
   getRun,
-  getRunChildren,
   getRunEvents,
   getRunPapers,
   pauseRun,
@@ -54,9 +53,6 @@ export default function RunConsole() {
   const [run, setRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [papers, setPapers] = useState<Paper[]>([]);
-  const [divergentRun, setDivergentRun] = useState<Run | null>(null);
-  const [divergentEvents, setDivergentEvents] = useState<RunEvent[]>([]);
-  const [divergentPapers, setDivergentPapers] = useState<Paper[]>([]);
   const [showResultPapers, setShowResultPapers] = useState(false);
   const [loading, setLoading] = useState(true);
   const [elapsed, setElapsed] = useState("0:00");
@@ -81,34 +77,6 @@ export default function RunConsole() {
         return;
       setRun(runData);
       setEvents(eventsData.events || []);
-      let nextDivergentRun: Run | null = null;
-      let nextDivergentEvents: RunEvent[] = [];
-      let nextDivergentPapers: Paper[] = [];
-      if (runData.mode === "frontier" && !runData.parent_run_id) {
-        try {
-          const children = await getRunChildren(requestedRunId, "divergent");
-          nextDivergentRun = children[0] || null;
-          if (nextDivergentRun) {
-            const [childEventsData, childPaperData] = await Promise.all([
-              getRunEvents(nextDivergentRun.id),
-              getRunPapers(nextDivergentRun.id).catch(() => [] as Paper[]),
-            ]);
-            nextDivergentEvents = childEventsData.events || [];
-            nextDivergentPapers = childPaperData || [];
-          }
-        } catch {
-          nextDivergentRun = null;
-        }
-      }
-      if (
-        !mountedRef.current ||
-        activeRunRef.current !== requestedRunId ||
-        fetchId !== fetchSeqRef.current
-      )
-        return;
-      setDivergentRun(nextDivergentRun);
-      setDivergentEvents(nextDivergentEvents);
-      setDivergentPapers(nextDivergentPapers);
       if (runData.status === "running" || runData.status === "completed") {
         try {
           const paperData = (await getRunPapers(requestedRunId)) ?? [];
@@ -209,24 +177,13 @@ export default function RunConsole() {
   const progressPct = parseFloat(String(run.progress_pct)) || 0;
   const isTerminal = ["completed", "failed", "cancelled"].includes(run.status);
   const modeLink = run.mode ? `/runs/${runId}/${run.mode}` : null;
-  const shouldShowDivergentStep = run.mode === "frontier" && !run.parent_run_id;
-  const divergentProgressPct = divergentRun ? parseFloat(String(divergentRun.progress_pct)) || 0 : 0;
-  const divergentLink = divergentRun ? `/runs/${divergentRun.id}/divergent` : null;
-  const shouldShowModeLink = Boolean(
-    modeLink && !(run.mode === "frontier" && divergentRun),
+  const shouldShowModeLink = Boolean(modeLink);
+  const hasDivergentPhase = events.some((event) =>
+    event.event_type === "run.divergent_enqueued" ||
+    event.event_type === "user.action.start_divergent" ||
+    event.payload?.mode === "divergent",
   );
-  const divergentContinuation = shouldShowDivergentStep
-    ? {
-        title: "Explore innovations for these gaps",
-        runStatus: divergentRun?.status ?? "waiting",
-        currentStep: divergentRun?.current_step ?? null,
-        progressPct: divergentProgressPct,
-        events: divergentEvents,
-        pendingMessage: isTerminal
-          ? "Preparing innovation exploration from the mined gaps."
-          : "Explore innovations will start after gap mining completes.",
-      }
-    : undefined;
+  const shouldShowDivergentLink = run.mode === "frontier" && hasDivergentPhase;
 
   return (
     <div className="max-w-[1060px] mx-auto px-8 py-8">
@@ -257,7 +214,7 @@ export default function RunConsole() {
           mode={run.mode ?? "review"}
           topic={run.topic}
           isExecuting={run.status === "running"}
-          extraSteps={shouldShowDivergentStep ? ["Explore innovations for these gaps"] : []}
+          extraSteps={shouldShowDivergentLink ? ["Explore innovations for these gaps"] : []}
         />
       </div>
 
@@ -269,7 +226,6 @@ export default function RunConsole() {
           currentStep={run.current_step}
           progressPct={progressPct}
           mode={run.mode ?? undefined}
-          continuation={divergentContinuation}
         />
       </div>
 
@@ -278,7 +234,7 @@ export default function RunConsole() {
       </div>
 
       {/* Results */}
-      {(papers.length > 0 || divergentRun || isTerminal || shouldShowModeLink) && (
+      {(papers.length > 0 || isTerminal || shouldShowModeLink) && (
         <div className="card-static p-5 mb-5 animate-fade-up delay-300">
           <h3 className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">
             Results
@@ -351,61 +307,18 @@ export default function RunConsole() {
             </div>
           )}
           {shouldShowModeLink && modeLink && (
-            <Link
-              href={modeLink}
-              className="flex items-center justify-between p-3 rounded-lg border border-[var(--border-subtle)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] transition-all group"
-            >
-              <span className="text-[13px] font-medium text-[var(--text-primary)]">
-                View full {MODE_LABELS[run.mode ?? ""] ?? "mode"} results
-              </span>
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 14 14"
-                fill="none"
-                className="text-[var(--text-muted)] group-hover:text-[var(--accent)] transition-colors"
-              >
-                <path
-                  d="M5 3L9 7L5 11"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </Link>
-          )}
-          {divergentLink && (
-            <Link
-              href={divergentLink}
-              className="mt-3 flex items-center justify-between p-3 rounded-lg border border-[var(--border-subtle)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] transition-all group"
-            >
-              <span className="min-w-0">
-                <span className="block text-[13px] font-medium text-[var(--text-primary)]">
+            <div className="space-y-2">
+              <ResultLink href={modeLink}>
+                {run.mode === "frontier"
+                  ? "View full Frontier results"
+                  : <>View full {MODE_LABELS[run.mode ?? ""] ?? "mode"} results</>}
+              </ResultLink>
+              {shouldShowDivergentLink && (
+                <ResultLink href={`/runs/${runId}/divergent`}>
                   View full Divergent results
-                </span>
-                <span className="block text-[11px] text-[var(--text-muted)] mt-0.5">
-                  {divergentPapers.length > 0
-                    ? `${divergentPapers.length} paper${divergentPapers.length !== 1 ? "s" : ""} and innovation cards`
-                    : "Papers and innovation cards"}
-                </span>
-              </span>
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 14 14"
-                fill="none"
-                className="text-[var(--text-muted)] group-hover:text-[var(--accent)] transition-colors shrink-0"
-              >
-                <path
-                  d="M5 3L9 7L5 11"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </Link>
+                </ResultLink>
+              )}
+            </div>
           )}
           {papers.length === 0 && !isTerminal && (
             <p className="text-[12px] text-[var(--text-muted)] text-center py-4">
@@ -451,5 +364,39 @@ export default function RunConsole() {
         )}
       </div>
     </div>
+  );
+}
+
+function ResultLink({
+  href,
+  children,
+}: {
+  href: string;
+  children: ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      className="flex items-center justify-between p-3 rounded-lg border border-[var(--border-subtle)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] transition-all group"
+    >
+      <span className="text-[13px] font-medium text-[var(--text-primary)]">
+        {children}
+      </span>
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 14 14"
+        fill="none"
+        className="text-[var(--text-muted)] group-hover:text-[var(--accent)] transition-colors"
+      >
+        <path
+          d="M5 3L9 7L5 11"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </Link>
   );
 }

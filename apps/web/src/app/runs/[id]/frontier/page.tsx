@@ -1,25 +1,31 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
-  getRun, getPainPoints, getComparison, getRunPapers, spawnRun, addToLibrary,
-  type Run, type PainPoint, type Paper,
+  addToLibrary,
+  getRun,
+  getRunContextBundle,
+  getRunPapers,
+  runAction,
+  type ContextBundle,
+  type Paper,
+  type Run,
 } from "@/lib/api";
 
 interface GapItem {
-  gap_type: string;
-  description: string;
-  significance: string;
-  potential_impact: string;
-  supporting_evidence: string[];
+  gap_type?: string;
+  description?: string;
+  significance?: string;
+  potential_impact?: string;
+  supporting_evidence?: unknown[];
 }
 
 interface BenchmarkEntry {
-  method: string;
-  dataset: string;
-  score: string;
+  method?: string;
+  dataset?: string;
+  score?: string;
 }
 
 interface PaperSummary {
@@ -33,18 +39,68 @@ interface PaperSummary {
   venue?: string;
   abstract?: string;
   summary?: string;
-  key_contributions?: string[];
-  limitations?: string[];
-  paper_tags?: Record<string, unknown>;
+  problem?: unknown;
+  method?: unknown;
+  experimental_setup?: unknown;
+  datasets?: unknown;
+  limitations?: unknown;
+  main_results?: unknown;
+  reusable_components?: unknown;
+  paper_tags?: unknown;
+  innovation_points?: unknown;
+  key_contributions?: unknown;
 }
 
-interface ComparisonData {
-  gaps: GapItem[];
-  comparison_matrix: { methods: unknown[]; benchmark_panel: BenchmarkEntry[] }[];
-  papers_read: number;
-  papers_discovered: number;
-  pain_points_count: number;
+interface BenchmarkData {
+  key_findings?: unknown;
+  method_landscape?: unknown;
+  benchmark_status?: unknown;
+  entry_points?: unknown;
   paper_summaries?: PaperSummary[];
+  papers_read?: number;
+  papers_discovered?: number;
+  pain_points_count?: number;
+  gaps?: GapItem[];
+  comparison_matrix?: { benchmark_panel?: BenchmarkEntry[] }[];
+}
+
+interface DiscoveredPaper {
+  id: string;
+  title: string;
+  year?: number;
+  venue?: string;
+  arxiv_id?: string;
+  doi?: string;
+  authors: string[];
+}
+
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "";
+  if (Array.isArray(value)) return value.map(formatValue).filter(Boolean).join(", ");
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => {
+        const text = formatValue(item);
+        return text ? `${key}: ${text}` : "";
+      })
+      .filter(Boolean)
+      .join("; ");
+  }
+  return String(value);
+}
+
+function asList(value: unknown): string[] {
+  if (value === null || value === undefined || value === "") return [];
+  if (Array.isArray(value)) return value.map(formatValue).filter(Boolean);
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => {
+        const text = formatValue(item);
+        return text ? `${key}: ${text}` : "";
+      })
+      .filter(Boolean);
+  }
+  return [String(value)];
 }
 
 function arxivIdFromSummary(summary: PaperSummary): string | undefined {
@@ -57,44 +113,34 @@ function arxivIdFromSummary(summary: PaperSummary): string | undefined {
   return text.includes(".") ? text : undefined;
 }
 
+function benchmarkDataFrom(bundle: ContextBundle | null): BenchmarkData {
+  return (bundle?.benchmark_data ?? {}) as BenchmarkData;
+}
+
 export default function FrontierPage() {
   const params = useParams();
-  const router = useRouter();
   const runId = params.id as string;
 
   const [run, setRun] = useState<Run | null>(null);
-  const [painPoints, setPainPoints] = useState<PainPoint[]>([]);
-  const [compData, setCompData] = useState<ComparisonData | null>(null);
+  const [contextBundle, setContextBundle] = useState<ContextBundle | null>(null);
   const [papers, setPapers] = useState<Paper[]>([]);
   const [loading, setLoading] = useState(true);
-  const [spawning, setSpawning] = useState(false);
+  const [startingDivergent, setStartingDivergent] = useState(false);
   const [showPapers, setShowPapers] = useState(false);
   const [addingToLibrary, setAddingToLibrary] = useState<string | null>(null);
-  const [addedToLibrary, setAddedToLibrary] = useState<Set<string>>(new Set());
+  const [libraryIds, setLibraryIds] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const runData = await getRun(runId);
-        setRun(runData);
-
-        const results = await Promise.allSettled([
-          getPainPoints(runId),
-          getComparison(runId),
-          getRunPapers(runId),
+        const [runData, bundleData, paperData] = await Promise.all([
+          getRun(runId),
+          getRunContextBundle(runId, { preferContext: true }),
+          getRunPapers(runId).catch(() => [] as Paper[]),
         ]);
-
-        if (results[0].status === "fulfilled") setPainPoints(results[0].value.items ?? []);
-        if (results[1].status === "fulfilled") {
-          const raw = results[1].value.comparison;
-          if (raw && typeof raw === "object" && Object.keys(raw).length > 0) {
-            setCompData(raw as unknown as ComparisonData);
-          }
-        }
-        if (results[2].status === "fulfilled") {
-          const pd = results[2].value;
-          setPapers(Array.isArray(pd) ? pd : []);
-        }
+        setRun(runData);
+        setContextBundle(bundleData.context_bundle);
+        setPapers(Array.isArray(paperData) ? paperData : []);
       } catch (e) {
         console.error("Failed to fetch frontier data", e);
       } finally {
@@ -104,17 +150,20 @@ export default function FrontierPage() {
     fetchData();
   }, [runId]);
 
-  const handleSpawnDivergent = async () => {
-    if (!run) return;
-    setSpawning(true);
+  const handleStartDivergent = async () => {
+    setStartingDivergent(true);
     try {
-      const newRun = (await spawnRun(runId, {
-        target_mode: "divergent",
-        selection: { intent: "explore innovations" },
-      })) as { id: string };
-      router.push(`/runs/${newRun.id}`);
-    } catch (e) { console.error(e); }
-    finally { setSpawning(false); }
+      await runAction(runId, "start_divergent", { intent: "explore innovations" });
+      setRun((current) =>
+        current
+          ? { ...current, status: "queued", current_step: "Starting Divergent exploration" }
+          : current,
+      );
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setStartingDivergent(false);
+    }
   };
 
   if (loading) {
@@ -132,43 +181,49 @@ export default function FrontierPage() {
     );
   }
 
-  const gaps = compData?.gaps ?? [];
-  const rawBenchmarks = compData?.comparison_matrix?.[0]?.benchmark_panel;
+  const benchmarkData = benchmarkDataFrom(contextBundle);
+  const paperSummaries = Array.isArray(benchmarkData.paper_summaries)
+    ? benchmarkData.paper_summaries
+    : [];
+  const gaps = Array.isArray(benchmarkData.gaps) ? benchmarkData.gaps : [];
+  const rawBenchmarks = benchmarkData.comparison_matrix?.[0]?.benchmark_panel;
   const benchmarks = Array.isArray(rawBenchmarks) ? rawBenchmarks : [];
-  const papersDiscovered = compData?.papers_discovered ?? 0;
-  const papersRead = compData?.papers_read ?? 0;
-  const effectivePainPoints = painPoints.length > 0 ? painPoints : [];
-
-  // Discovered papers: prefer paper table, fallback to paper_summaries from context_bundle
-  const paperSummaries: PaperSummary[] = compData?.paper_summaries ?? [];
-  const discoveredPapers = papers.length > 0
-    ? papers.map((p) => ({
-        title: p.title,
-        year: p.year,
-        venue: "",
-        arxiv_id: p.arxiv_id,
-        doi: p.doi,
-        authors: p.authors,
-        id: p.id,
+  const summaryText = contextBundle?.summary_text ?? "";
+  const papersDiscovered = benchmarkData.papers_discovered ?? papers.length;
+  const papersRead = benchmarkData.papers_read ?? paperSummaries.length;
+  const painPointsCount = benchmarkData.pain_points_count ?? gaps.length;
+  const discoveredPapers: DiscoveredPaper[] = papers.length > 0
+    ? papers.map((paper) => ({
+        id: paper.id,
+        title: paper.title,
+        year: paper.year,
+        arxiv_id: paper.arxiv_id,
+        doi: paper.doi,
+        authors: paper.authors,
       }))
-    : paperSummaries.map((ps, i) => {
-        const arxiv_id = arxivIdFromSummary(ps);
+    : paperSummaries.map((summary, index) => {
+        const arxivId = arxivIdFromSummary(summary);
         return {
-          title: ps.title || ps.paper_title || (arxiv_id ? `arXiv:${arxiv_id}` : `Paper ${i + 1}`),
-          year: ps.year,
-          venue: ps.venue || "",
-          arxiv_id,
-          doi: ps.doi,
-          authors: Array.isArray(ps.authors) ? ps.authors : [] as string[],
-          id: arxiv_id ? `summary-arxiv-${arxiv_id}` : `summary-${i}`,
+          id: arxivId ? `summary-arxiv-${arxivId}` : `summary-${index}`,
+          title: summary.title || summary.paper_title || (arxivId ? `arXiv:${arxivId}` : `Paper ${index + 1}`),
+          year: summary.year,
+          venue: summary.venue,
+          arxiv_id: arxivId,
+          doi: summary.doi,
+          authors: Array.isArray(summary.authors) ? summary.authors : [],
         };
       });
-
-  const hasAnyResults = gaps.length > 0 || benchmarks.length > 0 || effectivePainPoints.length > 0 || papersDiscovered > 0;
+  const hasAnyResults =
+    Boolean(summaryText) ||
+    paperSummaries.length > 0 ||
+    gaps.length > 0 ||
+    benchmarks.length > 0 ||
+    asList(benchmarkData.key_findings).length > 0 ||
+    asList(benchmarkData.method_landscape).length > 0 ||
+    asList(benchmarkData.entry_points).length > 0;
 
   return (
     <div className="max-w-[1060px] mx-auto px-8 py-8 space-y-6">
-      {/* Back */}
       <Link href={`/runs/${runId}`} className="inline-flex items-center gap-1.5 text-[13px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
           <path d="M9 11L5 7L9 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -176,7 +231,6 @@ export default function FrontierPage() {
         Back to run
       </Link>
 
-      {/* Header */}
       <div className="card-static p-6">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[var(--accent-soft)] text-[var(--accent)]">
@@ -193,12 +247,11 @@ export default function FrontierPage() {
         </h1>
         <p className="text-[13px] text-[var(--text-muted)] mb-4">{run.topic}</p>
 
-        {/* Stats */}
         <div className="flex items-center gap-6 pt-3 border-t border-[var(--border-subtle)]">
           <Stat value={papersDiscovered} label="Discovered" />
           <Stat value={papersRead} label="Read" />
-          <Stat value={gaps.length} label="Gaps" />
-          <Stat value={effectivePainPoints.length} label="Pain Points" />
+          <Stat value={paperSummaries.length} label="Reviews" />
+          <Stat value={painPointsCount} label="Pain Points" />
           <Stat value={benchmarks.length} label="Benchmarks" />
         </div>
       </div>
@@ -210,9 +263,27 @@ export default function FrontierPage() {
         </div>
       )}
 
-      {/* Research Gaps */}
+      {summaryText && (
+        <section>
+          <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">
+            Frontier Overview
+          </h2>
+          <div className="card-static p-5">
+            <p className="text-[13px] text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap">
+              {summaryText}
+            </p>
+          </div>
+        </section>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <InsightPanel title="Key Findings" value={benchmarkData.key_findings} />
+        <InsightPanel title="Method Landscape" value={benchmarkData.method_landscape} />
+        <InsightPanel title="Entry Points" value={benchmarkData.entry_points} />
+      </div>
+
       {gaps.length > 0 && (
-        <div>
+        <section>
           <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">
             Research Gaps ({gaps.length})
           </h2>
@@ -220,16 +291,20 @@ export default function FrontierPage() {
             {gaps.map((gap, idx) => (
               <div key={idx} className="card-static p-4">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full uppercase ${
-                    gap.significance === "high"
-                      ? "bg-[var(--accent-red-soft)] text-[var(--accent-red)]"
-                      : "bg-[var(--accent-amber-soft)] text-[var(--accent-amber)]"
-                  }`}>
-                    {gap.significance}
-                  </span>
-                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-[var(--accent-soft)] text-[var(--accent)]">
-                    {gap.gap_type}
-                  </span>
+                  {gap.significance && (
+                    <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full uppercase ${
+                      gap.significance === "high"
+                        ? "bg-[var(--accent-red-soft)] text-[var(--accent-red)]"
+                        : "bg-[var(--accent-amber-soft)] text-[var(--accent-amber)]"
+                    }`}>
+                      {gap.significance}
+                    </span>
+                  )}
+                  {gap.gap_type && (
+                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-[var(--accent-soft)] text-[var(--accent)]">
+                      {gap.gap_type}
+                    </span>
+                  )}
                 </div>
                 <p className="text-[13px] text-[var(--text-primary)] leading-relaxed mb-2">
                   {gap.description}
@@ -239,11 +314,11 @@ export default function FrontierPage() {
                     Impact: {gap.potential_impact}
                   </p>
                 )}
-                {gap.supporting_evidence?.length > 0 && (
+                {Array.isArray(gap.supporting_evidence) && gap.supporting_evidence.length > 0 && (
                   <ul className="space-y-1 mt-2">
-                    {gap.supporting_evidence.map((ev, i) => (
+                    {gap.supporting_evidence.map((evidence, i) => (
                       <li key={i} className="text-[11px] text-[var(--text-muted)] pl-3 border-l-2 border-[var(--border-subtle)]">
-                        {ev}
+                        {formatValue(evidence)}
                       </li>
                     ))}
                   </ul>
@@ -251,14 +326,13 @@ export default function FrontierPage() {
               </div>
             ))}
           </div>
-        </div>
+        </section>
       )}
 
-      {/* Benchmark Panel — full score display */}
       {benchmarks.length > 0 && (
-        <div>
+        <section>
           <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">
-            Benchmark Panel ({benchmarks.length})
+            Benchmark Status ({benchmarks.length})
           </h2>
           <div className="card-static overflow-hidden">
             <table className="w-full text-[13px]">
@@ -270,59 +344,54 @@ export default function FrontierPage() {
                 </tr>
               </thead>
               <tbody>
-                {benchmarks.map((b, idx) => (
+                {benchmarks.map((benchmark, idx) => (
                   <tr key={idx} className="border-b border-[var(--border-subtle)] last:border-0 align-top">
-                    <td className="py-3 px-4 text-[var(--text-primary)] font-medium">{b.method}</td>
-                    <td className="py-3 px-4 text-[var(--text-secondary)]">{b.dataset}</td>
+                    <td className="py-3 px-4 text-[var(--text-primary)] font-medium">{benchmark.method}</td>
+                    <td className="py-3 px-4 text-[var(--text-secondary)]">{benchmark.dataset}</td>
                     <td className="py-3 px-4 text-[var(--text-muted)] text-[12px] leading-relaxed">
-                      {b.score || "—"}
+                      {benchmark.score || "-"}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
       )}
 
-      {/* Pain Points (from pain_point table) */}
-      {effectivePainPoints.length > 0 && (
-        <div>
+      {paperSummaries.length > 0 && (
+        <section>
           <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">
-            Pain Points ({effectivePainPoints.length})
+            Paper Reviews ({paperSummaries.length})
           </h2>
           <div className="space-y-3">
-            {effectivePainPoints.map((pp) => (
-              <div key={pp.id} className="card-static p-4">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-[var(--accent-soft)] text-[var(--accent)]">
-                    {pp.pain_type}
-                  </span>
-                  <span className="text-[11px] text-[var(--text-muted)]" style={{ fontFamily: "var(--font-mono)" }}>
-                    severity: {Number(pp.severity_score || 0).toFixed(1)}
-                  </span>
-                </div>
-                <p className="text-[13px] text-[var(--text-primary)] leading-relaxed">{pp.statement}</p>
-              </div>
+            {paperSummaries.map((paper, idx) => (
+              <PaperReviewCard key={`${paper.paper_id ?? paper.title ?? idx}`} paper={paper} index={idx} />
             ))}
           </div>
-        </div>
+        </section>
       )}
 
-      {/* Discovered Papers — uses paper_summaries from context_bundle */}
       {(discoveredPapers.length > 0 || papersDiscovered > 0) && (
-        <div>
+        <section>
           <button
+            type="button"
             onClick={() => setShowPapers(!showPapers)}
             className="flex items-center gap-2 text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3 hover:text-[var(--text-secondary)] transition-colors"
+            aria-expanded={showPapers}
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 10 10"
+              fill="none"
               className="transition-transform duration-200"
-              style={{ transform: showPapers ? "rotate(90deg)" : "rotate(0deg)" }}>
+              style={{ transform: showPapers ? "rotate(90deg)" : "rotate(0deg)" }}
+            >
               <path d="M3 1.5L7 5L3 8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             Discovered Papers ({discoveredPapers.length || papersDiscovered})
-            <span className="text-[10px] font-normal normal-case tracking-normal">— click to browse and add to library</span>
+            <span className="text-[10px] font-normal normal-case tracking-normal">click to browse and add to library</span>
           </button>
 
           {showPapers && (
@@ -333,7 +402,7 @@ export default function FrontierPage() {
                 </p>
               ) : (
                 discoveredPapers.map((paper) => {
-                  const isAdded = addedToLibrary.has(paper.id);
+                  const libraryId = libraryIds[paper.id];
                   const isAdding = addingToLibrary === paper.id;
                   return (
                     <div key={paper.id} className="card-static p-4 flex items-start justify-between gap-4">
@@ -342,12 +411,13 @@ export default function FrontierPage() {
                           {paper.title}
                         </h4>
                         <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)] flex-wrap">
-                          {paper.authors?.length > 0 && (
+                          {paper.authors.length > 0 && (
                             <span className="truncate max-w-[250px]">
                               {paper.authors.slice(0, 3).join(", ")}{paper.authors.length > 3 ? " et al." : ""}
                             </span>
                           )}
                           {paper.year && <span style={{ fontFamily: "var(--font-mono)" }}>{paper.year}</span>}
+                          {paper.venue && <span>{paper.venue}</span>}
                           {paper.arxiv_id && (
                             <span className="text-[var(--accent)]" style={{ fontFamily: "var(--font-mono)" }}>
                               {paper.arxiv_id}
@@ -355,51 +425,132 @@ export default function FrontierPage() {
                           )}
                         </div>
                       </div>
-                      <button
-                        disabled={isAdded || isAdding}
-                        onClick={async () => {
-                          setAddingToLibrary(paper.id);
-                          try {
-                            await addToLibrary({
-                              title: paper.title,
-                              arxiv_id: paper.arxiv_id,
-                              doi: "doi" in paper ? (paper as Record<string, unknown>).doi as string : undefined,
-                              authors: paper.authors,
-                              year: paper.year,
-                              source_run_id: runId,
-                            });
-                            setAddedToLibrary((prev) => new Set([...prev, paper.id]));
-                          } catch (e) { console.error(e); }
-                          finally { setAddingToLibrary(null); }
-                        }}
-                        className={`shrink-0 text-[12px] px-3 py-1.5 rounded-lg transition-all ${
-                          isAdded
-                            ? "bg-[var(--accent-green-soft)] text-[var(--accent-green)]"
-                            : "btn-secondary"
-                        }`}
-                      >
-                        {isAdding ? (
-                          <span className="flex items-center gap-1.5">
-                            <span className="h-3 w-3 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
-                            Adding
-                          </span>
-                        ) : isAdded ? "✓ In Library" : "+ Add to Library"}
-                      </button>
+                      {libraryId ? (
+                        <Link href={`/library/papers/${libraryId}`} className="btn-secondary shrink-0 text-[12px] px-3 py-1.5">
+                          Open in library
+                        </Link>
+                      ) : (
+                        <button
+                          disabled={isAdding}
+                          onClick={async () => {
+                            setAddingToLibrary(paper.id);
+                            try {
+                              const libraryPaper = await addToLibrary({
+                                title: paper.title,
+                                arxiv_id: paper.arxiv_id,
+                                doi: paper.doi,
+                                authors: paper.authors,
+                                year: paper.year,
+                                source_run_id: runId,
+                              });
+                              setLibraryIds((prev) => ({ ...prev, [paper.id]: libraryPaper.id }));
+                            } catch (e) {
+                              console.error(e);
+                            } finally {
+                              setAddingToLibrary(null);
+                            }
+                          }}
+                          className="btn-secondary shrink-0 text-[12px] px-3 py-1.5"
+                        >
+                          {isAdding ? "Adding" : "Add to library"}
+                        </button>
+                      )}
                     </div>
                   );
                 })
               )}
             </div>
           )}
-        </div>
+        </section>
       )}
 
-      {/* Spawn Divergent */}
       <div className="pt-4 border-t border-[var(--border-subtle)]">
-        <button onClick={handleSpawnDivergent} disabled={spawning} className="btn-primary text-[13px]">
-          {spawning ? "Creating..." : "Explore innovations for these gaps →"}
+        <button onClick={handleStartDivergent} disabled={startingDivergent} className="btn-primary text-[13px]">
+          {startingDivergent ? "Starting..." : "Explore innovations for these gaps"}
         </button>
       </div>
+    </div>
+  );
+}
+
+function InsightPanel({ title, value }: { title: string; value: unknown }) {
+  const items = asList(value);
+  if (items.length === 0) return null;
+  return (
+    <section>
+      <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">
+        {title}
+      </h2>
+      <div className="card-static p-4 h-full">
+        <ul className="space-y-2">
+          {items.map((item, index) => (
+            <li key={index} className="text-[12px] text-[var(--text-secondary)] leading-relaxed">
+              {item}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
+function PaperReviewCard({ paper, index }: { paper: PaperSummary; index: number }) {
+  const title = paper.title || paper.paper_title || `Paper ${index + 1}`;
+  const authors = Array.isArray(paper.authors) ? paper.authors : [];
+  return (
+    <article className="card-static p-5">
+      <div className="mb-4">
+        <h3 className="text-[15px] font-medium text-[var(--text-primary)] leading-snug mb-1">
+          {title}
+        </h3>
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">
+          {authors.length > 0 && <span>{authors.slice(0, 4).join(", ")}{authors.length > 4 ? " et al." : ""}</span>}
+          {paper.year && <span style={{ fontFamily: "var(--font-mono)" }}>{paper.year}</span>}
+          {paper.venue && <span>{paper.venue}</span>}
+          {(paper.arxiv_id || paper.doi) && (
+            <span className="text-[var(--accent)]" style={{ fontFamily: "var(--font-mono)" }}>
+              {paper.arxiv_id || paper.doi}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <ReviewField label="Problem" value={paper.problem} />
+        <ReviewField label="Method" value={paper.method} />
+        <ReviewField label="Experimental Setup / Datasets" value={paper.experimental_setup || paper.datasets} />
+        <ReviewField label="Main Results" value={paper.main_results || paper.key_contributions} />
+        <ReviewField label="Limitations" value={paper.limitations} />
+        <ReviewField label="Reusable Components" value={paper.reusable_components} />
+        <ReviewField label="Paper Tags / Innovation Points" value={paper.paper_tags || paper.innovation_points} />
+      </div>
+      {(paper.summary || paper.abstract) && (
+        <p className="mt-4 text-[12px] text-[var(--text-muted)] leading-relaxed">
+          {paper.summary || paper.abstract}
+        </p>
+      )}
+    </article>
+  );
+}
+
+function ReviewField({ label, value }: { label: string; value: unknown }) {
+  const items = asList(value);
+  if (items.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-[var(--border-subtle)] p-3">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1">
+        {label}
+      </p>
+      {items.length === 1 ? (
+        <p className="text-[12px] text-[var(--text-secondary)] leading-relaxed">{items[0]}</p>
+      ) : (
+        <ul className="space-y-1">
+          {items.map((item, index) => (
+            <li key={index} className="text-[12px] text-[var(--text-secondary)] leading-relaxed">
+              {item}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

@@ -19,22 +19,34 @@ def test_run_results_paper_list_is_collapsible_and_closed_by_default() -> None:
     assert "showResultPapers &&" in source
 
 
-def test_run_page_embeds_auto_divergent_child_in_parent_pipeline() -> None:
+def test_run_page_does_not_embed_auto_divergent_child_pipeline() -> None:
     source = RUN_PAGE.read_text()
 
-    assert "getRunChildren(requestedRunId, \"divergent\")" in source
-    assert "Explore innovations for these gaps" in source
-    assert "extraSteps={shouldShowDivergentStep" in source
-    assert "continuation={divergentContinuation}" in source
-    assert "View full Divergent results" in source
+    assert "getRunChildren" not in source
+    assert "divergentContinuation" not in source
+    assert "extraSteps={shouldShowDivergentStep" not in source
+    assert "continuation={divergentContinuation}" not in source
+    assert "parent_run_id" not in source
 
 
-def test_run_page_suppresses_frontier_full_results_when_divergent_continuation_exists() -> None:
+def test_run_page_always_shows_current_frontier_full_results_link() -> None:
     source = RUN_PAGE.read_text()
 
-    assert "shouldShowModeLink" in source
-    assert '!(run.mode === "frontier" && divergentRun)' in source
+    assert "View full Frontier results" in source
     assert "View full {MODE_LABELS" in source
+    assert '!(run.mode === "frontier" && divergentRun)' not in source
+    assert "divergentRun" not in source
+
+
+def test_run_page_exposes_same_run_divergent_phase_from_events() -> None:
+    source = RUN_PAGE.read_text()
+
+    assert "hasDivergentPhase" in source
+    assert 'event.event_type === "run.divergent_enqueued"' in source
+    assert 'event.event_type === "user.action.start_divergent"' in source
+    assert 'event.payload?.mode === "divergent"' in source
+    assert "View full Divergent results" in source
+    assert "Explore innovations for these gaps" in source
 
 
 def test_divergent_full_results_include_papers_section() -> None:

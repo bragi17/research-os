@@ -10,6 +10,7 @@ from apps.worker.modes.base import ModeGraphState
 from apps.worker.run_persistence import (
     _listify_idea_value,
     _normalize_idea_card_payload,
+    _persist_context_bundle,
     _persist_paper_summaries,
     persist_results,
 )
@@ -94,6 +95,9 @@ class _FakeLog:
     def warning(self, event: str, **kwargs) -> None:
         self.warnings.append((event, kwargs))
 
+    def debug(self, event: str, **kwargs) -> None:
+        self.warnings.append((event, kwargs))
+
 
 class _FakePool:
     def __init__(self) -> None:
@@ -147,3 +151,83 @@ async def test_persist_paper_summaries_writes_valid_json_and_arxiv(monkeypatch) 
     assert state.context_bundle["selected_paper_ids"] == [str(params[0])]
     assert log.infos[-1] == ("worker.papers_persisted", {"count": 1, "failed": 0})
     assert log.warnings == []
+
+
+@pytest.mark.asyncio
+async def test_persist_context_bundle_keeps_rich_frontier_fields(monkeypatch) -> None:
+    import apps.api.database as database
+
+    run_id = uuid4()
+    created_payloads: list[dict] = []
+    updates: list[tuple[UUID, dict]] = []
+    paper_summaries = [
+        {
+            "paper_id": "arxiv:2411.18597",
+            "title": "Single-shot structured light",
+            "problem": "Motion artifacts in 3D reconstruction",
+            "method": "Telecentric coded projection",
+            "limitations": "Requires calibration",
+        }
+    ]
+
+    async def fake_create_context_bundle(payload: dict) -> dict:
+        created_payloads.append(payload)
+        return {"id": uuid4(), **payload}
+
+    async def fake_update_run(update_run_id: UUID, updates_payload: dict) -> dict:
+        updates.append((update_run_id, updates_payload))
+        return updates_payload
+
+    monkeypatch.setattr(database, "update_run", fake_update_run)
+
+    state = SimpleNamespace(
+        context_bundle={
+            "summary_text": "Frontier review summary",
+            "selected_paper_ids": ["paper-1"],
+            "key_findings": ["Calibration dominates error budgets"],
+            "method_landscape": [{"family": "coded projection"}],
+            "benchmark_status": {"status": "fragmented"},
+            "entry_points": [{"title": "Start with telecentric optics"}],
+            "mode_c_suggestions": [{"title": "Adaptive code selection"}],
+            "future_work": ["Benchmark under vibration"],
+            "pain_point_package": {"top_pain_points": ["No common benchmark"]},
+            "paper_summaries": paper_summaries,
+        },
+        mode="frontier",
+        report_markdown="",
+        comparison_matrix=[{"axis": "hardware"}],
+        gaps=[{"description": "No shared benchmark"}],
+        pain_points=[{"statement": "Manual calibration"}],
+        papers_read=4,
+        papers_discovered=9,
+    )
+
+    await _persist_context_bundle(
+        run_id,
+        state,
+        create_context_bundle=fake_create_context_bundle,
+        log=_FakeLog(),
+    )
+
+    assert len(created_payloads) == 1
+    payload = created_payloads[0]
+    assert payload["summary_text"] == "Frontier review summary"
+    assert payload["selected_paper_ids"] == ["paper-1"]
+    benchmark_data = payload["benchmark_data"]
+    assert benchmark_data["summary_text"] == "Frontier review summary"
+    assert benchmark_data["key_findings"] == ["Calibration dominates error budgets"]
+    assert benchmark_data["method_landscape"] == [{"family": "coded projection"}]
+    assert benchmark_data["benchmark_status"] == {"status": "fragmented"}
+    assert benchmark_data["entry_points"] == [{"title": "Start with telecentric optics"}]
+    assert benchmark_data["mode_c_suggestions"] == [{"title": "Adaptive code selection"}]
+    assert benchmark_data["future_work"] == ["Benchmark under vibration"]
+    assert benchmark_data["pain_point_package"] == {
+        "top_pain_points": ["No common benchmark"]
+    }
+    assert benchmark_data["paper_summaries"] == paper_summaries
+    assert benchmark_data["comparison_matrix"] == [{"axis": "hardware"}]
+    assert benchmark_data["gaps"] == [{"description": "No shared benchmark"}]
+    assert benchmark_data["pain_points_count"] == 1
+    assert benchmark_data["papers_read"] == 4
+    assert benchmark_data["papers_discovered"] == 9
+    assert updates[0][0] == run_id

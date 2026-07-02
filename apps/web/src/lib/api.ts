@@ -257,6 +257,16 @@ export interface TaxonomyNode {
   representative_papers?: string[];
 }
 
+export interface ContextBundle {
+  id?: string;
+  source_run_id?: string;
+  source_mode?: string;
+  summary_text: string;
+  benchmark_data: Record<string, unknown>;
+  selected_paper_ids: string[];
+  mindmap_json?: Record<string, unknown>;
+}
+
 // V2 API functions
 export const createRunV2 = (data: Record<string, unknown>) =>
   apiFetch("/api/v1/runs/multimode", { method: "POST", body: JSON.stringify(data) });
@@ -281,6 +291,16 @@ export const getMindmap = (runId: string) =>
 
 export const getComparison = (runId: string) =>
   apiFetch<{ comparison: Record<string, unknown> }>(`/api/v1/runs/${runId}/comparison`);
+
+export const getRunContextBundle = (
+  runId: string,
+  options: { preferContext?: boolean } = {},
+) => {
+  const query = options.preferContext ? "?prefer_context=true" : "";
+  return apiFetch<{ run_id: string; context_bundle: ContextBundle | null }>(
+    `/api/v1/runs/${runId}/context-bundle${query}`,
+  );
+};
 
 export const getReadingPath = (runId: string) =>
   apiFetch<Record<string, unknown>>(`/api/v1/runs/${runId}/reading-path`);

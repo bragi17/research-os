@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -303,8 +304,14 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     try:
         import importlib
         import apps.api.routes_v2 as routes_v2_mod
+        import apps.api.app as app_mod
         import apps.api.main as main_mod
 
+        monkeypatch.setattr(
+            app_mod,
+            "ensure_first_admin_user",
+            AsyncMock(return_value={}),
+        )
         importlib.reload(routes_v2_mod)
         importlib.reload(main_mod)
         app = main_mod.app
@@ -977,6 +984,86 @@ class TestGetEndpoints:
         assert r.status_code == 200
         assert r.json() == {"run_id": str(run_id), "context_bundle": None}
 
+    def test_context_bundle_returns_persisted_summary_and_benchmark_data(
+        self,
+        client: TestClient,
+    ):
+        run_id = uuid4()
+        bundle_id = uuid4()
+        benchmark_data = {
+            "summary_text": "Frontier review summary",
+            "key_findings": ["Finding A"],
+            "paper_summaries": [{"title": "Paper A", "method": "Method A"}],
+        }
+        _mock_runs[str(run_id)] = _make_mock_run(
+            {
+                "id": run_id,
+                "title": "Visible Frontier Run",
+                "topic": "Multi-agent coordination with shared memory",
+                "output_bundle_id": bundle_id,
+            }
+        )
+        _mock_context_bundles[str(bundle_id)] = {
+            "id": bundle_id,
+            "source_run_id": run_id,
+            "source_mode": "frontier",
+            "summary_text": "Frontier review summary",
+            "benchmark_data": benchmark_data,
+            "selected_paper_ids": ["paper-1"],
+        }
+
+        r = client.get(f"/api/v1/runs/{run_id}/context-bundle")
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data["run_id"] == str(run_id)
+        assert data["context_bundle"]["summary_text"] == "Frontier review summary"
+        assert data["context_bundle"]["benchmark_data"] == benchmark_data
+        assert data["context_bundle"]["selected_paper_ids"] == ["paper-1"]
+
+    def test_context_bundle_can_prefer_original_context_bundle(
+        self,
+        client: TestClient,
+    ):
+        run_id = uuid4()
+        frontier_bundle_id = uuid4()
+        divergent_bundle_id = uuid4()
+        _mock_runs[str(run_id)] = _make_mock_run(
+            {
+                "id": run_id,
+                "title": "Same Run Frontier and Divergent",
+                "topic": "Multi-agent coordination with shared memory",
+                "context_bundle_id": frontier_bundle_id,
+                "output_bundle_id": divergent_bundle_id,
+            }
+        )
+        _mock_context_bundles[str(frontier_bundle_id)] = {
+            "id": frontier_bundle_id,
+            "source_run_id": run_id,
+            "source_mode": "frontier",
+            "summary_text": "Frontier bundle",
+            "benchmark_data": {"paper_summaries": [{"title": "Frontier Paper"}]},
+            "selected_paper_ids": ["frontier-paper"],
+        }
+        _mock_context_bundles[str(divergent_bundle_id)] = {
+            "id": divergent_bundle_id,
+            "source_run_id": run_id,
+            "source_mode": "divergent",
+            "summary_text": "Divergent bundle",
+            "benchmark_data": {"final_idea_cards": [{"title": "Idea"}]},
+            "selected_paper_ids": [],
+        }
+
+        default_response = client.get(f"/api/v1/runs/{run_id}/context-bundle")
+        prefer_context_response = client.get(
+            f"/api/v1/runs/{run_id}/context-bundle?prefer_context=true"
+        )
+
+        assert default_response.status_code == 200
+        assert prefer_context_response.status_code == 200
+        assert default_response.json()["context_bundle"]["summary_text"] == "Divergent bundle"
+        assert prefer_context_response.json()["context_bundle"]["summary_text"] == "Frontier bundle"
+
     def test_timeline_empty(self, client: TestClient):
         run_id = self._create_run(client)
         r = client.get(f"/api/v1/runs/{run_id}/timeline")
@@ -1119,6 +1206,183 @@ class TestUserActions:
         )
         assert r.status_code == 200
 
+    def test_start_divergent_action_enqueues_same_run_without_child(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        run_id = self._create_run(client)
+        bundle_id = uuid4()
+        context_bundle = {
+            "id": bundle_id,
+            "source_run_id": UUID(run_id),
+            "source_mode": "frontier",
+            "summary_text": "Frontier review summary",
+            "benchmark_data": {
+                "paper_summaries": [{"title": "Paper A", "method": "Method A"}],
+                "gaps": [{"description": "Gap A"}],
+                "pain_point_package": {"pain_points": [{"statement": "Pain A"}]},
+            },
+            "selected_paper_ids": ["paper-1"],
+        }
+        _mock_runs[run_id] = {
+            **_mock_runs[run_id],
+            "mode": "frontier",
+            "status": "completed",
+            "output_bundle_id": bundle_id,
+            "context_bundle_id": None,
+            "progress_pct": Decimal("100"),
+        }
+        _mock_context_bundles[str(bundle_id)] = context_bundle
+        enqueued: list[tuple[UUID, dict[str, Any]]] = []
+
+        async def fake_enqueue_run(enqueue_run_id: UUID, payload: dict[str, Any]) -> None:
+            enqueued.append((enqueue_run_id, payload))
+
+        monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+
+        r = client.post(
+            f"/api/v1/runs/{run_id}/actions/start_divergent",
+            json={"payload": {"intent": "explore innovations"}},
+        )
+
+        assert r.status_code == 200
+        assert r.json()["status"] == "enqueued"
+        assert len(_mock_runs) == 1
+        updated_run = _mock_runs[run_id]
+        assert updated_run["mode"] == "frontier"
+        assert updated_run["status"] == "queued"
+        assert updated_run["current_stage"] == "divergent_init"
+        assert updated_run["current_step"] is None
+        assert updated_run["progress_pct"] == Decimal("0")
+        assert updated_run["context_bundle_id"] == bundle_id
+        assert updated_run["output_bundle_id"] == bundle_id
+        expected_context_bundle = {
+            "summary_text": "Frontier review summary",
+            "paper_summaries": [{"title": "Paper A", "method": "Method A"}],
+            "gaps": [{"description": "Gap A"}],
+            "pain_point_package": {"pain_points": [{"statement": "Pain A"}]},
+            "selected_paper_ids": ["paper-1"],
+            "source_run_id": run_id,
+            "source_mode": "frontier",
+        }
+        assert enqueued == [
+            (
+                UUID(run_id),
+                {
+                    "project_id": None,
+                    "topic": "Multi-agent coordination with shared memory",
+                    "goal_type": "survey_plus_innovations",
+                    "mode": "divergent",
+                    "keywords": [],
+                    "seed_paper_ids": [],
+                    "library_pool_ids": [],
+                    "budget": {},
+                    "context_bundle": expected_context_bundle,
+                    "same_run_phase": True,
+                    "triggered_by_action": "start_divergent",
+                },
+            )
+        ]
+        action_events = [
+            event for event in _mock_events
+            if str(event["run_id"]) == run_id
+            and event["event_type"] == "user.action.start_divergent"
+        ]
+        assert len(action_events) == 1
+
+    def test_start_divergent_rejects_non_completed_frontier_run(
+        self,
+        client: TestClient,
+    ):
+        run_id = self._create_run(client)
+        _mock_runs[run_id] = {
+            **_mock_runs[run_id],
+            "mode": "frontier",
+            "status": "running",
+        }
+
+        r = client.post(
+            f"/api/v1/runs/{run_id}/actions/start_divergent",
+            json={"payload": {"intent": "explore innovations"}},
+        )
+
+        assert r.status_code == 409
+        assert "after Frontier completes" in r.json()["detail"]
+        assert not [
+            event for event in _mock_events
+            if str(event["run_id"]) == run_id
+            and event["event_type"] == "user.action.start_divergent"
+        ]
+
+    def test_start_divergent_rejects_duplicate_same_run_phase(
+        self,
+        client: TestClient,
+    ):
+        run_id = self._create_run(client)
+        _mock_runs[run_id] = {
+            **_mock_runs[run_id],
+            "mode": "frontier",
+            "status": "completed",
+            "current_stage": "divergent_init",
+            "output_bundle_id": uuid4(),
+        }
+
+        r = client.post(
+            f"/api/v1/runs/{run_id}/actions/start_divergent",
+            json={"payload": {"intent": "explore innovations"}},
+        )
+
+        assert r.status_code == 409
+        assert "already been started" in r.json()["detail"]
+
+    def test_start_divergent_rolls_back_run_when_enqueue_fails(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        run_id = self._create_run(client)
+        bundle_id = uuid4()
+        _mock_runs[run_id] = {
+            **_mock_runs[run_id],
+            "mode": "frontier",
+            "status": "completed",
+            "current_stage": "frontier_summary",
+            "current_step": "Frontier summary complete",
+            "output_bundle_id": bundle_id,
+            "context_bundle_id": None,
+            "progress_pct": Decimal("100"),
+        }
+        _mock_context_bundles[str(bundle_id)] = {
+            "id": bundle_id,
+            "source_run_id": UUID(run_id),
+            "source_mode": "frontier",
+            "summary_text": "Frontier review summary",
+            "benchmark_data": {
+                "pain_point_package": {"pain_points": [{"statement": "Pain A"}]},
+            },
+            "selected_paper_ids": ["paper-1"],
+        }
+
+        async def fake_enqueue_run(enqueue_run_id: UUID, payload: dict[str, Any]) -> None:
+            raise RuntimeError("redis down")
+
+        monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+
+        r = client.post(
+            f"/api/v1/runs/{run_id}/actions/start_divergent",
+            json={"payload": {"intent": "explore innovations"}},
+        )
+
+        assert r.status_code == 500
+        assert r.json()["detail"] == "Failed to enqueue divergent phase"
+        rolled_back = _mock_runs[run_id]
+        assert rolled_back["status"] == "completed"
+        assert rolled_back["current_stage"] == "frontier_summary"
+        assert rolled_back["current_step"] == "Frontier summary complete"
+        assert rolled_back["progress_pct"] == Decimal("100")
+        assert rolled_back["context_bundle_id"] is None
+
     def test_invalid_action(self, client: TestClient):
         run_id = self._create_run(client)
         r = client.post(
@@ -1147,3 +1411,16 @@ class TestUserActions:
         ]
         assert len(action_events) == 1
         assert action_events[0]["payload"]["paper_id"] == "abc"
+
+
+def test_frontend_api_exposes_typed_context_bundle_helper() -> None:
+    source = Path("apps/web/src/lib/api.ts").read_text(encoding="utf-8")
+
+    assert "export interface ContextBundle" in source
+    assert "summary_text:" in source
+    assert "benchmark_data:" in source
+    assert "selected_paper_ids:" in source
+    assert "export const getRunContextBundle" in source
+    assert "apiFetch<{ run_id: string; context_bundle: ContextBundle | null }>" in source
+    assert "?prefer_context=true" in source
+    assert "`/api/v1/runs/${runId}/context-bundle${query}`" in source
