@@ -236,12 +236,14 @@ async def test_execute_run_in_workspace_calls_auto_spawn_after_persistence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from apps.api import database
-    from apps.worker import task_queue
-    from apps.worker import llm_gateway
+    from apps.worker import llm_gateway, task_queue
     from apps.worker.runner import WorkerRunner
 
     run_id = UUID("11111111-1111-1111-1111-111111111111")
+    work_id = UUID("22222222-2222-2222-2222-222222222222")
+    phase_execution_id = UUID("33333333-3333-3333-3333-333333333333")
     calls: list[str] = []
+    persist_calls: list[tuple[UUID, str | None, str | None]] = []
 
     async def fake_update_run(*args: Any, **kwargs: Any) -> None:
         return None
@@ -262,8 +264,16 @@ async def test_execute_run_in_workspace_calls_auto_spawn_after_persistence(
             stop_reason="completed",
         )
 
-    async def fake_persist_results(self: WorkerRunner, run_id_arg: UUID, state: Any) -> None:
+    async def fake_persist_results(
+        self: WorkerRunner,
+        run_id_arg: UUID,
+        state: Any,
+        *,
+        work_id: str | None = None,
+        phase_execution_id: str | None = None,
+    ) -> None:
         calls.append("persist")
+        persist_calls.append((run_id_arg, work_id, phase_execution_id))
 
     def fake_write_workspace_outputs(self: WorkerRunner, run_id_arg: UUID, run: dict[str, Any], state: Any) -> None:
         calls.append("write")
@@ -282,7 +292,12 @@ async def test_execute_run_in_workspace_calls_auto_spawn_after_persistence(
 
     await WorkerRunner()._execute_run_in_workspace(
         run_id,
-        {"run_id": str(run_id), "mode": "frontier"},
+        {
+            "run_id": str(run_id),
+            "mode": "frontier",
+            "work_id": str(work_id),
+            "phase_execution_id": str(phase_execution_id),
+        },
         {
             "id": run_id,
             "workspace_id": UUID("22222222-2222-2222-2222-222222222222"),
@@ -296,3 +311,4 @@ async def test_execute_run_in_workspace_calls_auto_spawn_after_persistence(
     )
 
     assert calls == ["persist", "write", "auto_spawn"]
+    assert persist_calls == [(run_id, str(work_id), str(phase_execution_id))]

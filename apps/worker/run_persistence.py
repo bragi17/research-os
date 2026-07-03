@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID
 
 from structlog import get_logger
@@ -13,6 +15,8 @@ from services.research_memory import persist_run_memory
 logger = get_logger(__name__)
 
 MemoryPersister = Callable[[Any], Awaitable[list[dict[str, Any]]]]
+ArtifactCardCreator = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+PhaseExecutionUpdater = Callable[[UUID | str, dict[str, Any]], Awaitable[Any]]
 
 
 def _listify_idea_value(value: Any) -> list[str]:
@@ -44,6 +48,175 @@ def _coerce_text(value: Any, *, max_len: int | None = None) -> str:
         return ""
     text = str(value).strip()
     return text[:max_len] if max_len is not None else text
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _coerce_uuid(value: UUID | str) -> UUID | str:
+    if isinstance(value, UUID):
+        return value
+    return UUID(str(value))
+
+
+def _has_state_key(state: Any, key: str) -> bool:
+    if isinstance(state, dict):
+        return key in state
+    return hasattr(state, key)
+
+
+def _state_value(state: Any, key: str, default: Any = None) -> Any:
+    if isinstance(state, dict):
+        return state.get(key, default)
+    return getattr(state, key, default)
+
+
+def _state_mapping(state: Any, key: str) -> dict[str, Any]:
+    value = _state_value(state, key, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _set_state_value(state: Any, key: str, value: Any) -> None:
+    if isinstance(state, dict):
+        state[key] = value
+    else:
+        setattr(state, key, value)
+
+
+def _items_from_value(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def _state_items(state: Any, key: str) -> list[Any]:
+    return _items_from_value(_state_value(state, key, []))
+
+
+def _state_or_context_items(state: Any, key: str) -> list[Any]:
+    if _has_state_key(state, key):
+        return _state_items(state, key)
+    return _items_from_value(_state_mapping(state, "context_bundle").get(key, []))
+
+
+def _artifact_title(*values: Any, fallback: str) -> str:
+    for value in values:
+        title = _coerce_text(value, max_len=500)
+        if title:
+            return title
+    return fallback[:500]
+
+
+def _artifact_card_payload(
+    *,
+    work_id: UUID | str,
+    phase: str,
+    artifact_type: str,
+    title: str,
+    body: Any,
+    payload: dict[str, Any],
+    source_execution_id: UUID | str,
+) -> dict[str, Any]:
+    return {
+        "work_id": work_id,
+        "phase": phase,
+        "artifact_type": artifact_type,
+        "title": title,
+        "body": body,
+        "payload": payload,
+        "source_execution_id": source_execution_id,
+        "edit_source": "ai",
+    }
+
+
+def _artifact_cards_from_state(
+    *,
+    work_id: UUID | str,
+    phase: str,
+    source_execution_id: UUID | str,
+    state: Any,
+) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    phase = _coerce_text(phase).lower()
+
+    if phase == "atlas":
+        for item in _state_or_context_items(state, "sub_directions"):
+            if not isinstance(item, dict):
+                continue
+            cards.append(
+                _artifact_card_payload(
+                    work_id=work_id,
+                    phase="atlas",
+                    artifact_type="atlas_direction",
+                    title=_artifact_title(
+                        item.get("name"),
+                        item.get("title"),
+                        item.get("label"),
+                        fallback="Atlas direction",
+                    ),
+                    body=item.get("description"),
+                    payload=item,
+                    source_execution_id=source_execution_id,
+                )
+            )
+
+    if phase == "frontier":
+        for item in _state_items(state, "gaps"):
+            if not isinstance(item, dict):
+                continue
+            cards.append(
+                _artifact_card_payload(
+                    work_id=work_id,
+                    phase="frontier",
+                    artifact_type="frontier_gap",
+                    title=_artifact_title(
+                        item.get("description"),
+                        item.get("title"),
+                        fallback="Frontier gap",
+                    ),
+                    body=item.get("potential_impact"),
+                    payload=item,
+                    source_execution_id=source_execution_id,
+                )
+            )
+        for item in _state_items(state, "pain_points"):
+            if not isinstance(item, dict):
+                continue
+            cards.append(
+                _artifact_card_payload(
+                    work_id=work_id,
+                    phase="frontier",
+                    artifact_type="frontier_pain_point",
+                    title=_artifact_title(
+                        item.get("statement"),
+                        item.get("description"),
+                        fallback="Pain point",
+                    ),
+                    body=item.get("pain_type"),
+                    payload=item,
+                    source_execution_id=source_execution_id,
+                )
+            )
+
+    if phase == "divergent":
+        for item in _state_items(state, "idea_cards"):
+            if not isinstance(item, dict):
+                continue
+            cards.append(
+                _artifact_card_payload(
+                    work_id=work_id,
+                    phase="divergent",
+                    artifact_type="divergent_idea",
+                    title=_artifact_title(
+                        item.get("title"),
+                        fallback="Innovation idea",
+                    ),
+                    body=item.get("problem_statement"),
+                    payload=item,
+                    source_execution_id=source_execution_id,
+                )
+            )
+
+    return cards
 
 
 def _extract_arxiv_id(value: Any) -> str | None:
@@ -83,18 +256,23 @@ async def persist_results(
     run_id: UUID,
     state: Any,
     *,
+    work_id: UUID | str | None = None,
+    phase_execution_id: UUID | str | None = None,
     memory_persister: MemoryPersister | None = None,
     log: Any | None = None,
 ) -> None:
     """Persist workflow results to database-backed storage."""
     from apps.api.database import (
+        create_artifact_card,
         create_context_bundle,
         create_idea_card,
         create_pain_point,
+        update_phase_execution,
     )
 
     log = logger if log is None else log
     memory_persister = persist_run_memory if memory_persister is None else memory_persister
+    output_bundle_id: Any | None = None
 
     try:
         all_pain_items = _collect_pain_items(state)
@@ -111,10 +289,19 @@ async def persist_results(
             create_idea_card=create_idea_card,
             log=log,
         )
-        await _persist_context_bundle(
+        output_bundle_id = await _persist_context_bundle(
             run_id,
             state,
             create_context_bundle=create_context_bundle,
+            log=log,
+        )
+        await _persist_work_artifact_cards(
+            work_id=work_id,
+            phase_execution_id=phase_execution_id,
+            state=state,
+            output_bundle_id=output_bundle_id,
+            create_artifact_card=create_artifact_card,
+            update_phase_execution=update_phase_execution,
             log=log,
         )
         await _persist_research_memory(
@@ -124,17 +311,32 @@ async def persist_results(
             log=log,
         )
 
-        log.info("worker.results_persisted", run_id=str(run_id),
-                 pain_points=len(state.pain_points or []),
-                 idea_cards=saved_ideas,
-                 has_comparison=bool(state.comparison_matrix))
+        log.info(
+            "worker.results_persisted",
+            run_id=str(run_id),
+            pain_points=len(_state_items(state, "pain_points")),
+            idea_cards=saved_ideas,
+            has_comparison=bool(_state_items(state, "comparison_matrix")),
+        )
     except Exception as exc:
         log.error("worker.persist_results_failed", error=str(exc))
+        if phase_execution_id:
+            await _mark_phase_execution_failed(
+                phase_execution_id,
+                update_phase_execution=update_phase_execution,
+                log=log,
+                error=exc,
+                output_bundle_id=output_bundle_id,
+            )
 
 
 def _collect_pain_items(state: Any) -> list[dict[str, Any]]:
-    all_pain_items = list(state.pain_points or [])
-    for gap in (state.gaps or []):
+    all_pain_items = [
+        item for item in _state_items(state, "pain_points") if isinstance(item, dict)
+    ]
+    for gap in _state_items(state, "gaps"):
+        if not isinstance(gap, dict):
+            continue
         all_pain_items.append({
             "statement": gap.get("description", ""),
             "pain_type": gap.get("gap_type", "method"),
@@ -177,7 +379,8 @@ async def _persist_paper_summaries(
     *,
     log: Any,
 ) -> None:
-    paper_summaries = (state.context_bundle or {}).get("paper_summaries", [])
+    context_bundle = _state_mapping(state, "context_bundle")
+    paper_summaries = context_bundle.get("paper_summaries", [])
     if paper_summaries:
         try:
             from apps.api.database import get_pool
@@ -227,9 +430,9 @@ async def _persist_paper_summaries(
                         error=str(exc),
                     )
             if persisted_ids:
-                context_bundle = state.context_bundle or {}
+                context_bundle = dict(context_bundle)
                 context_bundle["selected_paper_ids"] = persisted_ids
-                state.context_bundle = context_bundle
+                _set_state_value(state, "context_bundle", context_bundle)
             log.info(
                 "worker.papers_persisted",
                 count=len(persisted_ids),
@@ -247,7 +450,7 @@ async def _persist_idea_cards(
     log: Any,
 ) -> int:
     saved_ideas = 0
-    for idea_card in getattr(state, "idea_cards", []) or []:
+    for idea_card in _state_items(state, "idea_cards"):
         if not isinstance(idea_card, dict):
             continue
         payload = _normalize_idea_card_payload(idea_card)
@@ -272,44 +475,156 @@ async def _persist_context_bundle(
     *,
     create_context_bundle: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
     log: Any,
+) -> Any | None:
+    bundle_data = _state_mapping(state, "context_bundle")
+    if not bundle_data:
+        return None
+    try:
+        report_text = _coerce_text(_state_value(state, "report_markdown"), max_len=5000)
+        summary_text = bundle_data.get("summary_text") or report_text
+        benchmark_data = {
+            "comparison_matrix": _state_items(state, "comparison_matrix"),
+            "gaps": _state_items(state, "gaps"),
+            "pain_points_count": len(_state_items(state, "pain_points")),
+            "papers_read": _state_value(state, "papers_read", 0) or 0,
+            "papers_discovered": _state_value(state, "papers_discovered", 0) or 0,
+        }
+        for field in (
+            "summary_text",
+            "key_findings",
+            "method_landscape",
+            "benchmark_status",
+            "entry_points",
+            "mode_c_suggestions",
+            "future_work",
+            "pain_point_package",
+            "paper_summaries",
+        ):
+            if field in bundle_data:
+                benchmark_data[field] = bundle_data[field]
+        bundle = await create_context_bundle({
+            "source_run_id": str(run_id),
+            "source_mode": _coerce_text(_state_value(state, "mode")) or "frontier",
+            "summary_text": summary_text,
+            "selected_paper_ids": bundle_data.get("selected_paper_ids", []),
+            "benchmark_data": benchmark_data,
+            "mindmap_json": bundle_data.get("mindmap_json", {}),
+        })
+        from apps.api.database import update_run
+        await update_run(run_id, {"output_bundle_id": bundle["id"]})
+        return bundle["id"]
+    except Exception as exc:
+        log.debug("persist_bundle_failed", error=str(exc))
+        return None
+
+
+async def _update_phase_execution_safely(
+    phase_execution_id: UUID | str,
+    updates: dict[str, Any],
+    *,
+    update_phase_execution: PhaseExecutionUpdater,
+    log: Any,
 ) -> None:
-    bundle_data = state.context_bundle or {}
-    if bundle_data:
-        try:
-            report_text = state.report_markdown[:5000] if state.report_markdown else ""
-            summary_text = bundle_data.get("summary_text") or report_text
-            benchmark_data = {
-                "comparison_matrix": state.comparison_matrix or [],
-                "gaps": state.gaps or [],
-                "pain_points_count": len(state.pain_points or []),
-                "papers_read": state.papers_read,
-                "papers_discovered": state.papers_discovered,
-            }
-            for field in (
-                "summary_text",
-                "key_findings",
-                "method_landscape",
-                "benchmark_status",
-                "entry_points",
-                "mode_c_suggestions",
-                "future_work",
-                "pain_point_package",
-                "paper_summaries",
-            ):
-                if field in bundle_data:
-                    benchmark_data[field] = bundle_data[field]
-            bundle = await create_context_bundle({
-                "source_run_id": str(run_id),
-                "source_mode": state.mode or "frontier",
-                "summary_text": summary_text,
-                "selected_paper_ids": bundle_data.get("selected_paper_ids", []),
-                "benchmark_data": benchmark_data,
-                "mindmap_json": bundle_data.get("mindmap_json", {}),
-            })
-            from apps.api.database import update_run
-            await update_run(run_id, {"output_bundle_id": bundle["id"]})
-        except Exception as exc:
-            log.debug("persist_bundle_failed", error=str(exc))
+    try:
+        await update_phase_execution(_coerce_uuid(phase_execution_id), updates)
+    except Exception as exc:
+        log.warning(
+            "worker.phase_execution_update_failed",
+            phase_execution_id=str(phase_execution_id),
+            error=str(exc),
+        )
+
+
+async def _mark_phase_execution_failed(
+    phase_execution_id: UUID | str,
+    *,
+    update_phase_execution: PhaseExecutionUpdater,
+    log: Any,
+    error: Exception,
+    output_bundle_id: Any | None = None,
+) -> None:
+    now = _utcnow()
+    updates: dict[str, Any] = {
+        "status": "failed",
+        "error_message": str(error)[:500],
+        "completed_at": now,
+        "updated_at": now,
+    }
+    if output_bundle_id is not None:
+        updates["output_bundle_id"] = output_bundle_id
+    await _update_phase_execution_safely(
+        phase_execution_id,
+        updates,
+        update_phase_execution=update_phase_execution,
+        log=log,
+    )
+
+
+async def _persist_work_artifact_cards(
+    *,
+    work_id: UUID | str | None,
+    phase_execution_id: UUID | str | None,
+    state: Any,
+    output_bundle_id: Any | None,
+    create_artifact_card: ArtifactCardCreator,
+    update_phase_execution: PhaseExecutionUpdater,
+    log: Any,
+) -> int:
+    if not work_id or not phase_execution_id:
+        return 0
+
+    phase = _coerce_text(_state_value(state, "mode") or _state_value(state, "phase"))
+    try:
+        normalized_work_id = _coerce_uuid(work_id)
+        normalized_phase_execution_id = _coerce_uuid(phase_execution_id)
+        cards = _artifact_cards_from_state(
+            work_id=normalized_work_id,
+            phase=phase,
+            source_execution_id=normalized_phase_execution_id,
+            state=state,
+        )
+        for card in cards:
+            await create_artifact_card(card)
+    except Exception as exc:
+        log.warning(
+            "worker.artifact_card_extraction_failed",
+            work_id=str(work_id),
+            phase_execution_id=str(phase_execution_id),
+            phase=phase,
+            error=str(exc),
+        )
+        await _mark_phase_execution_failed(
+            phase_execution_id,
+            update_phase_execution=update_phase_execution,
+            log=log,
+            error=exc,
+            output_bundle_id=output_bundle_id,
+        )
+        return 0
+
+    now = _utcnow()
+    updates: dict[str, Any] = {
+        "status": "completed",
+        "error_message": None,
+        "completed_at": now,
+        "updated_at": now,
+    }
+    if output_bundle_id is not None:
+        updates["output_bundle_id"] = output_bundle_id
+    await _update_phase_execution_safely(
+        normalized_phase_execution_id,
+        updates,
+        update_phase_execution=update_phase_execution,
+        log=log,
+    )
+    log.info(
+        "worker.artifact_cards_persisted",
+        work_id=str(normalized_work_id),
+        phase_execution_id=str(normalized_phase_execution_id),
+        phase=phase,
+        count=len(cards),
+    )
+    return len(cards)
 
 
 async def _persist_research_memory(

@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import signal
@@ -20,13 +21,13 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
-load_dotenv()
-
 from structlog import get_logger
 
 from apps.worker.run_persistence import persist_results, write_workspace_outputs
 from services.research_memory import persist_run_memory
 from services.workspace_context import workspace_context
+
+load_dotenv()
 
 logger = get_logger(__name__)
 
@@ -146,7 +147,7 @@ class WorkerRunner:
         logger.info("worker.starting", concurrency=self.concurrency)
 
         # Import here to avoid circular deps
-        from apps.api.database import init_pool, close_pool
+        from apps.api.database import close_pool, init_pool
         from apps.worker.task_queue import close_redis
 
         await init_pool()
@@ -239,9 +240,15 @@ class WorkerRunner:
     async def _execute_run(self, run_id: UUID, job: dict[str, Any]) -> None:
         """Execute a single research run, dispatching to mode-specific graphs."""
         from apps.api.database import (
-            get_run, update_run, create_event,
+            create_event,
+            get_run,
+            update_run,
         )
-        from apps.worker.task_queue import mark_active, mark_inactive, publish_event
+        from apps.worker.task_queue import (
+            mark_active,
+            mark_inactive,
+            publish_event,
+        )
 
         await mark_active(run_id)
 
@@ -293,7 +300,8 @@ class WorkerRunner:
     ) -> None:
         """Execute a loaded run inside its workspace context."""
         from apps.api.database import (
-            update_run, create_event,
+            create_event,
+            update_run,
         )
         from apps.worker.task_queue import publish_event
 
@@ -432,7 +440,12 @@ class WorkerRunner:
         await update_run(run_id, update_fields)
 
         # ── Persist results to database ──
-        await self._persist_results(run_id, result_state)
+        await self._persist_results(
+            run_id,
+            result_state,
+            work_id=job.get("work_id"),
+            phase_execution_id=job.get("phase_execution_id"),
+        )
         self._write_workspace_outputs(run_id, run, result_state)
         await self._maybe_spawn_next_mode(
             parent_run_id=run_id,
@@ -458,11 +471,20 @@ class WorkerRunner:
             cost=f"${result_state.current_cost_usd:.2f}",
         )
 
-    async def _persist_results(self, run_id: UUID, state) -> None:
+    async def _persist_results(
+        self,
+        run_id: UUID,
+        state,
+        *,
+        work_id: str | None = None,
+        phase_execution_id: str | None = None,
+    ) -> None:
         """Persist workflow results (pain points, comparison, context bundle) to DB."""
         await persist_results(
             run_id,
             state,
+            work_id=work_id,
+            phase_execution_id=phase_execution_id,
             memory_persister=persist_run_memory,
             log=logger,
         )
@@ -616,15 +638,13 @@ class WorkerRunner:
                 target_mode="divergent",
                 error=str(exc),
             )
-            try:
+            with contextlib.suppress(Exception):
                 await create_event(
                     run_id=parent_run_id,
                     event_type="run.child_spawn_failed",
                     severity="error",
                     payload={"target_mode": "divergent", "error": str(exc)[:500]},
                 )
-            except Exception:
-                pass
             return None
 
     async def _run_mode_graph(
@@ -645,6 +665,7 @@ class WorkerRunner:
         Falls back to the v1 ResearchWorkflowRunner for unrecognized modes.
         """
         from langgraph.checkpoint.memory import MemorySaver
+
         from apps.worker.modes.base import ModeGraphState
 
         # Build common initial state
