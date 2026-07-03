@@ -3,32 +3,31 @@
 import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import Link from "next/link";
 import {
-  createRunV2,
+  createWork,
   getModelSettings,
   listLibraryPools,
-  startRun,
   searchLibraryTitles,
+  startPhaseExecution,
   type LibraryPaper,
   type LibraryPool,
-  type RunMode,
+  type ResearchPhase,
 } from "@/lib/api";
 
-const MODES: { value: RunMode; label: string; desc: string; icon: string }[] = [
+const MODES: { value: ResearchPhase; label: string; desc: string; icon: string }[] = [
   { value: "atlas", label: "Atlas", desc: "Explore & map a research field", icon: "🗺" },
   { value: "frontier", label: "Frontier", desc: "Analyze a sub-field in depth", icon: "🔬" },
   { value: "divergent", label: "Divergent", desc: "Find cross-domain innovations", icon: "💡" },
 ];
 
-const PLACEHOLDERS: Record<RunMode, string> = {
+const PLACEHOLDERS: Record<ResearchPhase, string> = {
   atlas: "e.g. Multi-agent reinforcement learning and cooperative AI systems",
   frontier: "e.g. 3D anomaly detection for industrial point cloud inspection",
   divergent: "e.g. Finding novel approaches to zero-shot 3D anomaly detection",
-  review: "Describe your research topic...",
 };
 
 const DEFAULT_EXPERIMENT_ROOT = "/data/research-os/experiments";
+const WORK_PHASE_HINTS_STORAGE_KEY = "ros_work_phases";
 
 function createDraftRunId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -54,6 +53,18 @@ function slugifyRunTitle(title: string): string {
 
 function joinWorkspacePath(root: string, name: string): string {
   return `${root.replace(/\/+$/g, "")}/${name}`;
+}
+
+function isUuid(value: string | null): value is string {
+  return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
+}
+
+function rememberWorkPhase(workId: string, phase: ResearchPhase) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(WORK_PHASE_HINTS_STORAGE_KEY) || "{}");
+    const next = stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
+    localStorage.setItem(WORK_PHASE_HINTS_STORAGE_KEY, JSON.stringify({ ...next, [workId]: phase }));
+  } catch { /* silent */ }
 }
 
 export default function NewResearchPage() {
@@ -82,10 +93,11 @@ function NewResearchContent() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const modeParam = searchParams.get("mode");
-  const initialMode: RunMode = modeParam && ["atlas", "frontier", "divergent"].includes(modeParam) ? (modeParam as RunMode) : "frontier";
+  const topicParam = searchParams.get("topic");
+  const initialMode: ResearchPhase = modeParam && ["atlas", "frontier", "divergent"].includes(modeParam) ? (modeParam as ResearchPhase) : "frontier";
 
-  const [mode, setMode] = useState<RunMode>(initialMode);
-  const [topic, setTopic] = useState("");
+  const [mode, setMode] = useState<ResearchPhase>(initialMode);
+  const [topic, setTopic] = useState(topicParam ?? "");
   const [topicError, setTopicError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [draftRunId, setDraftRunId] = useState("");
@@ -232,33 +244,62 @@ function NewResearchContent() {
         .filter(Boolean);
       const seeds = [...librarySeeds, ...manualSeeds];
       const kws = keywords.length > 0 ? keywords : keywordInput.split(",").map((k) => k.trim()).filter(Boolean);
-      const runId = draftRunId || createDraftRunId();
-      const payload: Record<string, unknown> = {
-        run_id: runId,
-        title: currentTopic.slice(0, 60),
-        topic: currentTopic,
-        mode,
+      const experimentWorkspacePolicy = {
+        path: displayedExperimentWorkspace.trim() || defaultExperimentWorkspace,
+      };
+      const budget = {
+        max_new_papers: maxPapers,
+        max_fulltext_reads: maxReads,
+        max_cost_usd: maxCost,
+      };
+      const policy: Record<string, unknown> = {
         keywords: kws,
         seed_papers: seeds,
         library_pool_ids: selectedPoolIds,
-        budget: { max_new_papers: maxPapers, max_fulltext_reads: maxReads },
+        experiment_workspace: experimentWorkspacePolicy,
       };
+      const manualInput: Record<string, unknown> = {
+        topic: currentTopic,
+        keywords: kws,
+        seed_papers: seeds,
+        library_pool_ids: selectedPoolIds,
+        mode,
+      };
+      manualInput.experiment_workspace = experimentWorkspacePolicy;
       if (workspaceEdited && displayedExperimentWorkspace.trim()) {
-        payload.experiment_workspace = displayedExperimentWorkspace.trim();
+        policy.workspace_edited = true;
+        manualInput.workspace_edited = true;
       }
       if (mode === "frontier") {
-        if (venueFilter.trim()) payload.venue_filter = venueFilter.split(",").map((v) => v.trim()).filter(Boolean);
-        if (benchmark.trim()) payload.benchmark = benchmark.trim();
+        const venues = venueFilter.split(",").map((v) => v.trim()).filter(Boolean);
+        manualInput.scope = currentTopic;
+        if (venues.length > 0) manualInput.venue_filter = venues;
+        if (benchmark.trim()) manualInput.benchmark = benchmark.trim();
       }
-      if (mode === "divergent" && painPointInput.trim()) {
-        payload.pain_point_input = painPointInput.trim();
+      if (mode === "divergent") {
+        manualInput.pain_point_input = painPointInput.trim() || currentTopic;
       }
-      const run = (await createRunV2(payload)) as { id: string };
-      await startRun(run.id);
-      router.push(`/runs/${run.id}`);
+      const work = await createWork({
+        title: currentTopic.slice(0, 60),
+        topic: currentTopic,
+        project_id: isUuid(searchParams.get("project")) ? searchParams.get("project") : null,
+        budget,
+        policy,
+      });
+      rememberWorkPhase(work.id, mode);
+      try {
+        await startPhaseExecution(work.id, mode, {
+          manual_input: manualInput,
+          source_card_ids: [],
+        });
+        router.push(`/works/${work.id}?phase=${mode}`);
+      } catch (phaseErr) {
+        console.error(phaseErr);
+        router.push(`/works/${work.id}?phase=${mode}&phase_start=failed`);
+      }
     } catch (err) {
       console.error(err);
-      alert("Failed to create research. Check console.");
+      alert("Failed to create research work. Check console.");
     } finally { setLoading(false); }
   };
 

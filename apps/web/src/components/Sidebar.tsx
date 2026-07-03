@@ -3,16 +3,19 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { deleteRun, getLibraryStats, listRuns, updateRun, type Run } from "@/lib/api";
+import { deleteRun, getLibraryStats, listWorks, listRuns, updateRun, type ResearchPhase, type Run, type Work } from "@/lib/api";
 
 const MODE_LABELS: Record<string, string> = {
   atlas: "Atlas", frontier: "Frontier", divergent: "Divergent", review: "Review",
 };
 const STATUS_COLORS: Record<string, string> = {
+  active: "var(--accent-green)",
   running: "var(--accent-green)", completed: "var(--accent-green)",
   failed: "var(--accent-red)", paused: "var(--accent-amber)",
   queued: "var(--text-muted)", cancelled: "var(--text-muted)",
+  archived: "var(--text-muted)", deleted: "var(--text-muted)",
 };
+const WORK_PHASE_HINTS_STORAGE_KEY = "ros_work_phases";
 
 function timeAgo(dateStr: string): string {
   try {
@@ -31,6 +34,32 @@ interface Project {
   id: string;
   name: string;
   runIds: string[];
+}
+
+interface SidebarWork {
+  id: string;
+  title: string;
+  topic?: string;
+  status: string;
+  active_phase?: Work["active_phase"] | null;
+  mode?: Run["mode"];
+  created_at: string;
+  updated_at: string;
+  isFallbackRun?: boolean;
+}
+
+function sidebarWorkFromRun(run: Run): SidebarWork {
+  return {
+    id: run.id,
+    title: run.title,
+    topic: run.topic,
+    status: run.status,
+    active_phase: run.mode && run.mode !== "review" ? run.mode : null,
+    mode: run.mode,
+    created_at: run.created_at,
+    updated_at: run.updated_at,
+    isFallbackRun: true,
+  };
 }
 
 /* ━━━ Custom Confirm Modal ━━━ */
@@ -113,7 +142,7 @@ function ContextMenu({ x, y, items, onClose }: {
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
-  const [runs, setRuns] = useState<Run[]>([]);
+  const [works, setWorks] = useState<SidebarWork[]>([]);
   const [loading, setLoading] = useState(true);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: { label: string; icon: string; action: () => void; danger?: boolean }[] } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -126,6 +155,7 @@ export default function Sidebar() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
   const [libraryCount, setLibraryCount] = useState(0);
+  const [workPhaseHints, setWorkPhaseHints] = useState<Record<string, ResearchPhase>>({});
 
   useEffect(() => {
     getLibraryStats()
@@ -133,12 +163,17 @@ export default function Sidebar() {
       .catch(() => { /* silent */ });
   }, []);
 
-  const fetchRuns = useCallback(async () => {
+  const fetchWorks = useCallback(async () => {
     try {
-      const items = (await listRuns()).items ?? [];
-      setRuns(items.filter((run) => !run.parent_run_id));
+      const items = (await listWorks()).items ?? [];
+      setWorks(items.map((work) => ({ ...work, isFallbackRun: false })));
     }
-    catch { /* silent */ }
+    catch {
+      try {
+        const items = (await listRuns()).items ?? [];
+        setWorks(items.filter((run) => !run.parent_run_id).map(sidebarWorkFromRun));
+      } catch { /* silent */ }
+    }
     finally { setLoading(false); }
   }, []);
 
@@ -154,20 +189,26 @@ export default function Sidebar() {
     } catch {
       setProjects([]);
     }
+    try {
+      const storedWorkPhases = JSON.parse(localStorage.getItem(WORK_PHASE_HINTS_STORAGE_KEY) || "{}");
+      setWorkPhaseHints(storedWorkPhases && typeof storedWorkPhases === "object" && !Array.isArray(storedWorkPhases) ? storedWorkPhases : {});
+    } catch {
+      setWorkPhaseHints({});
+    }
     setStorageReady(true);
   }, []);
-  useEffect(() => { fetchRuns(); const i = setInterval(fetchRuns, 3000); return () => clearInterval(i); }, [fetchRuns]);
-  useEffect(() => { fetchRuns(); const t = setTimeout(fetchRuns, 500); return () => clearTimeout(t); }, [pathname, fetchRuns]);
+  useEffect(() => { fetchWorks(); const i = setInterval(fetchWorks, 3000); return () => clearInterval(i); }, [fetchWorks]);
+  useEffect(() => { fetchWorks(); const t = setTimeout(fetchWorks, 500); return () => clearTimeout(t); }, [pathname, fetchWorks]);
   useEffect(() => { if (storageReady) localStorage.setItem("ros_pinned", JSON.stringify([...pinnedIds])); }, [pinnedIds, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem("ros_projects", JSON.stringify(projects)); }, [projects, storageReady]);
 
+  const activeWorkId = pathname.match(/\/works\/([^/]+)/)?.[1] ?? null;
   const activeRunId = pathname.match(/\/runs\/([^/]+)/)?.[1] ?? null;
   const isNewPage = pathname === "/new";
 
-  // Compute which runs are in projects
-  const runsInProjects = new Set(projects.flatMap((p) => p.runIds));
-  const pinned = runs.filter((r) => pinnedIds.has(r.id) && !runsInProjects.has(r.id));
-  const ungrouped = runs.filter((r) => !pinnedIds.has(r.id) && !runsInProjects.has(r.id));
+  const worksInProjects = new Set(projects.flatMap((p) => p.runIds));
+  const pinned = works.filter((work) => pinnedIds.has(work.id) && !worksInProjects.has(work.id));
+  const ungrouped = works.filter((work) => !pinnedIds.has(work.id) && !worksInProjects.has(work.id));
   const groups = groupByDate(ungrouped);
 
   /* ── Project CRUD ── */
@@ -188,19 +229,19 @@ export default function Sidebar() {
     setProjects((prev) => prev.filter((p) => p.id !== projId));
   };
 
-  const addRunToProject = (projId: string, runId: string) => {
+  const addWorkToProject = (projId: string, workId: string) => {
     setProjects((prev) => prev.map((p) =>
-      p.id === projId ? { ...p, runIds: [...new Set([...p.runIds, runId])] } : p
+      p.id === projId ? { ...p, runIds: [...new Set([...p.runIds, workId])] } : p
     ));
   };
 
-  const removeRunFromProject = (projId: string, runId: string) => {
+  const removeWorkFromProject = (projId: string, workId: string) => {
     setProjects((prev) => prev.map((p) =>
-      p.id === projId ? { ...p, runIds: p.runIds.filter((id) => id !== runId) } : p
+      p.id === projId ? { ...p, runIds: p.runIds.filter((id) => id !== workId) } : p
     ));
   };
 
-  /* ── Run actions ── */
+  /* ── Item actions ── */
   const handleRename = (id: string, currentName: string) => {
     setRenamingId(id);
     setRenameValue(currentName);
@@ -214,22 +255,22 @@ export default function Sidebar() {
     } else {
       try {
         await updateRun(id, { title: renameValue.trim() });
-        fetchRuns();
+        fetchWorks();
       } catch { /* silent */ }
       setRenamingId(null);
     }
   };
 
-  const handleDeleteRun = (run: Run) => {
+  const handleDeleteFallbackRun = (work: SidebarWork) => {
     setConfirmModal({
       title: "Delete Research",
-      message: `Are you sure you want to delete "${run.title}"? This action cannot be undone.`,
+      message: `Are you sure you want to delete "${work.title}"? This action cannot be undone.`,
       onConfirm: async () => {
         setConfirmModal(null);
         try {
-          await deleteRun(run.id);
-          fetchRuns();
-          if (activeRunId === run.id) router.push("/");
+          await deleteRun(work.id);
+          fetchWorks();
+          if (activeRunId === work.id) router.push("/");
         } catch { /* silent */ }
       },
     });
@@ -238,13 +279,13 @@ export default function Sidebar() {
   const handleDeleteProject = (proj: Project) => {
     setConfirmModal({
       title: "Delete Project",
-      message: `Delete project "${proj.name}"? The research runs inside will be unlinked but not deleted.`,
+      message: `Delete project "${proj.name}"? The research items inside will be unlinked but not deleted.`,
       onConfirm: () => { deleteProject(proj.id); setConfirmModal(null); },
     });
   };
 
-  const handlePin = (run: Run) => {
-    setPinnedIds((prev) => { const n = new Set(prev); n.has(run.id) ? n.delete(run.id) : n.add(run.id); return n; });
+  const handlePin = (work: SidebarWork) => {
+    setPinnedIds((prev) => { const n = new Set(prev); n.has(work.id) ? n.delete(work.id) : n.add(work.id); return n; });
   };
 
   /* ── Drag & Drop ── */
@@ -257,29 +298,32 @@ export default function Sidebar() {
     (e.currentTarget as HTMLElement).style.opacity = "1";
     // If dropping on a project folder
     if (dragId && dragOverTarget?.startsWith("proj_") && !dragId.startsWith("proj_")) {
-      addRunToProject(dragOverTarget, dragId);
+      addWorkToProject(dragOverTarget, dragId);
     }
     setDragId(null);
     setDragOverTarget(null);
   };
 
   /* ── Context menus ── */
-  const showRunMenu = (e: React.MouseEvent, run: Run, inProjectId?: string) => {
+  const showWorkMenu = (e: React.MouseEvent, work: SidebarWork, inProjectId?: string) => {
     e.preventDefault();
     const items: { label: string; icon: string; action: () => void; danger?: boolean }[] = [
-      { label: "Rename", icon: "✏️", action: () => handleRename(run.id, run.title) },
-      { label: pinnedIds.has(run.id) ? "Unpin" : "Pin to top", icon: "📌", action: () => handlePin(run) },
+      { label: pinnedIds.has(work.id) ? "Unpin" : "Pin to top", icon: "📌", action: () => handlePin(work) },
     ];
-    if (inProjectId) {
-      items.push({ label: "Remove from project", icon: "↩", action: () => removeRunFromProject(inProjectId, run.id) });
+    if (work.isFallbackRun) {
+      items.unshift({ label: "Rename", icon: "✏️", action: () => handleRename(work.id, work.title) });
     }
-    // Add "Move to project" submenu items
+    if (inProjectId) {
+      items.push({ label: "Remove from project", icon: "↩", action: () => removeWorkFromProject(inProjectId, work.id) });
+    }
     for (const proj of projects) {
-      if (!proj.runIds.includes(run.id)) {
-        items.push({ label: `Move to ${proj.name}`, icon: "📁", action: () => addRunToProject(proj.id, run.id) });
+      if (!proj.runIds.includes(work.id)) {
+        items.push({ label: `Move to ${proj.name}`, icon: "📁", action: () => addWorkToProject(proj.id, work.id) });
       }
     }
-    items.push({ label: "Delete", icon: "🗑", action: () => handleDeleteRun(run), danger: true });
+    if (work.isFallbackRun) {
+      items.push({ label: "Delete", icon: "🗑", action: () => handleDeleteFallbackRun(work), danger: true });
+    }
     setContextMenu({ x: e.clientX, y: e.clientY, items });
   };
 
@@ -296,44 +340,48 @@ export default function Sidebar() {
   };
 
   /* ── Render helpers ── */
-  const renderRunItem = (run: Run, opts?: { pinned?: boolean; inProjectId?: string }) => {
-    const isActive = run.id === activeRunId;
-    const isDragOver = run.id === dragOverTarget;
+  const renderWorkItem = (work: SidebarWork, opts?: { pinned?: boolean; inProjectId?: string }) => {
+    const isActive = work.isFallbackRun ? work.id === activeRunId : work.id === activeWorkId;
+    const isDragOver = work.id === dragOverTarget;
+    const phase = work.active_phase ?? workPhaseHints[work.id] ?? (work.isFallbackRun ? work.mode : undefined);
+    const href = work.isFallbackRun
+      ? `/runs/${work.id}`
+      : phase ? `/works/${work.id}?phase=${phase}` : `/works/${work.id}`;
 
-    if (renamingId === run.id) {
+    if (renamingId === work.id) {
       return (
-        <div key={run.id} className="px-3 py-1.5 mb-0.5">
+        <div key={work.id} className="px-3 py-1.5 mb-0.5">
           <input autoFocus className="input-field text-[13px] py-1.5 px-2" value={renameValue}
             onChange={(e) => setRenameValue(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") handleRenameSubmit(run.id); if (e.key === "Escape") setRenamingId(null); }}
-            onBlur={() => handleRenameSubmit(run.id)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleRenameSubmit(work.id); if (e.key === "Escape") setRenamingId(null); }}
+            onBlur={() => handleRenameSubmit(work.id)}
           />
         </div>
       );
     }
 
     return (
-      <div key={run.id} draggable
-        onDragStart={(e) => handleDragStart(e, run.id)}
+      <div key={work.id} draggable
+        onDragStart={(e) => handleDragStart(e, work.id)}
         onDragEnd={handleDragEnd}
-        onContextMenu={(e) => showRunMenu(e, run, opts?.inProjectId)}
+        onContextMenu={(e) => showWorkMenu(e, work, opts?.inProjectId)}
         className={`rounded-xl cursor-pointer transition-all duration-150 mb-0.5 ${isDragOver ? "ring-2 ring-[var(--accent)] ring-offset-1" : ""}`}
       >
-        <Link href={`/runs/${run.id}`}>
+        <Link href={href}>
           <div className={`px-3 py-2 rounded-xl transition-all duration-150 ${isActive ? "bg-white border border-[var(--border-active)] shadow-sm" : "hover:bg-white/60"}`}>
             <div className="flex items-center gap-2 mb-0.5">
               {opts?.pinned && <span className="text-[9px]">📌</span>}
-              <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${run.status === "running" ? "animate-pulse-dot" : ""}`}
-                style={{ background: STATUS_COLORS[run.status] ?? "var(--text-muted)" }} />
+              <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${work.status === "running" ? "animate-pulse-dot" : ""}`}
+                style={{ background: STATUS_COLORS[work.status] ?? "var(--text-muted)" }} />
               <span className={`text-[13px] font-medium truncate flex-1 ${isActive ? "text-[var(--text-primary)]" : "text-[var(--text-secondary)]"}`}>
-                {run.title}
+                {work.title}
               </span>
             </div>
             <div className="flex items-center gap-1.5 text-[10px] text-[var(--text-muted)] pl-4">
-              {run.mode && <span className="font-medium" style={{ color: "var(--accent)" }}>{MODE_LABELS[run.mode] ?? run.mode}</span>}
+              {phase && <span className="font-medium" style={{ color: "var(--accent)" }}>{MODE_LABELS[phase] ?? phase}</span>}
               <span>&middot;</span>
-              <span className="capitalize">{run.status}</span>
-              <span className="ml-auto">{timeAgo(run.updated_at || run.created_at)}</span>
+              <span className="capitalize">{work.status}</span>
+              <span className="ml-auto">{timeAgo(work.updated_at || work.created_at)}</span>
             </div>
           </div>
         </Link>
@@ -410,14 +458,14 @@ export default function Sidebar() {
             {/* Project folders */}
             {projects.map((proj) => {
               const isExpanded = expandedProjects.has(proj.id);
-              const projectRuns = runs.filter((r) => proj.runIds.includes(r.id));
+              const projectWorks = works.filter((work) => proj.runIds.includes(work.id));
               const isDragOver = dragOverTarget === proj.id;
 
               return (
                 <div key={proj.id} className="mb-1"
                   onDragOver={(e) => { e.preventDefault(); setDragOverTarget(proj.id); }}
                   onDragLeave={() => setDragOverTarget(null)}
-                  onDrop={(e) => { e.preventDefault(); if (dragId) addRunToProject(proj.id, dragId); setDragId(null); setDragOverTarget(null); }}
+                  onDrop={(e) => { e.preventDefault(); if (dragId) addWorkToProject(proj.id, dragId); setDragId(null); setDragOverTarget(null); }}
                 >
                   {renamingId === proj.id ? (
                     <div className="px-3 py-1.5">
@@ -440,7 +488,7 @@ export default function Sidebar() {
                           stroke="var(--accent)" strokeWidth="1.2" fill={isExpanded ? "var(--accent-soft)" : "none"} />
                       </svg>
                       <span className="text-[13px] font-medium text-[var(--text-primary)] truncate flex-1">{proj.name}</span>
-                      <span className="text-[10px] text-[var(--text-muted)]">{projectRuns.length}</span>
+                      <span className="text-[10px] text-[var(--text-muted)]">{projectWorks.length}</span>
                       <svg width="10" height="10" viewBox="0 0 10 10" fill="none"
                         className="shrink-0 transition-transform duration-200"
                         style={{ transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)" }}>
@@ -450,12 +498,12 @@ export default function Sidebar() {
                   )}
                   {isExpanded && (
                     <div className="ml-3 mt-0.5 border-l border-[var(--border-subtle)] pl-1">
-                      {projectRuns.length === 0 ? (
+                      {projectWorks.length === 0 ? (
                         <p className="text-[11px] text-[var(--text-muted)] px-3 py-2 italic">
-                          Drag runs here
+                          Drag research here
                         </p>
                       ) : (
-                        projectRuns.map((run) => renderRunItem(run, { inProjectId: proj.id }))
+                        projectWorks.map((work) => renderWorkItem(work, { inProjectId: proj.id }))
                       )}
                     </div>
                   )}
@@ -467,7 +515,7 @@ export default function Sidebar() {
             {pinned.length > 0 && (
               <div className="mb-2">
                 <div className="px-3 py-1.5 text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Pinned</div>
-                {pinned.map((run) => renderRunItem(run, { pinned: true }))}
+                {pinned.map((work) => renderWorkItem(work, { pinned: true }))}
               </div>
             )}
 
@@ -475,11 +523,11 @@ export default function Sidebar() {
             {groups.map((group) => (
               <div key={group.label} className="mb-2">
                 <div className="px-3 py-1.5 text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider">{group.label}</div>
-                {group.runs.map((run) => renderRunItem(run))}
+                {group.runs.map((work) => renderWorkItem(work))}
               </div>
             ))}
 
-            {runs.length === 0 && projects.length === 0 && (
+            {works.length === 0 && projects.length === 0 && (
               <div className="text-center py-12 px-4">
                 <p className="text-[13px] text-[var(--text-secondary)] font-medium">No research yet</p>
                 <p className="text-[12px] text-[var(--text-muted)] mt-1">Click &ldquo;New Research&rdquo; to start</p>
@@ -503,12 +551,12 @@ export default function Sidebar() {
   );
 }
 
-function groupByDate(runs: Run[]): { label: string; runs: Run[] }[] {
+function groupByDate(runs: SidebarWork[]): { label: string; runs: SidebarWork[] }[] {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yesterday = new Date(today.getTime() - 86400000);
   const weekAgo = new Date(today.getTime() - 7 * 86400000);
-  const groups: { label: string; runs: Run[] }[] = [
+  const groups: { label: string; runs: SidebarWork[] }[] = [
     { label: "Today", runs: [] }, { label: "Yesterday", runs: [] },
     { label: "Previous 7 days", runs: [] }, { label: "Older", runs: [] },
   ];

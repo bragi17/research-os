@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import {
   getWork,
   getWorkPhases,
@@ -17,6 +18,8 @@ import ArtifactCardDeck from "@/components/work/ArtifactCardDeck";
 import PhaseRunPanel from "@/components/work/PhaseRunPanel";
 import PhaseStepper from "@/components/work/PhaseStepper";
 
+const WORK_PHASE_HINTS_STORAGE_KEY = "ros_work_phases";
+
 function nextPhaseTarget(phase: ResearchPhase): {
   phase: ResearchPhase;
   executionKind?: StartPhaseExecutionData["execution_kind"];
@@ -24,6 +27,18 @@ function nextPhaseTarget(phase: ResearchPhase): {
   if (phase === "atlas") return { phase: "frontier" };
   if (phase === "frontier") return { phase: "divergent" };
   return { phase: "frontier", executionKind: "validation" };
+}
+
+function isResearchPhase(value: string | null): value is ResearchPhase {
+  return value === "atlas" || value === "frontier" || value === "divergent";
+}
+
+function rememberWorkPhase(workId: string, phase: ResearchPhase) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(WORK_PHASE_HINTS_STORAGE_KEY) || "{}");
+    const next = stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
+    localStorage.setItem(WORK_PHASE_HINTS_STORAGE_KEY, JSON.stringify({ ...next, [workId]: phase }));
+  } catch { /* silent */ }
 }
 
 function formatDate(value?: string | null): string {
@@ -38,21 +53,32 @@ function formatDate(value?: string | null): string {
 
 export default function WorkPage() {
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const workId = params.id;
+  const rawQueryPhase = searchParams.get("phase");
+  const queryPhase = isResearchPhase(rawQueryPhase) ? rawQueryPhase : null;
+  const phaseStartStatus = searchParams.get("phase_start");
   const phaseInitializedRef = useRef(false);
-  const phaseRef = useRef<ResearchPhase>("atlas");
+  const phaseRef = useRef<ResearchPhase>(queryPhase ?? "atlas");
   const cardsRequestSeqRef = useRef(0);
   const [work, setWork] = useState<Work | null>(null);
   const [executions, setExecutions] = useState<PhaseExecution[]>([]);
   const [cards, setCards] = useState<ArtifactCard[]>([]);
-  const [activePhase, setActivePhase] = useState<ResearchPhase>("atlas");
+  const [activePhase, setActivePhase] = useState<ResearchPhase>(queryPhase ?? "atlas");
   const [loading, setLoading] = useState(true);
   const [cardsLoading, setCardsLoading] = useState(false);
   const [runningAction, setRunningAction] = useState<"phase" | "next" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [rememberedPhase, setRememberedPhase] = useState<ResearchPhase | null>(null);
+  const [rememberedPhaseLoaded, setRememberedPhaseLoaded] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(
+    phaseStartStatus === "failed"
+      ? "Work created, but the initial phase did not start."
+      : null,
+  );
 
   const fetchWork = useCallback(async () => {
+    if (!rememberedPhaseLoaded) return;
     setError(null);
     try {
       const [workData, phaseData] = await Promise.all([
@@ -61,17 +87,18 @@ export default function WorkPage() {
       ]);
       setWork(workData);
       setExecutions(phaseData.executions ?? []);
-      if (!phaseInitializedRef.current && workData.active_phase) {
-        setActivePhase(workData.active_phase);
+      const initialPhase = queryPhase ?? workData.active_phase ?? rememberedPhase ?? "atlas";
+      if (!phaseInitializedRef.current) {
+        setActivePhase(initialPhase);
+        phaseInitializedRef.current = true;
       }
-      phaseInitializedRef.current = true;
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : "Failed to load work");
     } finally {
       setLoading(false);
     }
-  }, [workId]);
+  }, [queryPhase, rememberedPhase, rememberedPhaseLoaded, workId]);
 
   const fetchCards = useCallback(
     async (phase: ResearchPhase) => {
@@ -107,6 +134,39 @@ export default function WorkPage() {
     void fetchCards(activePhase);
   }, [activePhase, fetchCards]);
 
+  useEffect(() => {
+    setRememberedPhaseLoaded(false);
+    try {
+      const stored = JSON.parse(localStorage.getItem(WORK_PHASE_HINTS_STORAGE_KEY) || "{}");
+      const phaseHint = stored && typeof stored === "object" && !Array.isArray(stored) ? stored[workId] : null;
+      setRememberedPhase(isResearchPhase(phaseHint) ? phaseHint : null);
+    } catch {
+      setRememberedPhase(null);
+    } finally {
+      setRememberedPhaseLoaded(true);
+    }
+  }, [workId]);
+
+  useEffect(() => {
+    if (queryPhase) {
+      rememberWorkPhase(workId, queryPhase);
+      phaseInitializedRef.current = true;
+      setActivePhase(queryPhase);
+    }
+  }, [queryPhase, workId]);
+
+  useEffect(() => {
+    if (!queryPhase) {
+      rememberWorkPhase(workId, activePhase);
+    }
+  }, [activePhase, queryPhase, workId]);
+
+  useEffect(() => {
+    if (phaseStartStatus === "failed") {
+      setActionError("Work created, but the initial phase did not start.");
+    }
+  }, [phaseStartStatus]);
+
   const fetchCardsForActivePhase = useCallback(
     () => fetchCards(phaseRef.current),
     [fetchCards],
@@ -128,6 +188,14 @@ export default function WorkPage() {
   const selectedCards = phaseCards.filter(
     (card) => card.selection_state === "selected",
   );
+  const phaseStartRecoveryHref = work && phaseStartStatus === "failed"
+    ? `/new?mode=${activePhase}&topic=${encodeURIComponent(work.topic)}`
+    : null;
+
+  const onPhaseChange = (phase: ResearchPhase) => {
+    rememberWorkPhase(workId, phase);
+    setActivePhase(phase);
+  };
 
   const runPhase = async () => {
     setActionError(null);
@@ -172,6 +240,7 @@ export default function WorkPage() {
 
     try {
       await startPhaseExecution(workId, target.phase, data);
+      rememberWorkPhase(workId, target.phase);
       setActivePhase(target.phase);
       await fetchWork();
       await fetchCards(target.phase);
@@ -231,7 +300,7 @@ export default function WorkPage() {
       </header>
 
       <div className="mb-5">
-        <PhaseStepper activePhase={activePhase} onChange={setActivePhase} />
+        <PhaseStepper activePhase={activePhase} onChange={onPhaseChange} />
       </div>
 
       <div className="space-y-5">
@@ -246,8 +315,16 @@ export default function WorkPage() {
         />
 
         {actionError && (
-          <div className="rounded-lg border border-[var(--accent-red)]/30 bg-[var(--accent-red-soft)] px-3 py-2 text-[13px] text-[var(--accent-red)]">
-            {actionError}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--accent-red)]/30 bg-[var(--accent-red-soft)] px-3 py-2 text-[13px] text-[var(--accent-red)]">
+            <span>{actionError}</span>
+            {phaseStartRecoveryHref && (
+              <Link
+                href={phaseStartRecoveryHref}
+                className="rounded-md border border-[var(--accent-red)]/30 bg-white/70 px-2.5 py-1 text-[12px] font-medium text-[var(--accent-red)] transition-colors hover:bg-white"
+              >
+                Retry setup
+              </Link>
+            )}
           </div>
         )}
 

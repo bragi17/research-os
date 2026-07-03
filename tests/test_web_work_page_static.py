@@ -7,6 +7,8 @@ WORK_PAGE = Path("apps/web/src/app/works/[id]/page.tsx")
 PHASE_STEPPER = Path("apps/web/src/components/work/PhaseStepper.tsx")
 PHASE_RUN_PANEL = Path("apps/web/src/components/work/PhaseRunPanel.tsx")
 ARTIFACT_DECK = Path("apps/web/src/components/work/ArtifactCardDeck.tsx")
+SIDEBAR = Path("apps/web/src/components/Sidebar.tsx")
+NEW_PAGE = Path("apps/web/src/app/new/page.tsx")
 
 
 def test_work_api_types_and_helpers_exist() -> None:
@@ -147,3 +149,134 @@ def test_work_page_ignores_stale_card_responses() -> None:
     assert "requestedPhase" in source
     assert "if (requestId !== cardsRequestSeqRef.current)" in source
     assert "if (phaseRef.current !== requestedPhase)" in source
+
+
+def test_sidebar_lists_works_without_child_language() -> None:
+    source = SIDEBAR.read_text()
+
+    assert "listWorks" in source
+    assert "child of" not in source
+
+
+def test_sidebar_uses_work_links_on_primary_path() -> None:
+    source = SIDEBAR.read_text()
+
+    assert "phase ? `/works/${work.id}?phase=${phase}` : `/works/${work.id}`" in source
+    if "listRuns" in source:
+        assert source.index("listWorks") < source.index("listRuns")
+    assert "spawnRun" not in source
+    assert "/children" not in source
+
+
+def test_sidebar_preserves_known_work_phase_for_links() -> None:
+    source = SIDEBAR.read_text()
+
+    assert "ros_work_phases" in source
+    assert "workPhaseHints" in source
+    assert "const phase = work.active_phase ?? workPhaseHints[work.id] ?? (work.isFallbackRun ? work.mode : undefined)" in source
+    assert "const href = work.isFallbackRun" in source
+
+
+def test_new_research_creates_work_before_initial_phase() -> None:
+    source = NEW_PAGE.read_text()
+    create_index = source.index("const work = await createWork")
+    start_index = source.index("await startPhaseExecution(work.id")
+
+    assert create_index < start_index
+    assert "source_card_ids: []" in source
+    assert "manual_input" in source
+
+
+def test_new_research_routes_to_work_page() -> None:
+    source = NEW_PAGE.read_text()
+
+    assert "`/works/${work.id}?phase=${mode}`" in source
+    assert "rememberWorkPhase(work.id, mode)" in source
+    assert "createRunV2" not in source
+    assert "startRun" not in source
+    assert "`/runs/${" not in source
+    assert "spawnRun" not in source
+    assert "/children" not in source
+
+
+def test_work_page_initializes_phase_from_query_param() -> None:
+    source = WORK_PAGE.read_text()
+
+    assert "useSearchParams" in source
+    assert 'searchParams.get("phase")' in source
+    assert "isResearchPhase" in source
+    assert "rememberWorkPhase(workId, queryPhase)" in source
+    assert "queryPhase" in source
+    assert "queryPhase ?? workData.active_phase ?? rememberedPhase ?? \"atlas\"" in source
+
+
+def test_work_page_uses_remembered_phase_for_direct_load() -> None:
+    source = WORK_PAGE.read_text()
+
+    assert "const [rememberedPhase, setRememberedPhase]" in source
+    assert "localStorage.getItem(WORK_PHASE_HINTS_STORAGE_KEY)" in source
+    assert "setRememberedPhase(isResearchPhase(phaseHint) ? phaseHint : null)" in source
+    assert "queryPhase ?? workData.active_phase ?? rememberedPhase ?? \"atlas\"" in source
+
+
+def test_work_page_persists_active_phase_changes() -> None:
+    source = WORK_PAGE.read_text()
+
+    assert "rememberWorkPhase(workId, activePhase)" in source
+    assert "[activePhase, queryPhase, workId]" in source
+    assert "onPhaseChange" in source
+    assert "<PhaseStepper activePhase={activePhase} onChange={onPhaseChange}" in source
+    assert "rememberWorkPhase(workId, target.phase)" in source
+
+
+def test_work_page_fetch_work_only_applies_initial_phase_once() -> None:
+    source = WORK_PAGE.read_text()
+    fetch_source = source[
+        source.index("const fetchWork = useCallback") : source.index("const fetchCards = useCallback")
+    ]
+    guard_index = fetch_source.index("if (!phaseInitializedRef.current) {")
+    set_index = fetch_source.index("setActivePhase(initialPhase)")
+    initialized_index = fetch_source.index("phaseInitializedRef.current = true")
+
+    assert guard_index < set_index < initialized_index
+    assert "|| queryPhase" not in fetch_source
+    assert "|| (!workData.active_phase && rememberedPhase)" not in fetch_source
+    assert "if (!rememberedPhaseLoaded) return" in source
+
+
+def test_new_research_workspace_policy_uses_default_object_shape() -> None:
+    source = NEW_PAGE.read_text()
+    policy_index = source.index("const experimentWorkspacePolicy = {")
+    edited_index = source.index("if (workspaceEdited")
+
+    assert policy_index < edited_index
+    assert "path: displayedExperimentWorkspace.trim()" in source
+    assert "experiment_workspace: experimentWorkspacePolicy" in source
+    assert "manualInput.experiment_workspace = experimentWorkspacePolicy" in source
+    assert "policy.experiment_workspace = displayedExperimentWorkspace.trim()" not in source
+
+
+def test_new_research_phase_start_failure_routes_to_created_work() -> None:
+    source = NEW_PAGE.read_text()
+    create_index = source.index("const work = await createWork")
+    phase_try_index = source.index("try {\n        await startPhaseExecution(work.id")
+    phase_catch_index = source.index("catch (phaseErr)")
+    route_index = source.index(
+        "router.push(`/works/${work.id}?phase=${mode}&phase_start=failed`)",
+    )
+
+    assert create_index < phase_try_index < phase_catch_index < route_index
+    assert "Failed to create research" not in source[phase_catch_index:route_index]
+
+
+def test_failed_initial_phase_recovery_routes_to_prefilled_new_research() -> None:
+    work_source = WORK_PAGE.read_text()
+    new_source = NEW_PAGE.read_text()
+
+    assert "phaseStartRecoveryHref" in work_source
+    assert "`/new?mode=${activePhase}&topic=${encodeURIComponent(work.topic)}`" in work_source
+    assert 'href={phaseStartRecoveryHref}' in work_source
+    assert "Retry setup" in work_source
+    assert "You can run it from here" not in work_source
+    assert 'searchParams.get("topic")' in new_source
+    assert 'useState(topicParam ?? "")' in new_source
