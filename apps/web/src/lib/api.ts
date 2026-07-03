@@ -57,6 +57,50 @@ export const updateRun = (id: string, data: Record<string, unknown>) =>
 export const deleteRun = (id: string) =>
   apiFetch(`/api/v1/runs/${id}`, { method: "DELETE" });
 
+// Work management
+export const createWork = (data: WorkCreate) =>
+  apiFetch<Work>("/api/v1/works", { method: "POST", body: JSON.stringify(data) });
+
+export const listWorks = () =>
+  apiFetch<{ items: Work[]; total: number }>("/api/v1/works");
+
+export const getWork = (workId: string) =>
+  apiFetch<Work>(`/api/v1/works/${workId}`);
+
+export const getWorkPhases = (workId: string) =>
+  apiFetch<{ work_id: string; executions: PhaseExecution[] }>(`/api/v1/works/${workId}/phases`);
+
+export const listArtifactCards = (workId: string, phase?: ResearchPhase) => {
+  const query = phase ? `?phase=${encodeURIComponent(phase)}` : "";
+  return apiFetch<{ items: ArtifactCard[]; total: number }>(`/api/v1/works/${workId}/artifact-cards${query}`);
+};
+
+export const updateArtifactCard = (workId: string, cardId: string, data: ArtifactCardPatch) =>
+  apiFetch<ArtifactCard>(`/api/v1/works/${workId}/artifact-cards/${cardId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
+export const startPhaseExecution = (
+  workId: string,
+  phase: ResearchPhase,
+  data: StartPhaseExecutionData = {},
+) =>
+  apiFetch<PhaseExecution>(`/api/v1/works/${workId}/phases/${phase}/executions`, {
+    method: "POST",
+    body: JSON.stringify({ ...data, phase }),
+  });
+
+export const savePhaseInputs = (
+  workId: string,
+  phase: ResearchPhase,
+  data: PhaseInputSelectionUpdate,
+) =>
+  apiFetch<PhaseInputSelection>(`/api/v1/works/${workId}/phase-inputs/${phase}`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
 // Events & data
 export const getRunEvents = (id: string) =>
   apiFetch<{ run_id: string; total: number; events: RunEvent[] }>(`/api/v1/runs/${id}/events`);
@@ -147,6 +191,11 @@ export function subscribeToEvents(
 
 // Types
 export type RunMode = "atlas" | "frontier" | "divergent" | "review";
+export type ResearchPhase = Exclude<RunMode, "review">;
+export type PhaseExecutionKind = "standard" | "validation";
+export type PhaseExecutionStatus = "queued" | "running" | "paused" | "failed" | "completed" | "cancelled";
+export type ArtifactStatus = "active" | "archived" | "deleted";
+export type ArtifactSelectionState = "unselected" | "selected" | "used";
 
 export interface Run {
   id: string;
@@ -163,6 +212,98 @@ export interface Run {
   updated_at: string;
   started_at: string | null;
   completed_at: string | null;
+}
+
+export interface Work {
+  id: string;
+  workspace_id?: string;
+  created_by?: string | null;
+  title: string;
+  topic: string;
+  status: string;
+  active_phase?: ResearchPhase | null;
+  root_run_id?: string | null;
+  project_id?: string | null;
+  budget_json?: Record<string, unknown>;
+  policy_json?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkCreate {
+  title: string;
+  topic: string;
+  project_id?: string | null;
+  budget?: Record<string, unknown>;
+  policy?: Record<string, unknown>;
+}
+
+export interface PhaseExecution {
+  id: string;
+  work_id: string;
+  phase: ResearchPhase;
+  execution_kind: PhaseExecutionKind;
+  status: PhaseExecutionStatus;
+  backing_run_id?: string | null;
+  output_bundle_id?: string | null;
+  input_json?: {
+    manual_input?: Record<string, unknown>;
+    source_card_ids?: string[];
+    [key: string]: unknown;
+  };
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StartPhaseExecutionData {
+  execution_kind?: PhaseExecutionKind;
+  manual_input?: Record<string, unknown>;
+  source_card_ids?: string[];
+}
+
+export interface ArtifactCard {
+  id: string;
+  work_id: string;
+  phase: ResearchPhase;
+  artifact_type: string;
+  title: string;
+  body?: string | null;
+  payload: Record<string, unknown>;
+  status: ArtifactStatus;
+  selection_state: ArtifactSelectionState;
+  source_execution_id?: string | null;
+  source_card_ids?: string[];
+  created_by?: string | null;
+  updated_by?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ArtifactCardPatch {
+  title?: string;
+  body?: string | null;
+  payload?: Record<string, unknown>;
+  status?: ArtifactStatus;
+  selection_state?: ArtifactSelectionState;
+}
+
+export interface PhaseInputSelectionUpdate {
+  source_card_ids?: string[];
+  manual_input?: Record<string, unknown>;
+}
+
+export interface PhaseInputSelection {
+  id?: string;
+  work_id: string;
+  target_phase: ResearchPhase;
+  source_card_ids: string[];
+  manual_input_json: Record<string, unknown>;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface RunEvent {
