@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -615,3 +616,1036 @@ def test_save_phase_inputs_calls_upsert_with_expected_args(monkeypatch):
     assert captured["source_card_ids"] == [card_id]
     assert captured["manual_input_json"] == {"notes": "use these"}
     assert captured["created_by"] == UUID("00000000-0000-0000-0000-000000000000")
+
+
+def test_start_frontier_phase_execution_enqueues_same_work_payload(monkeypatch):
+    work_id = uuid4()
+    source_card_id = uuid4()
+    backing_run_id = uuid4()
+    execution_id = uuid4()
+    enqueued: list[tuple[UUID, dict[str, object]]] = []
+    run_updates: list[tuple[UUID, dict[str, object]]] = []
+    execution_updates: list[tuple[UUID, dict[str, object]]] = []
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "created_by": uuid4(),
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {"max_new_papers": 50},
+            "policy_json": {"keywords": ["3d anomaly"]},
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return [
+            {
+                "id": source_card_id,
+                "work_id": request_work_id,
+                "phase": "atlas",
+                "artifact_type": "atlas_direction",
+                "title": "Point-cloud inspection",
+                "payload": {"name": "Point-cloud inspection"},
+            }
+        ]
+
+    async def fake_create_run(data):
+        assert data["mode"] == "frontier"
+        assert data["parent_run_id"] is None
+        assert data["status"] == "failed"
+        return {**data, "id": backing_run_id}
+
+    async def fake_create_phase_execution(data):
+        assert data["work_id"] == work_id
+        assert data["phase"] == "frontier"
+        assert data["backing_run_id"] == backing_run_id
+        assert data["status"] == "failed"
+        assert data["input_json"]["manual_input"] == {
+            "scope": "industrial point clouds",
+        }
+        assert data["input_json"]["source_card_ids"] == [str(source_card_id)]
+        return {
+            "id": execution_id,
+            **data,
+            "status": "queued",
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_enqueue_run(run_id, payload):
+        enqueued.append((run_id, payload))
+        return True
+
+    async def fake_update_run(run_id, updates):
+        run_updates.append((run_id, updates))
+        return {**updates, "id": run_id}
+
+    async def fake_update_phase_execution(phase_execution_id, updates):
+        execution_updates.append((phase_execution_id, updates))
+        return {
+            "id": phase_execution_id,
+            "work_id": work_id,
+            "phase": "frontier",
+            "execution_kind": "standard",
+            "status": updates["status"],
+            "backing_run_id": backing_run_id,
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": updates["updated_at"],
+        }
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "apps.api.database.create_phase_execution",
+        fake_create_phase_execution,
+    )
+    monkeypatch.setattr("apps.api.database.update_run", fake_update_run)
+    monkeypatch.setattr(
+        "apps.api.database.update_phase_execution",
+        fake_update_phase_execution,
+    )
+    monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={
+            "phase": "frontier",
+            "source_card_ids": [str(source_card_id)],
+            "manual_input": {"scope": "industrial point clouds"},
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["phase"] == "frontier"
+    assert body["status"] == "queued"
+    assert enqueued[0][0] == backing_run_id
+    payload = enqueued[0][1]
+    assert payload["mode"] == "frontier"
+    assert payload["work_id"] == str(work_id)
+    assert payload["phase_execution_id"] == str(execution_id)
+    assert payload["context_bundle"]["sub_directions"] == [
+        {"name": "Point-cloud inspection"},
+    ]
+    assert run_updates[0][0] == backing_run_id
+    assert run_updates[0][1]["status"] == "queued"
+    assert run_updates[0][1]["completed_at"] is None
+    assert isinstance(run_updates[0][1]["updated_at"], datetime)
+    assert execution_updates[0][0] == execution_id
+    assert execution_updates[0][1]["status"] == "queued"
+    assert execution_updates[0][1]["error_message"] is None
+    assert execution_updates[0][1]["completed_at"] is None
+    assert isinstance(execution_updates[0][1]["updated_at"], datetime)
+
+
+def test_start_phase_execution_returns_500_when_queued_promotion_fails(
+    monkeypatch,
+):
+    work_id = uuid4()
+    source_card_id = uuid4()
+    backing_run_id = uuid4()
+    execution_id = uuid4()
+    enqueued: list[tuple[UUID, dict[str, object]]] = []
+    run_updates: list[tuple[UUID, dict[str, object]]] = []
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {},
+            "policy_json": {},
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return [
+            {
+                "id": source_card_id,
+                "work_id": request_work_id,
+                "phase": "atlas",
+                "artifact_type": "atlas_direction",
+                "title": "Point-cloud inspection",
+                "payload": {"name": "Point-cloud inspection"},
+            }
+        ]
+
+    async def fake_create_run(data):
+        assert data["status"] == "failed"
+        return {**data, "id": backing_run_id}
+
+    async def fake_create_phase_execution(data):
+        assert data["status"] == "failed"
+        return {
+            "id": execution_id,
+            **data,
+            "status": data["status"],
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_enqueue_run(run_id, payload):
+        enqueued.append((run_id, payload))
+        return True
+
+    async def fake_update_run(run_id, updates):
+        run_updates.append((run_id, updates))
+        return {**updates, "id": run_id}
+
+    async def fake_update_phase_execution(phase_execution_id, updates):
+        raise RuntimeError("phase promotion failed")
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "apps.api.database.create_phase_execution",
+        fake_create_phase_execution,
+    )
+    monkeypatch.setattr("apps.api.database.update_run", fake_update_run)
+    monkeypatch.setattr(
+        "apps.api.database.update_phase_execution",
+        fake_update_phase_execution,
+    )
+    monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={
+            "phase": "frontier",
+            "source_card_ids": [str(source_card_id)],
+            "manual_input": {},
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to mark phase execution queued"
+    assert enqueued[0][0] == backing_run_id
+    assert run_updates[0][1]["status"] == "queued"
+
+
+def test_start_phase_execution_returns_500_when_run_promotion_returns_none(
+    monkeypatch,
+):
+    work_id = uuid4()
+    source_card_id = uuid4()
+    backing_run_id = uuid4()
+    execution_id = uuid4()
+    enqueued: list[tuple[UUID, dict[str, object]]] = []
+    phase_execution_promoted = False
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {},
+            "policy_json": {},
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return [
+            {
+                "id": source_card_id,
+                "work_id": request_work_id,
+                "phase": "atlas",
+                "artifact_type": "atlas_direction",
+                "title": "Point-cloud inspection",
+                "payload": {"name": "Point-cloud inspection"},
+            }
+        ]
+
+    async def fake_create_run(data):
+        return {**data, "id": backing_run_id}
+
+    async def fake_create_phase_execution(data):
+        return {
+            "id": execution_id,
+            **data,
+            "status": data["status"],
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_enqueue_run(run_id, payload):
+        enqueued.append((run_id, payload))
+        return True
+
+    async def fake_update_run(run_id, updates):
+        return None
+
+    async def fake_update_phase_execution(phase_execution_id, updates):
+        nonlocal phase_execution_promoted
+        phase_execution_promoted = True
+        return updates
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "apps.api.database.create_phase_execution",
+        fake_create_phase_execution,
+    )
+    monkeypatch.setattr("apps.api.database.update_run", fake_update_run)
+    monkeypatch.setattr(
+        "apps.api.database.update_phase_execution",
+        fake_update_phase_execution,
+    )
+    monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={
+            "phase": "frontier",
+            "source_card_ids": [str(source_card_id)],
+            "manual_input": {},
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to mark run queued"
+    assert enqueued[0][0] == backing_run_id
+    assert phase_execution_promoted is False
+
+
+def test_start_phase_execution_clears_legacy_auto_spawn_policy(monkeypatch):
+    work_id = uuid4()
+    source_card_id = uuid4()
+    backing_run_id = uuid4()
+    execution_id = uuid4()
+    captured_run: dict[str, object] = {}
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {},
+            "policy_json": {
+                "auto_continue": True,
+                "auto_spawn_next": True,
+                "keywords": ["3d anomaly"],
+                "seed_papers": ["paper-1"],
+                "library_pool_ids": ["pool-1"],
+            },
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return [
+            {
+                "id": source_card_id,
+                "work_id": request_work_id,
+                "phase": "atlas",
+                "artifact_type": "atlas_direction",
+                "title": "Point-cloud inspection",
+                "payload": {"name": "Point-cloud inspection"},
+            }
+        ]
+
+    async def fake_create_run(data):
+        captured_run.update(data)
+        return {**data, "id": backing_run_id}
+
+    async def fake_create_phase_execution(data):
+        return {
+            "id": execution_id,
+            **data,
+            "status": data["status"],
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_enqueue_run(run_id, payload):
+        return True
+
+    async def fake_update_run(run_id, updates):
+        return {**updates, "id": run_id}
+
+    async def fake_update_phase_execution(phase_execution_id, updates):
+        return {
+            "id": phase_execution_id,
+            "work_id": work_id,
+            "phase": "frontier",
+            "execution_kind": "standard",
+            "status": updates["status"],
+            "backing_run_id": backing_run_id,
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": updates["updated_at"],
+        }
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "apps.api.database.create_phase_execution",
+        fake_create_phase_execution,
+    )
+    monkeypatch.setattr("apps.api.database.update_run", fake_update_run)
+    monkeypatch.setattr(
+        "apps.api.database.update_phase_execution",
+        fake_update_phase_execution,
+    )
+    monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={"phase": "frontier", "source_card_ids": [str(source_card_id)]},
+    )
+
+    assert response.status_code == 201
+    policy = captured_run["policy_json"]
+    assert policy.get("auto_continue") is not True
+    assert policy.get("auto_spawn_next") is not True
+    assert policy["keywords"] == ["3d anomaly"]
+    assert policy["seed_papers"] == ["paper-1"]
+    assert policy["library_pool_ids"] == ["pool-1"]
+
+
+def test_start_phase_execution_uses_all_work_cards_when_no_source_ids(
+    monkeypatch,
+):
+    work_id = uuid4()
+    backing_run_id = uuid4()
+    execution_id = uuid4()
+    atlas_card_id = uuid4()
+    gap_card_id = uuid4()
+    enqueued: list[tuple[UUID, dict[str, object]]] = []
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {},
+            "policy_json": {},
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return [
+            {
+                "id": atlas_card_id,
+                "work_id": request_work_id,
+                "phase": "atlas",
+                "artifact_type": "atlas_direction",
+                "title": "Point-cloud inspection",
+                "payload": {"name": "Point-cloud inspection"},
+            },
+            {
+                "id": gap_card_id,
+                "work_id": request_work_id,
+                "phase": "frontier",
+                "artifact_type": "frontier_gap",
+                "title": "Sparse labels",
+                "payload": {"name": "Sparse labels"},
+            },
+        ]
+
+    async def fake_create_run(data):
+        return {**data, "id": backing_run_id}
+
+    async def fake_create_phase_execution(data):
+        return {
+            "id": execution_id,
+            **data,
+            "status": data["status"],
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_enqueue_run(run_id, payload):
+        enqueued.append((run_id, payload))
+        return True
+
+    async def fake_update_run(run_id, updates):
+        return {**updates, "id": run_id}
+
+    async def fake_update_phase_execution(phase_execution_id, updates):
+        return {
+            "id": phase_execution_id,
+            "work_id": work_id,
+            "phase": "frontier",
+            "execution_kind": "standard",
+            "status": updates["status"],
+            "backing_run_id": backing_run_id,
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": updates["updated_at"],
+        }
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "apps.api.database.create_phase_execution",
+        fake_create_phase_execution,
+    )
+    monkeypatch.setattr("apps.api.database.update_run", fake_update_run)
+    monkeypatch.setattr(
+        "apps.api.database.update_phase_execution",
+        fake_update_phase_execution,
+    )
+    monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={"phase": "frontier", "manual_input": {}},
+    )
+
+    assert response.status_code == 201
+    context_bundle = enqueued[0][1]["context_bundle"]
+    assert context_bundle["sub_directions"] == [
+        {"name": "Point-cloud inspection"},
+    ]
+    assert context_bundle["gaps"] == [{"name": "Sparse labels"}]
+    assert context_bundle["artifact_cards"] == [
+        {
+            "id": str(atlas_card_id),
+            "work_id": str(work_id),
+            "phase": "atlas",
+            "artifact_type": "atlas_direction",
+            "title": "Point-cloud inspection",
+            "payload": {"name": "Point-cloud inspection"},
+        },
+        {
+            "id": str(gap_card_id),
+            "work_id": str(work_id),
+            "phase": "frontier",
+            "artifact_type": "frontier_gap",
+            "title": "Sparse labels",
+            "payload": {"name": "Sparse labels"},
+        },
+    ]
+
+
+def test_start_phase_execution_path_body_mismatch_returns_400():
+    work_id = uuid4()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={"phase": "atlas", "source_card_ids": [], "manual_input": {}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Phase path and request body do not match"
+
+
+def test_start_phase_execution_invalid_phase_returns_400():
+    work_id = uuid4()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/invalid/executions",
+        json={"phase": "frontier", "source_card_ids": [], "manual_input": {}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid phase"
+
+
+def test_start_non_atlas_phase_without_upstream_or_manual_input_returns_400(
+    monkeypatch,
+):
+    work_id = uuid4()
+    create_run_called = False
+    enqueue_called = False
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {},
+            "policy_json": {},
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return []
+
+    async def fake_create_run(data):
+        nonlocal create_run_called
+        create_run_called = True
+        return data
+
+    async def fake_enqueue_run(run_id, payload):
+        nonlocal enqueue_called
+        enqueue_called = True
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={"phase": "frontier", "source_card_ids": [], "manual_input": {}},
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "Select upstream cards or provide manual input before starting this phase"
+    )
+    assert create_run_called is False
+    assert enqueue_called is False
+
+
+def test_start_phase_execution_rejects_wrong_work_source_card_before_create(
+    monkeypatch,
+):
+    work_id = uuid4()
+    foreign_card_id = uuid4()
+    create_run_called = False
+    create_execution_called = False
+    enqueue_called = False
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {},
+            "policy_json": {},
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return []
+
+    async def fake_create_run(data):
+        nonlocal create_run_called
+        create_run_called = True
+        return data
+
+    async def fake_create_phase_execution(data):
+        nonlocal create_execution_called
+        create_execution_called = True
+        return data
+
+    async def fake_enqueue_run(run_id, payload):
+        nonlocal enqueue_called
+        enqueue_called = True
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "apps.api.database.create_phase_execution",
+        fake_create_phase_execution,
+    )
+    monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={
+            "phase": "frontier",
+            "source_card_ids": [str(foreign_card_id)],
+            "manual_input": {"scope": "industrial point clouds"},
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Artifact card not found"
+    assert create_run_called is False
+    assert create_execution_called is False
+    assert enqueue_called is False
+
+
+def test_start_atlas_phase_allows_empty_upstream_and_manual_input(monkeypatch):
+    work_id = uuid4()
+    backing_run_id = uuid4()
+    execution_id = uuid4()
+    enqueued: list[tuple[UUID, dict[str, object]]] = []
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {},
+            "policy_json": {},
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return []
+
+    async def fake_create_run(data):
+        assert data["mode"] == "atlas"
+        assert data["parent_run_id"] is None
+        return {**data, "id": backing_run_id}
+
+    async def fake_create_phase_execution(data):
+        return {
+            "id": execution_id,
+            **data,
+            "status": data["status"],
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_enqueue_run(run_id, payload):
+        enqueued.append((run_id, payload))
+
+    async def fake_update_run(run_id, updates):
+        return {**updates, "id": run_id}
+
+    async def fake_update_phase_execution(phase_execution_id, updates):
+        return {
+            "id": phase_execution_id,
+            "work_id": work_id,
+            "phase": "atlas",
+            "execution_kind": "standard",
+            "status": updates["status"],
+            "backing_run_id": backing_run_id,
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": updates["updated_at"],
+        }
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "apps.api.database.create_phase_execution",
+        fake_create_phase_execution,
+    )
+    monkeypatch.setattr("apps.api.database.update_run", fake_update_run)
+    monkeypatch.setattr(
+        "apps.api.database.update_phase_execution",
+        fake_update_phase_execution,
+    )
+    monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/atlas/executions",
+        json={"phase": "atlas", "source_card_ids": [], "manual_input": {}},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["phase"] == "atlas"
+    assert enqueued[0][0] == backing_run_id
+    assert enqueued[0][1]["context_bundle"]["artifact_cards"] == []
+
+
+def test_start_phase_execution_enqueue_failure_returns_503(monkeypatch):
+    work_id = uuid4()
+    source_card_id = uuid4()
+    backing_run_id = uuid4()
+    execution_id = uuid4()
+    run_updates: list[tuple[UUID, dict[str, object]]] = []
+    execution_updates: list[tuple[UUID, dict[str, object]]] = []
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {},
+            "policy_json": {},
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return [
+            {
+                "id": source_card_id,
+                "work_id": request_work_id,
+                "phase": "atlas",
+                "artifact_type": "atlas_direction",
+                "title": "Point-cloud inspection",
+                "payload": {"name": "Point-cloud inspection"},
+            }
+        ]
+
+    async def fake_create_run(data):
+        return {**data, "id": backing_run_id}
+
+    async def fake_create_phase_execution(data):
+        return {
+            "id": execution_id,
+            **data,
+            "status": "queued",
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_enqueue_run(run_id, payload):
+        raise RuntimeError("queue unavailable")
+
+    async def fake_update_run(run_id, updates):
+        run_updates.append((run_id, updates))
+        return updates
+
+    async def fake_update_phase_execution(phase_execution_id, updates):
+        execution_updates.append((phase_execution_id, updates))
+        return updates
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "apps.api.database.create_phase_execution",
+        fake_create_phase_execution,
+    )
+    monkeypatch.setattr("apps.api.database.update_run", fake_update_run)
+    monkeypatch.setattr(
+        "apps.api.database.update_phase_execution",
+        fake_update_phase_execution,
+    )
+    monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={
+            "phase": "frontier",
+            "source_card_ids": [str(source_card_id)],
+            "manual_input": {},
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Failed to enqueue run"
+    assert run_updates[0][0] == backing_run_id
+    assert run_updates[0][1]["status"] == "failed"
+    assert isinstance(run_updates[0][1]["updated_at"], datetime)
+    assert isinstance(run_updates[0][1]["completed_at"], datetime)
+    assert execution_updates[0][0] == execution_id
+    assert execution_updates[0][1]["status"] == "failed"
+    assert execution_updates[0][1]["error_message"] == "Failed to enqueue run"
+    assert isinstance(execution_updates[0][1]["updated_at"], datetime)
+    assert isinstance(execution_updates[0][1]["completed_at"], datetime)
+
+
+def test_start_phase_execution_marks_run_failed_when_execution_create_fails(
+    monkeypatch,
+):
+    work_id = uuid4()
+    source_card_id = uuid4()
+    backing_run_id = uuid4()
+    run_updates: list[tuple[UUID, dict[str, object]]] = []
+    enqueue_called = False
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {},
+            "policy_json": {},
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return [
+            {
+                "id": source_card_id,
+                "work_id": request_work_id,
+                "phase": "atlas",
+                "artifact_type": "atlas_direction",
+                "title": "Point-cloud inspection",
+                "payload": {"name": "Point-cloud inspection"},
+            }
+        ]
+
+    async def fake_create_run(data):
+        return {**data, "id": backing_run_id}
+
+    async def fake_create_phase_execution(data):
+        raise RuntimeError("phase insert failed")
+
+    async def fake_update_run(run_id, updates):
+        run_updates.append((run_id, updates))
+        return updates
+
+    async def fake_enqueue_run(run_id, payload):
+        nonlocal enqueue_called
+        enqueue_called = True
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "apps.api.database.create_phase_execution",
+        fake_create_phase_execution,
+    )
+    monkeypatch.setattr("apps.api.database.update_run", fake_update_run)
+    monkeypatch.setattr("apps.worker.task_queue.enqueue_run", fake_enqueue_run)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={
+            "phase": "frontier",
+            "source_card_ids": [str(source_card_id)],
+            "manual_input": {},
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to create phase execution"
+    assert run_updates[0][0] == backing_run_id
+    assert run_updates[0][1]["status"] == "failed"
+    assert isinstance(run_updates[0][1]["updated_at"], datetime)
+    assert isinstance(run_updates[0][1]["completed_at"], datetime)
+    assert enqueue_called is False
+
+
+def test_start_phase_execution_enqueues_json_serializable_card_context(
+    monkeypatch,
+):
+    work_id = uuid4()
+    source_card_id = uuid4()
+    backing_run_id = uuid4()
+    execution_id = uuid4()
+    source_execution_id = uuid4()
+    upstream_card_id = uuid4()
+    created_at = datetime.now(timezone.utc)
+    pushed: list[str] = []
+
+    class FakeRedis:
+        async def rpush(self, _queue_key, job):
+            pushed.append(job)
+
+    async def fake_get_work(request_work_id, workspace_id):
+        return {
+            "id": request_work_id,
+            "workspace_id": workspace_id,
+            "title": "3D AD",
+            "topic": "3D anomaly detection for point clouds",
+            "budget_json": {"max_new_papers": 50},
+            "policy_json": {"keywords": ["3d anomaly"]},
+            "project_id": None,
+        }
+
+    async def fake_list_artifact_cards(request_work_id, phase=None):
+        return [
+            {
+                "id": source_card_id,
+                "work_id": request_work_id,
+                "phase": "atlas",
+                "artifact_type": "atlas_direction",
+                "title": "Point-cloud inspection",
+                "body": "Inspect sparse point clouds.",
+                "payload": {
+                    "name": "Point-cloud inspection",
+                    "related_ids": [uuid4()],
+                    "observed_at": created_at,
+                },
+                "status": "active",
+                "selection_state": "selected",
+                "source_execution_id": source_execution_id,
+                "source_card_ids": [upstream_card_id],
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+        ]
+
+    async def fake_create_run(data):
+        return {**data, "id": backing_run_id}
+
+    async def fake_create_phase_execution(data):
+        return {
+            "id": execution_id,
+            **data,
+            "status": data["status"],
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_get_redis():
+        return FakeRedis()
+
+    async def fake_update_run(run_id, updates):
+        return {**updates, "id": run_id}
+
+    async def fake_update_phase_execution(phase_execution_id, updates):
+        return {
+            "id": phase_execution_id,
+            "work_id": work_id,
+            "phase": "frontier",
+            "execution_kind": "standard",
+            "status": updates["status"],
+            "backing_run_id": backing_run_id,
+            "output_bundle_id": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": updates["updated_at"],
+        }
+
+    monkeypatch.setattr("apps.api.database.get_work", fake_get_work)
+    monkeypatch.setattr("apps.api.database.list_artifact_cards", fake_list_artifact_cards)
+    monkeypatch.setattr("apps.api.database.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "apps.api.database.create_phase_execution",
+        fake_create_phase_execution,
+    )
+    monkeypatch.setattr("apps.api.database.update_run", fake_update_run)
+    monkeypatch.setattr(
+        "apps.api.database.update_phase_execution",
+        fake_update_phase_execution,
+    )
+    monkeypatch.setattr("apps.worker.task_queue.get_redis", fake_get_redis)
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/works/{work_id}/phases/frontier/executions",
+        json={
+            "phase": "frontier",
+            "source_card_ids": [str(source_card_id)],
+            "manual_input": {"scope": "industrial point clouds"},
+        },
+    )
+
+    assert response.status_code == 201
+    queued = json.loads(pushed[0])
+    context_bundle = queued["context_bundle"]
+    assert context_bundle["sub_directions"][0]["name"] == "Point-cloud inspection"
+    assert context_bundle["sub_directions"][0]["observed_at"] == created_at.isoformat()
+    assert context_bundle["artifact_cards"][0] == {
+        "id": str(source_card_id),
+        "work_id": str(work_id),
+        "phase": "atlas",
+        "artifact_type": "atlas_direction",
+        "title": "Point-cloud inspection",
+        "body": "Inspect sparse point clouds.",
+        "payload": context_bundle["sub_directions"][0],
+        "status": "active",
+        "selection_state": "selected",
+        "source_execution_id": str(source_execution_id),
+        "source_card_ids": [str(upstream_card_id)],
+    }
