@@ -6,6 +6,7 @@ API = Path("apps/web/src/lib/api.ts")
 WORK_PAGE = Path("apps/web/src/app/works/[id]/page.tsx")
 PHASE_STEPPER = Path("apps/web/src/components/work/PhaseStepper.tsx")
 PHASE_RUN_PANEL = Path("apps/web/src/components/work/PhaseRunPanel.tsx")
+ARTIFACT_DECK = Path("apps/web/src/components/work/ArtifactCardDeck.tsx")
 
 
 def test_work_api_types_and_helpers_exist() -> None:
@@ -44,6 +45,7 @@ def test_work_page_uses_phase_model_not_child_runs() -> None:
     assert "startPhaseExecution(" in source
     assert "PhaseStepper" in source
     assert "PhaseRunPanel" in source
+    assert "ArtifactCardDeck" in source
     assert "child of" not in source
     assert "spawnRun" not in source
     assert "/children" not in source
@@ -85,6 +87,25 @@ def test_phase_run_panel_disables_current_phase_action_without_input() -> None:
     assert "disabled={phaseDisabled}" in source
     assert "title={phaseActionTitle}" in source
     assert "aria-label={phaseActionAriaLabel}" in source
+
+
+def test_artifact_deck_supports_edit_and_selection() -> None:
+    source = ARTIFACT_DECK.read_text()
+
+    assert "selection_state" in source
+    assert "updateArtifactCard" in source
+    assert "Edit" in source
+    assert "Save" in source
+    assert "Selected" in source
+
+
+def test_work_page_renders_artifact_deck_with_active_phase_cards() -> None:
+    source = WORK_PAGE.read_text()
+
+    assert "import ArtifactCardDeck" in source
+    assert "<ArtifactCardDeck" in source
+    assert "cards={cards.filter((card) => card.phase === activePhase)}" in source
+    assert "onCardsChanged={fetchCardsForActivePhase}" in source
 
 
 def test_work_page_current_phase_action_requires_input_for_non_atlas() -> None:

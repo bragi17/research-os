@@ -13,14 +13,9 @@ import {
   type StartPhaseExecutionData,
   type Work,
 } from "@/lib/api";
+import ArtifactCardDeck from "@/components/work/ArtifactCardDeck";
 import PhaseRunPanel from "@/components/work/PhaseRunPanel";
 import PhaseStepper from "@/components/work/PhaseStepper";
-
-const PHASE_LABELS: Record<ResearchPhase, string> = {
-  atlas: "Atlas",
-  frontier: "Frontier",
-  divergent: "Divergent",
-};
 
 function nextPhaseTarget(phase: ResearchPhase): {
   phase: ResearchPhase;
@@ -112,6 +107,11 @@ export default function WorkPage() {
     void fetchCards(activePhase);
   }, [activePhase, fetchCards]);
 
+  const fetchCardsForActivePhase = useCallback(
+    () => fetchCards(phaseRef.current),
+    [fetchCards],
+  );
+
   const phaseExecutions = useMemo(
     () =>
       executions
@@ -128,7 +128,6 @@ export default function WorkPage() {
   const selectedCards = phaseCards.filter(
     (card) => card.selection_state === "selected",
   );
-  const visibleCards = phaseCards.slice(0, 8);
 
   const runPhase = async () => {
     setActionError(null);
@@ -252,66 +251,12 @@ export default function WorkPage() {
           </div>
         )}
 
-        <section className="card-static p-5">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-[15px] font-medium text-[var(--text-primary)]">
-                {PHASE_LABELS[activePhase]} artifact cards
-              </h2>
-              <p className="mt-0.5 text-[12px] text-[var(--text-muted)]">
-                {phaseCards.length} total · {selectedCards.length} selected
-              </p>
-            </div>
-          </div>
-
-          {cardsLoading ? (
-            <div className="py-8 text-center text-[13px] text-[var(--text-muted)]">
-              Loading cards...
-            </div>
-          ) : visibleCards.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-[var(--border-subtle)] px-4 py-8 text-center text-[13px] text-[var(--text-muted)]">
-              No cards for this phase.
-            </div>
-          ) : (
-            <div className="divide-y divide-[var(--border-subtle)]">
-              {visibleCards.map((card) => (
-                <div
-                  key={card.id}
-                  className="flex flex-wrap items-start justify-between gap-3 py-3 first:pt-0 last:pb-0"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-1 flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                        {card.artifact_type.replaceAll("_", " ")}
-                      </span>
-                      {card.selection_state === "selected" && (
-                        <span className="rounded-full bg-[var(--accent-green-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--accent-green)]">
-                          Selected
-                        </span>
-                      )}
-                    </div>
-                    <h3 className="truncate text-[14px] font-medium text-[var(--text-primary)]">
-                      {card.title}
-                    </h3>
-                    {card.body && (
-                      <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-[var(--text-secondary)]">
-                        {card.body}
-                      </p>
-                    )}
-                  </div>
-                  <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
-                    {formatDate(card.updated_at)}
-                  </span>
-                </div>
-              ))}
-              {phaseCards.length > visibleCards.length && (
-                <div className="pt-3 text-[12px] text-[var(--text-muted)]">
-                  +{phaseCards.length - visibleCards.length} more
-                </div>
-              )}
-            </div>
-          )}
-        </section>
+        <ArtifactCardDeck
+          workId={workId}
+          cards={cards.filter((card) => card.phase === activePhase)}
+          onCardsChanged={fetchCardsForActivePhase}
+          loading={cardsLoading}
+        />
 
         <section className="card-static p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
