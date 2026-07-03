@@ -27,6 +27,18 @@
 | Divergent (C) | 7 | 5 | `apps/worker/modes/divergent.py` |
 | Review (X) | 3 | 2 | `apps/worker/modes/review.py` |
 
+### 1.3 用户可见编排层
+
+用户界面的主模型是 topic work，而不是一串可见 child run：
+
+| 表 | 角色 | 与 Agent/Workflow 的关系 |
+|----|------|--------------------------|
+| `research_work` | 一个用户可见的研究主题工作区 | 持有 topic、当前 phase、预算和策略；侧边栏和 `/works/{id}` 页面以它为主入口 |
+| `phase_execution` | Atlas、Frontier、Divergent 或 Frontier validation 的一次 phase 执行 | 记录 phase 状态、输入、输出 bundle 和可选 `backing_run_id`；底层仍可复用 `research_run`/Redis/worker graph |
+| `artifact_card` | phase 输出的可编辑卡片 | 由 worker 输出抽取生成；用户编辑和选择后的 cards 组成后续 phase 的 input deck |
+
+Atlas -> Frontier -> Divergent 可以独立运行，也可以逐步使用上游 selected artifact cards 作为输入。`research_run` 仍是兼容执行后端和旧路由数据源；新用户流程应优先通过 `research_work`、`phase_execution`、`artifact_card` 呈现。
+
 ---
 
 ## 2. 所有系统提示词
@@ -143,7 +155,9 @@
 ### 4.1 总体执行流
 
 ```
-用户创建 Run → Redis Queue → Worker Runner
+用户打开/创建 research_work
+    ↓ 启动 Atlas / Frontier / Divergent phase
+phase_execution → backing research_run → Redis Queue → Worker Runner
     ↓
 _execute_run():
     1. get_run() from DB
@@ -155,7 +169,8 @@ _execute_run():
          ├─ divergent: 7 节点 StateGraph
          └─ review:   3 节点 StateGraph
     5. _persist_results() → pain_points + papers + context_bundle → DB
-    6. publish events
+    6. extract artifact_card rows for the phase
+    7. publish events
 ```
 
 ### 4.2 Frontier 详细流

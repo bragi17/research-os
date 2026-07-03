@@ -1,11 +1,32 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
-
+from pathlib import Path
 
 RUN_PAGE = Path("apps/web/src/app/runs/[id]/page.tsx")
 DIVERGENT_PAGE = Path("apps/web/src/app/runs/[id]/divergent/page.tsx")
+API_FILE = Path("apps/web/src/lib/api.ts")
+LEGACY_CONTINUATION_COPY = (
+    "child of",
+    "Check prior art further",
+    "Explore innovations for these gaps",
+    "Phase continuation",
+    "Continue in topic work",
+)
+
+
+def test_legacy_run_pages_do_not_show_old_phase_continuation_copy() -> None:
+    for path in (RUN_PAGE, DIVERGENT_PAGE):
+        source = path.read_text()
+
+        for text in LEGACY_CONTINUATION_COPY:
+            assert text not in source
+
+
+def test_frontend_run_type_carries_work_id_for_legacy_work_links() -> None:
+    source = API_FILE.read_text()
+
+    assert "work_id?: string | null;" in source
 
 
 def test_run_results_paper_list_is_collapsible_and_closed_by_default() -> None:
@@ -41,12 +62,13 @@ def test_run_page_always_shows_current_frontier_full_results_link() -> None:
 def test_run_page_exposes_same_run_divergent_phase_from_events() -> None:
     source = RUN_PAGE.read_text()
 
+    assert "work_id" in source
     assert "hasDivergentPhase" in source
     assert 'event.event_type === "run.divergent_enqueued"' in source
     assert 'event.event_type === "user.action.start_divergent"' in source
     assert 'event.payload?.mode === "divergent"' in source
     assert "View full Divergent results" in source
-    assert "Explore innovations for these gaps" in source
+    assert "Open topic work" in source
 
 
 def test_divergent_full_results_include_papers_section() -> None:
@@ -58,14 +80,18 @@ def test_divergent_full_results_include_papers_section() -> None:
     assert "papers.slice(0, 20)" not in source
 
 
-def test_divergent_prior_art_cta_posts_target_mode_and_stays_visible_near_top() -> None:
+def test_divergent_page_retires_child_frontier_spawn_fallback() -> None:
     source = DIVERGENT_PAGE.read_text()
 
-    assert 'target_mode: "frontier"' in source
-    assert "await startRun(newRun.id)" in source
+    assert "spawnRun" not in source
+    assert "startRun" not in source
+    assert "await startRun(newRun.id)" not in source
+    assert "useRouter" not in source
+    assert "spawning" not in source
     assert re.search(r"[{,]\s*mode:\s*\"frontier\"", source) is None
     assert "linear-gradient(135deg, var(--accent-purple)" not in source
-    assert source.count("Check prior art further") >= 2
+    assert "?mode=frontier" in source
+    assert "encodeURIComponent(run.topic)" in source
 
 
 def test_divergent_papers_can_be_added_to_library_and_opened_after_add() -> None:

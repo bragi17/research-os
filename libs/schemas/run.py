@@ -338,6 +338,7 @@ class RunResponse(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     project_id: UUID | None = None
+    work_id: UUID | None = None
     # v2 multi-mode fields
     mode: str | None = None
     parent_run_id: UUID | None = None

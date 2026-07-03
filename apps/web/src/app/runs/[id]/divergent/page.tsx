@@ -1,15 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
   getRun,
   getRunPapers,
   getPainPoints,
   getIdeaCards,
-  spawnRun,
-  startRun,
   addToLibrary,
   type Run,
   type Paper,
@@ -18,9 +16,12 @@ import {
 } from "@/lib/api";
 import IdeaCardDisplay from "@/components/IdeaCardDisplay";
 
+function getWorkHref(run: Run): string | null {
+  return run.work_id ? `/works/${run.work_id}` : null;
+}
+
 export default function DivergentPage() {
   const params = useParams();
-  const router = useRouter();
   const runId = params.id as string;
 
   const [run, setRun] = useState<Run | null>(null);
@@ -28,7 +29,6 @@ export default function DivergentPage() {
   const [painPoints, setPainPoints] = useState<PainPoint[]>([]);
   const [ideaCards, setIdeaCards] = useState<IdeaCard[]>([]);
   const [loading, setLoading] = useState(true);
-  const [spawning, setSpawning] = useState(false);
   const [addingPaperId, setAddingPaperId] = useState<string | null>(null);
   const [libraryPaperIds, setLibraryPaperIds] = useState<Record<string, string>>({});
   const [libraryError, setLibraryError] = useState<string | null>(null);
@@ -63,24 +63,6 @@ export default function DivergentPage() {
   const safeIdeas = ideaCards.filter(
     (ic) => ic.prior_art_check_status !== "flagged",
   );
-
-  const handleSpawnFrontier = async () => {
-    if (!run) return;
-    setSpawning(true);
-    try {
-      const newRun = (await spawnRun(runId, {
-        target_mode: "frontier",
-        title: `Prior Art Check: ${run.topic}`,
-        topic: run.topic,
-      })) as { id: string };
-      await startRun(newRun.id);
-      router.push(`/runs/${newRun.id}`);
-    } catch (e) {
-      console.error("Failed to spawn frontier run", e);
-    } finally {
-      setSpawning(false);
-    }
-  };
 
   const handleAddPaperToLibrary = async (paper: Paper) => {
     setAddingPaperId(paper.id);
@@ -130,6 +112,9 @@ export default function DivergentPage() {
       </div>
     );
   }
+
+  const workHref = getWorkHref(run);
+  const frontierNewHref = `/new?mode=frontier&topic=${encodeURIComponent(run.topic)}`;
 
   return (
     <div className="max-w-[1060px] mx-auto px-8 py-8 space-y-6">
@@ -213,26 +198,15 @@ export default function DivergentPage() {
           )}
         </div>
         <div className="mt-5 flex flex-wrap items-center gap-3">
-          <button
-            onClick={handleSpawnFrontier}
-            disabled={spawning}
-            className="btn-primary text-[13px] px-4"
-          >
-            {spawning ? (
-              <span className="flex items-center gap-2">
-                <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                Spawning...
-              </span>
-            ) : (
-              <span className="flex items-center gap-2">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5" />
-                  <path d="M7 4V7L9 8.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-                </svg>
-                Check prior art further
-              </span>
-            )}
-          </button>
+          {workHref ? (
+            <Link href={workHref} className="btn-primary text-[13px] px-4">
+              Open topic work
+            </Link>
+          ) : (
+            <Link href={frontierNewHref} className="btn-secondary text-[13px] px-4">
+              Start a topic work
+            </Link>
+          )}
         </div>
       </div>
 
@@ -401,31 +375,22 @@ export default function DivergentPage() {
       {/* CTA */}
       <div className="glass-card-static p-6 text-center animate-fade-up delay-400">
         <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
-          Want to verify these ideas?
+          Topic work
         </h3>
         <p className="text-xs text-[var(--text-secondary)] mb-4 max-w-md mx-auto">
-          Spawn a Mode B (Frontier) run to do a deeper prior art check on the most promising ideas.
+          {workHref
+            ? "Open the topic work page to manage selected idea cards and phase work."
+            : "Create a topic work page from this topic to review the most promising ideas with Frontier."}
         </p>
-        <button
-          onClick={handleSpawnFrontier}
-          disabled={spawning}
-          className="btn-primary text-[13px] px-4"
-        >
-          {spawning ? (
-            <span className="flex items-center gap-2">
-              <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-              Spawning...
-            </span>
-          ) : (
-            <span className="flex items-center gap-2">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5" />
-                <path d="M7 4V7L9 8.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-              </svg>
-              Check prior art further
-            </span>
-          )}
-        </button>
+        {workHref ? (
+          <Link href={workHref} className="btn-primary text-[13px] px-4">
+            Open topic work
+          </Link>
+        ) : (
+          <Link href={frontierNewHref} className="btn-secondary text-[13px] px-4">
+            Start a topic work
+          </Link>
+        )}
       </div>
     </div>
   );

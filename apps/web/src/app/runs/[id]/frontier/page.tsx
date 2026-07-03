@@ -8,7 +8,6 @@ import {
   getRun,
   getRunContextBundle,
   getRunPapers,
-  runAction,
   type ContextBundle,
   type Paper,
   type Run,
@@ -117,6 +116,10 @@ function benchmarkDataFrom(bundle: ContextBundle | null): BenchmarkData {
   return (bundle?.benchmark_data ?? {}) as BenchmarkData;
 }
 
+function getWorkHref(run: Run): string | null {
+  return run.work_id ? `/works/${run.work_id}` : null;
+}
+
 export default function FrontierPage() {
   const params = useParams();
   const runId = params.id as string;
@@ -125,7 +128,6 @@ export default function FrontierPage() {
   const [contextBundle, setContextBundle] = useState<ContextBundle | null>(null);
   const [papers, setPapers] = useState<Paper[]>([]);
   const [loading, setLoading] = useState(true);
-  const [startingDivergent, setStartingDivergent] = useState(false);
   const [showPapers, setShowPapers] = useState(false);
   const [addingToLibrary, setAddingToLibrary] = useState<string | null>(null);
   const [libraryIds, setLibraryIds] = useState<Record<string, string>>({});
@@ -149,22 +151,6 @@ export default function FrontierPage() {
     };
     fetchData();
   }, [runId]);
-
-  const handleStartDivergent = async () => {
-    setStartingDivergent(true);
-    try {
-      await runAction(runId, "start_divergent", { intent: "explore innovations" });
-      setRun((current) =>
-        current
-          ? { ...current, status: "queued", current_step: "Starting Divergent exploration" }
-          : current,
-      );
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setStartingDivergent(false);
-    }
-  };
 
   if (loading) {
     return (
@@ -221,6 +207,8 @@ export default function FrontierPage() {
     asList(benchmarkData.key_findings).length > 0 ||
     asList(benchmarkData.method_landscape).length > 0 ||
     asList(benchmarkData.entry_points).length > 0;
+  const workHref = getWorkHref(run);
+  const divergentNewHref = `/new?mode=divergent&topic=${encodeURIComponent(run.topic)}`;
 
   return (
     <div className="max-w-[1060px] mx-auto px-8 py-8 space-y-6">
@@ -465,9 +453,23 @@ export default function FrontierPage() {
       )}
 
       <div className="pt-4 border-t border-[var(--border-subtle)]">
-        <button onClick={handleStartDivergent} disabled={startingDivergent} className="btn-primary text-[13px]">
-          {startingDivergent ? "Starting..." : "Explore innovations for these gaps"}
-        </button>
+        {workHref ? (
+          <Link href={workHref} className="btn-primary text-[13px]">
+            Open topic work
+          </Link>
+        ) : (
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-[13px] font-medium text-[var(--text-primary)]">
+              Topic work
+            </p>
+            <p className="text-[12px] text-[var(--text-muted)]">
+              Create a topic work page from this topic to run Divergent as a work phase.
+            </p>
+            <Link href={divergentNewHref} className="btn-secondary text-[13px]">
+              Start a topic work
+            </Link>
+          </div>
+        )}
       </div>
     </div>
   );

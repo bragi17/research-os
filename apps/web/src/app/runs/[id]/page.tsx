@@ -47,6 +47,10 @@ const MODE_LABELS: Record<string, string> = {
   review: "Review",
 };
 
+function getWorkHref(run: Run): string | null {
+  return run.work_id ? `/works/${run.work_id}` : null;
+}
+
 export default function RunConsole() {
   const params = useParams();
   const runId = params.id as string;
@@ -176,8 +180,9 @@ export default function RunConsole() {
 
   const progressPct = parseFloat(String(run.progress_pct)) || 0;
   const isTerminal = ["completed", "failed", "cancelled"].includes(run.status);
+  const workHref = getWorkHref(run);
   const modeLink = run.mode ? `/runs/${runId}/${run.mode}` : null;
-  const shouldShowModeLink = Boolean(modeLink);
+  const shouldShowModeLink = Boolean(workHref || modeLink);
   const hasDivergentPhase = events.some((event) =>
     event.event_type === "run.divergent_enqueued" ||
     event.event_type === "user.action.start_divergent" ||
@@ -214,7 +219,7 @@ export default function RunConsole() {
           mode={run.mode ?? "review"}
           topic={run.topic}
           isExecuting={run.status === "running"}
-          extraSteps={shouldShowDivergentLink ? ["Explore innovations for these gaps"] : []}
+          extraSteps={shouldShowDivergentLink && workHref ? ["Open topic work"] : []}
         />
       </div>
 
@@ -306,17 +311,25 @@ export default function RunConsole() {
               )}
             </div>
           )}
-          {shouldShowModeLink && modeLink && (
+          {shouldShowModeLink && (
             <div className="space-y-2">
-              <ResultLink href={modeLink}>
-                {run.mode === "frontier"
-                  ? "View full Frontier results"
-                  : <>View full {MODE_LABELS[run.mode ?? ""] ?? "mode"} results</>}
-              </ResultLink>
-              {shouldShowDivergentLink && (
-                <ResultLink href={`/runs/${runId}/divergent`}>
-                  View full Divergent results
-                </ResultLink>
+              {workHref ? (
+                <ResultLink href={workHref}>Open topic work</ResultLink>
+              ) : (
+                <>
+                  {modeLink && (
+                    <ResultLink href={modeLink}>
+                      {run.mode === "frontier"
+                        ? "View full Frontier results"
+                        : <>View full {MODE_LABELS[run.mode ?? ""] ?? "mode"} results</>}
+                    </ResultLink>
+                  )}
+                  {shouldShowDivergentLink && (
+                    <ResultLink href={`/runs/${runId}/divergent`}>
+                      View full Divergent results
+                    </ResultLink>
+                  )}
+                </>
               )}
             </div>
           )}

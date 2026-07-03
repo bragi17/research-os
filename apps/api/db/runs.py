@@ -63,13 +63,37 @@ async def get_run(
     pool = await db_pool.get_pool()
     if workspace_id is not None:
         row = await pool.fetchrow(
-            "SELECT * FROM research_run WHERE id = $1 AND workspace_id = $2",
+            """
+            SELECT
+                rr.*,
+                (
+                    SELECT pe.work_id
+                    FROM phase_execution pe
+                    WHERE pe.backing_run_id = rr.id
+                    ORDER BY pe.created_at DESC
+                    LIMIT 1
+                ) AS work_id
+            FROM research_run rr
+            WHERE rr.id = $1 AND rr.workspace_id = $2
+            """,
             run_id,
             workspace_id,
         )
     else:
         row = await pool.fetchrow(
-            "SELECT * FROM research_run WHERE id = $1",
+            """
+            SELECT
+                rr.*,
+                (
+                    SELECT pe.work_id
+                    FROM phase_execution pe
+                    WHERE pe.backing_run_id = rr.id
+                    ORDER BY pe.created_at DESC
+                    LIMIT 1
+                ) AS work_id
+            FROM research_run rr
+            WHERE rr.id = $1
+            """,
             run_id,
         )
     if row is None:

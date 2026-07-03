@@ -13,6 +13,7 @@ Research OS is an AI-powered research orchestration platform that automates acad
   - **Frontier** (Mode B): Focused sub-field analysis with method comparison and pain point mining
   - **Divergent** (Mode C): Cross-domain innovation with analogical retrieval and idea cards
   - **Review** (Mode X): Result synthesis, refinement, and structured export
+- **Topic Work Phases** — One topic work can run phases independently or progressively: Atlas -> Frontier -> Divergent. Each phase produces editable artifact cards; selected cards become the input deck for later phases.
 - **Intelligent Mode Router** — Automatically classifies user intent and recommends the appropriate research mode
 - **Multi-Source Academic Search** — Semantic Scholar, OpenAlex, Crossref, Unpaywall integration with cross-source deduplication
 - **LaTeX-First Paper Parsing** — Downloads arXiv LaTeX source for high-fidelity section extraction; falls back to GROBID PDF parsing
@@ -74,7 +75,7 @@ research-os/
         divergent.py      # Mode C: Cross-Domain Innovation (7 stages)
         review.py         # Mode X: Synthesis & Export (3 stages)
     web/                  # Next.js frontend
-      src/app/            # Pages (dashboard, new, runs, atlas, frontier, divergent)
+      src/app/            # Pages (dashboard, new, works, runs compatibility views, atlas, frontier, divergent)
       src/components/     # Reusable UI components
       src/lib/api.ts      # API client
   libs/
@@ -175,13 +176,16 @@ cd infra/docker && docker compose up -d
 | `/api/v1/runs/{id}/resume` | POST | Resume paused task |
 | `/api/v1/runs/{id}/events/stream` | GET | SSE event stream |
 | `/api/v1/runs/multimode` | POST | Create run with mode selection |
-| `/api/v1/runs/{id}/spawn` | POST | Spawn child run (mode chaining) |
+| `/api/v1/runs/{id}/spawn` | POST | Spawn compatibility child run |
 | `/api/v1/runs/{id}/pain-points` | GET | List pain points (Mode B) |
 | `/api/v1/runs/{id}/idea-cards` | GET | List innovation cards (Mode C) |
 | `/api/v1/runs/{id}/timeline` | GET | Research timeline (Mode A) |
 | `/api/v1/runs/{id}/taxonomy` | GET | Classification tree (Mode A) |
 | `/api/v1/runs/{id}/mindmap` | GET | Mind map JSON |
 | `/api/v1/runs/{id}/downloads/{fmt}` | GET | Export (markdown/json/csv/bibtex) |
+| `/api/v1/works` | POST/GET | Create or list topic workspaces |
+| `/api/v1/works/{id}/phases/{phase}/executions` | POST | Start a topic work phase execution |
+| `/api/v1/works/{id}/artifact-cards` | GET | List editable artifact cards |
 
 ## Research Modes
 
@@ -212,14 +216,14 @@ For researchers **seeking novel ideas**. Produces innovation candidates:
 - Innovation cards with novelty/feasibility scores
 - Prior-art risk assessment
 
-### Mode Chaining
+### Topic Work Phases
 
-Modes are designed to feed into each other:
+One topic work can run phases independently or progressively:
 ```
-Atlas --> "Deep dive this direction" --> Frontier
-Frontier --> "Explore innovations for this pain point" --> Divergent
-Divergent --> "Check prior art further" --> Frontier
+Atlas -> Frontier -> Divergent
 ```
+
+Each phase produces editable artifact cards. Selected cards become the input deck for later phases. Legacy run routes remain available as compatibility views, but the user-facing workflow is the topic work page.
 
 ## Testing
 

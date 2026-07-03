@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -7,7 +8,6 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-
 
 MIGRATION = Path("scripts/migration/015_topic_work_phase_artifacts.sql")
 
@@ -70,6 +70,24 @@ def test_work_schemas_validate_artifact_card_patch() -> None:
     assert patch.selection_state == "selected"
 
 
+def test_run_response_exposes_optional_work_id() -> None:
+    from libs.schemas.run import GoalType, RunResponse, RunStatus
+
+    work_id = uuid4()
+    response = RunResponse(
+        id=uuid4(),
+        title="Frontier pass",
+        topic="Sparse labels in clinical NLP",
+        status=RunStatus.COMPLETED,
+        goal_type=GoalType.SURVEY_PLUS_INNOVATIONS,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+        work_id=work_id,
+    )
+
+    assert response.work_id == work_id
+
+
 @pytest.mark.parametrize("field", ["title", "payload", "status", "selection_state"])
 def test_work_schemas_reject_explicit_null_for_non_nullable_patch_fields(
     field: str,
@@ -92,6 +110,35 @@ def test_work_db_module_exposes_core_operations() -> None:
     assert callable(works.create_phase_execution)
     assert callable(works.create_artifact_card)
     assert callable(works.update_artifact_card)
+
+
+@pytest.mark.asyncio
+async def test_get_run_joins_phase_execution_work_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.db import runs
+
+    run_id = uuid4()
+    work_id = uuid4()
+    workspace_id = uuid4()
+    pool = _make_work_pool(fetchrow_return={
+        "id": run_id,
+        "workspace_id": workspace_id,
+        "work_id": work_id,
+    })
+
+    async def fake_get_pool() -> AsyncMock:
+        return pool
+
+    monkeypatch.setattr(runs.db_pool, "get_pool", fake_get_pool)
+
+    result = await runs.get_run(run_id, workspace_id=workspace_id)
+
+    assert result is not None
+    assert result["work_id"] == work_id
+    sql = pool.fetchrow.call_args.args[0]
+    assert "phase_execution" in sql
+    assert "backing_run_id" in sql
 
 
 @pytest.mark.asyncio

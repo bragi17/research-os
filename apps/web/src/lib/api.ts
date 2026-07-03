@@ -212,6 +212,7 @@ export interface Run {
   updated_at: string;
   started_at: string | null;
   completed_at: string | null;
+  work_id?: string | null;
 }
 
 export interface Work {

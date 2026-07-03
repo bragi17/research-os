@@ -2,8 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 FRONTIER_PAGE = Path("apps/web/src/app/runs/[id]/frontier/page.tsx")
+LEGACY_CONTINUATION_COPY = (
+    "child of",
+    "Check prior art further",
+    "Explore innovations for these gaps",
+    "Phase continuation",
+    "Continue in topic work",
+)
+
+
+def test_frontier_page_does_not_show_old_phase_continuation_copy() -> None:
+    source = FRONTIER_PAGE.read_text()
+
+    for text in LEGACY_CONTINUATION_COPY:
+        assert text not in source
 
 
 def test_frontier_page_fetches_context_bundle_for_full_results() -> None:
@@ -40,10 +53,14 @@ def test_frontier_page_renders_report_landscape_and_entry_points() -> None:
     assert "Paper Reviews" in source
 
 
-def test_frontier_divergent_cta_stays_in_same_run_context() -> None:
+def test_frontier_page_retires_same_run_divergent_continuation_fallback() -> None:
     source = FRONTIER_PAGE.read_text()
 
-    assert 'runAction(runId, "start_divergent"' in source
-    assert 'intent: "explore innovations"' in source
+    assert 'runAction(runId, "start_divergent"' not in source
+    assert 'intent: "start divergent phase"' not in source
+    assert "Start Divergent phase" not in source
+    assert "Open topic work" in source
+    assert "?mode=divergent" in source
+    assert "encodeURIComponent(run.topic)" in source
     assert "spawnRun" not in source
     assert "router.push" not in source
