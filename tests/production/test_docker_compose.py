@@ -21,6 +21,8 @@ def test_docker_compose_runs_production_scheduler_service() -> None:
         "012_submission_audit_gates.sql",
         "013_literature_source_settings.sql",
         "013_saas_tenancy.sql",
+        "014_generalize_llm_provider_credentials.sql",
+        "015_topic_work_phase_artifacts.sql",
     ]
     migration_filenames = sorted(
         path.name for path in (ROOT / "scripts/migration").glob("*.sql")
