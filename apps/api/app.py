@@ -22,6 +22,7 @@ from apps.api.routes_runs import router as runs_router
 from apps.api.routes_settings import router as settings_router
 from apps.api.routes_status import router as status_router
 from apps.api.routes_v2 import router as v2_router
+from apps.api.routes_works import router as works_router
 
 load_dotenv()
 
@@ -79,5 +80,6 @@ def create_app() -> FastAPI:
     app.include_router(library_router)
     app.include_router(production_router)
     app.include_router(settings_router)
+    app.include_router(works_router)
 
     return app
