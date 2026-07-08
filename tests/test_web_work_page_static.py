@@ -68,7 +68,9 @@ def test_phase_run_panel_has_independent_and_next_phase_actions() -> None:
     assert "Run this phase" in source
     assert "Start Frontier from selected Atlas cards" in source
     assert "Start Divergent from selected gaps" in source
-    assert "Validate selected ideas with Frontier" in source
+    assert "Validate selected ideas with Frontier" not in source
+    assert "nextActionLabel(phase)" in source
+    assert "nextAction &&" in source
 
 
 def test_phase_run_panel_disables_next_action_without_selection() -> None:
@@ -129,6 +131,9 @@ def test_work_page_next_phase_action_requires_selected_cards() -> None:
     start_index = source.index("startPhaseExecution(workId, target.phase")
 
     assert guard_index < start_index
+    assert "executionKind: \"validation\"" not in source
+    assert "target.executionKind" not in source
+    assert "if (!target) return;" in source
     assert "setRunningAction(\"next\")" not in source[:guard_index]
     assert "source_card_ids: sourceCardIds" in source
     assert "source_card_ids: selectedCards.map" not in source

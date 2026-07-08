@@ -22,11 +22,10 @@ const WORK_PHASE_HINTS_STORAGE_KEY = "ros_work_phases";
 
 function nextPhaseTarget(phase: ResearchPhase): {
   phase: ResearchPhase;
-  executionKind?: StartPhaseExecutionData["execution_kind"];
-} {
+} | null {
   if (phase === "atlas") return { phase: "frontier" };
   if (phase === "frontier") return { phase: "divergent" };
-  return { phase: "frontier", executionKind: "validation" };
+  return null;
 }
 
 function isResearchPhase(value: string | null): value is ResearchPhase {
@@ -223,6 +222,9 @@ export default function WorkPage() {
 
   const runNextPhase = async () => {
     setActionError(null);
+    const target = nextPhaseTarget(activePhase);
+    if (!target) return;
+
     const sourceCardIds = selectedCards.map((card) => card.id);
     if (sourceCardIds.length === 0) {
       setActionError("Select cards before starting the next phase.");
@@ -230,13 +232,9 @@ export default function WorkPage() {
     }
 
     setRunningAction("next");
-    const target = nextPhaseTarget(activePhase);
     const data: StartPhaseExecutionData = {
       source_card_ids: sourceCardIds,
     };
-    if (target.executionKind) {
-      data.execution_kind = target.executionKind;
-    }
 
     try {
       await startPhaseExecution(workId, target.phase, data);

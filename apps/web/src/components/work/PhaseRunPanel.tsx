@@ -8,10 +8,10 @@ const PHASE_LABELS: Record<ResearchPhase, string> = {
   divergent: "Divergent",
 };
 
-function nextActionLabel(phase: ResearchPhase): string {
+function nextActionLabel(phase: ResearchPhase): string | null {
   if (phase === "atlas") return "Start Frontier from selected Atlas cards";
   if (phase === "frontier") return "Start Divergent from selected gaps";
-  return "Validate selected ideas with Frontier";
+  return null;
 }
 
 export default function PhaseRunPanel({
@@ -41,9 +41,11 @@ export default function PhaseRunPanel({
   const nextAction = nextActionLabel(phase);
   const nextDisabled = running || selectedCount === 0;
   const nextActionTitle =
-    selectedCount === 0 ? "Select cards before starting this action." : nextAction;
+    selectedCount === 0 ? "Select cards before starting this action." : nextAction ?? "";
   const nextActionAriaLabel =
-    selectedCount === 0 ? `${nextAction} unavailable until cards are selected` : nextAction;
+    selectedCount === 0
+      ? `${nextAction ?? "Next action"} unavailable until cards are selected`
+      : nextAction ?? "Next action";
 
   return (
     <div className="card-static p-4 flex flex-wrap items-center justify-between gap-3">
@@ -73,16 +75,18 @@ export default function PhaseRunPanel({
         >
           Run this phase
         </button>
-        <button
-          type="button"
-          className="btn-primary px-3 py-1.5 text-[13px]"
-          onClick={onRunNext}
-          disabled={nextDisabled}
-          title={nextActionTitle}
-          aria-label={nextActionAriaLabel}
-        >
-          {nextAction}
-        </button>
+        {nextAction && (
+          <button
+            type="button"
+            className="btn-primary px-3 py-1.5 text-[13px]"
+            onClick={onRunNext}
+            disabled={nextDisabled}
+            title={nextActionTitle}
+            aria-label={nextActionAriaLabel}
+          >
+            {nextAction}
+          </button>
+        )}
       </div>
     </div>
   );
