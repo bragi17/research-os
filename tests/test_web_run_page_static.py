@@ -4,8 +4,12 @@ import re
 from pathlib import Path
 
 RUN_PAGE = Path("apps/web/src/app/runs/[id]/page.tsx")
+ATLAS_PAGE = Path("apps/web/src/app/runs/[id]/atlas/page.tsx")
+FRONTIER_PAGE = Path("apps/web/src/app/runs/[id]/frontier/page.tsx")
 DIVERGENT_PAGE = Path("apps/web/src/app/runs/[id]/divergent/page.tsx")
 API_FILE = Path("apps/web/src/lib/api.ts")
+RESULT_NAV = Path("apps/web/src/components/ResultPageNav.tsx")
+RUN_ARTIFACT_CARDS_PANEL = Path("apps/web/src/components/work/RunArtifactCardsPanel.tsx")
 LEGACY_CONTINUATION_COPY = (
     "child of",
     "Check prior art further",
@@ -102,3 +106,53 @@ def test_divergent_papers_can_be_added_to_library_and_opened_after_add() -> None
     assert "Add to library" in source
     assert "Open in library" in source
     assert 'source_run_id: runId' in source
+
+
+def test_full_result_pages_have_scroll_nav_and_bottom_back_to_run() -> None:
+    for path in (ATLAS_PAGE, FRONTIER_PAGE, DIVERGENT_PAGE):
+        source = path.read_text()
+
+        assert "ResultPageNav" in source
+        assert "BottomBackToRun" in source
+        assert source.count("Back to run") >= 2
+
+
+def test_full_result_pages_mount_editable_artifact_cards() -> None:
+    for path, phase in (
+        (ATLAS_PAGE, "atlas"),
+        (FRONTIER_PAGE, "frontier"),
+        (DIVERGENT_PAGE, "divergent"),
+    ):
+        source = path.read_text()
+
+        assert "RunArtifactCardsPanel" in source
+        assert f'phase="{phase}"' in source
+
+
+def test_result_page_nav_scroll_controls_and_responsive_positions() -> None:
+    source = RESULT_NAV.read_text()
+
+    assert 'import { ArrowDown, ArrowUp } from "lucide-react"' in source
+    assert 'window.scrollTo({ top: 0, behavior: "smooth" })' in source
+    assert "document.documentElement.scrollHeight" in source
+    assert 'aria-label="Back to top"' in source
+    assert 'aria-label="Go to bottom"' in source
+    assert "fixed right-4 top-1/2" in source
+    assert "md:flex" in source
+    assert "fixed bottom-5 right-5" in source
+    assert "md:hidden" in source
+
+
+def test_run_artifact_cards_panel_loads_work_cards_and_renders_deck() -> None:
+    source = RUN_ARTIFACT_CARDS_PANEL.read_text()
+
+    assert "const workId = run.work_id" in source
+    assert "if (!workId) return null" in source
+    assert "listArtifactCards(workId, phase)" in source
+    assert "Failed to load editable cards." in source
+    assert "<ArtifactCardDeck" in source
+    assert "workId={workId}" in source
+    assert "phase={phase}" in source
+    assert "cards={cards}" in source
+    assert "onCardsChanged={fetchCards}" in source
+    assert "loading={loading}" in source

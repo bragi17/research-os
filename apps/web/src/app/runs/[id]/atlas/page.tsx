@@ -17,6 +17,8 @@ import {
 } from "@/lib/api";
 import TimelineRail from "@/components/TimelineRail";
 import TaxonomyTree from "@/components/TaxonomyTree";
+import ResultPageNav from "@/components/ResultPageNav";
+import RunArtifactCardsPanel from "@/components/work/RunArtifactCardsPanel";
 
 export default function AtlasPage() {
   const params = useParams();
@@ -105,6 +107,8 @@ export default function AtlasPage() {
 
   return (
     <div className="max-w-[1060px] mx-auto px-8 py-8 space-y-6">
+      <ResultPageNav />
+
       {/* Back button */}
       <Link
         href={`/runs/${runId}`}
@@ -160,6 +164,8 @@ export default function AtlasPage() {
           <span>{timeline.length} timeline entries</span>
         </div>
       </div>
+
+      <RunArtifactCardsPanel run={run} phase="atlas" />
 
       {/* Timeline */}
       {timeline.length > 0 && (
@@ -313,6 +319,30 @@ export default function AtlasPage() {
           )}
         </button>
       </div>
+
+      <BottomBackToRun runId={runId} />
+    </div>
+  );
+}
+
+function BottomBackToRun({ runId }: { runId: string }) {
+  return (
+    <div className="border-t border-[var(--border-subtle)] pt-4">
+      <Link
+        href={`/runs/${runId}`}
+        className="inline-flex items-center gap-1.5 text-[13px] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path
+            d="M9 11L5 7L9 3"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        Back to run
+      </Link>
     </div>
   );
 }

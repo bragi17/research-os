@@ -12,6 +12,8 @@ import {
   type Paper,
   type Run,
 } from "@/lib/api";
+import ResultPageNav from "@/components/ResultPageNav";
+import RunArtifactCardsPanel from "@/components/work/RunArtifactCardsPanel";
 
 interface GapItem {
   gap_type?: string;
@@ -212,6 +214,8 @@ export default function FrontierPage() {
 
   return (
     <div className="max-w-[1060px] mx-auto px-8 py-8 space-y-6">
+      <ResultPageNav />
+
       <Link href={`/runs/${runId}`} className="inline-flex items-center gap-1.5 text-[13px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
           <path d="M9 11L5 7L9 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -243,6 +247,8 @@ export default function FrontierPage() {
           <Stat value={benchmarks.length} label="Benchmarks" />
         </div>
       </div>
+
+      <RunArtifactCardsPanel run={run} phase="frontier" />
 
       {!hasAnyResults && (
         <div className="card-static p-8 text-center">
@@ -471,6 +477,30 @@ export default function FrontierPage() {
           </div>
         )}
       </div>
+
+      <BottomBackToRun runId={runId} />
+    </div>
+  );
+}
+
+function BottomBackToRun({ runId }: { runId: string }) {
+  return (
+    <div className="border-t border-[var(--border-subtle)] pt-4">
+      <Link
+        href={`/runs/${runId}`}
+        className="inline-flex items-center gap-1.5 text-[13px] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path
+            d="M9 11L5 7L9 3"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        Back to run
+      </Link>
     </div>
   );
 }

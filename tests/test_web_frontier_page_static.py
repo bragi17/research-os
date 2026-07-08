@@ -64,3 +64,17 @@ def test_frontier_page_retires_same_run_divergent_continuation_fallback() -> Non
     assert "encodeURIComponent(run.topic)" in source
     assert "spawnRun" not in source
     assert "router.push" not in source
+
+
+def test_frontier_page_uses_shared_result_navigation() -> None:
+    source = FRONTIER_PAGE.read_text()
+
+    assert "ResultPageNav" in source
+    assert "BottomBackToRun" in source
+
+
+def test_frontier_page_mounts_editable_artifact_cards() -> None:
+    source = FRONTIER_PAGE.read_text()
+
+    assert "RunArtifactCardsPanel" in source
+    assert 'phase="frontier"' in source
