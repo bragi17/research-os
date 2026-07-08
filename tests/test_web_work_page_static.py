@@ -23,6 +23,8 @@ def test_work_api_types_and_helpers_exist() -> None:
         "export const getWork",
         "export const getWorkPhases",
         "export const listArtifactCards",
+        "export interface ArtifactCardCreate",
+        "export const createArtifactCard",
         "export const updateArtifactCard",
         "export const startPhaseExecution",
     ]
@@ -97,9 +99,13 @@ def test_artifact_deck_supports_edit_and_selection() -> None:
     source = ARTIFACT_DECK.read_text()
 
     assert "selection_state" in source
+    assert "createArtifactCard" in source
     assert "updateArtifactCard" in source
+    assert "Add card" in source
     assert "Edit" in source
     assert "Save" in source
+    assert "Delete" in source
+    assert "Payload JSON" in source
     assert "Selected" in source
 
 
@@ -108,6 +114,7 @@ def test_work_page_renders_artifact_deck_with_active_phase_cards() -> None:
 
     assert "import ArtifactCardDeck" in source
     assert "<ArtifactCardDeck" in source
+    assert "phase={activePhase}" in source
     assert "cards={cards.filter((card) => card.phase === activePhase)}" in source
     assert "onCardsChanged={fetchCardsForActivePhase}" in source
 

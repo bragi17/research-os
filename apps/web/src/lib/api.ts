@@ -75,6 +75,12 @@ export const listArtifactCards = (workId: string, phase?: ResearchPhase) => {
   return apiFetch<{ items: ArtifactCard[]; total: number }>(`/api/v1/works/${workId}/artifact-cards${query}`);
 };
 
+export const createArtifactCard = (workId: string, data: ArtifactCardCreate) =>
+  apiFetch<ArtifactCard>(`/api/v1/works/${workId}/artifact-cards`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
 export const updateArtifactCard = (workId: string, cardId: string, data: ArtifactCardPatch) =>
   apiFetch<ArtifactCard>(`/api/v1/works/${workId}/artifact-cards/${cardId}`, {
     method: "PATCH",
@@ -281,6 +287,16 @@ export interface ArtifactCard {
   updated_by?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ArtifactCardCreate {
+  phase: ResearchPhase;
+  artifact_type: string;
+  title: string;
+  body?: string | null;
+  payload?: Record<string, unknown>;
+  source_execution_id?: string | null;
+  source_card_ids?: string[];
 }
 
 export interface ArtifactCardPatch {

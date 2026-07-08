@@ -328,6 +328,7 @@ export default function WorkPage() {
 
         <ArtifactCardDeck
           workId={workId}
+          phase={activePhase}
           cards={cards.filter((card) => card.phase === activePhase)}
           onCardsChanged={fetchCardsForActivePhase}
           loading={cardsLoading}
