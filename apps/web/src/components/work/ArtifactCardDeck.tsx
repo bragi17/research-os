@@ -15,6 +15,7 @@ interface ArtifactCardDeckProps {
   cards: ArtifactCard[];
   onCardsChanged: () => void | Promise<void>;
   loading?: boolean;
+  sourceExecutionId?: string | null;
 }
 
 interface CardDraft {
@@ -83,6 +84,7 @@ export default function ArtifactCardDeck({
   cards,
   onCardsChanged,
   loading = false,
+  sourceExecutionId = null,
 }: ArtifactCardDeckProps) {
   const [draftsByCard, setDraftsByCard] = useState<Record<string, CardDraft>>({});
   const [savingByCard, setSavingByCard] = useState<Record<string, boolean>>({});
@@ -222,6 +224,7 @@ export default function ArtifactCardDeck({
         title,
         body: newDraft.body.trim() || null,
         payload,
+        source_execution_id: sourceExecutionId,
       });
       setNewDraft(null);
       await onCardsChanged();

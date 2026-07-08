@@ -98,6 +98,8 @@ def test_phase_run_panel_disables_current_phase_action_without_input() -> None:
 def test_artifact_deck_supports_edit_and_selection() -> None:
     source = ARTIFACT_DECK.read_text()
 
+    assert "sourceExecutionId" in source
+    assert "source_execution_id: sourceExecutionId" in source
     assert "selection_state" in source
     assert "createArtifactCard" in source
     assert "updateArtifactCard" in source

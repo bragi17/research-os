@@ -148,7 +148,12 @@ def test_run_artifact_cards_panel_loads_work_cards_and_renders_deck() -> None:
 
     assert "const workId = run.work_id" in source
     assert "if (!workId) return null" in source
+    assert "getWorkPhases" in source
+    assert "execution.backing_run_id === run.id" in source
+    assert "execution.phase === phase" in source
+    assert "const sourceExecutionId = phaseExecution?.id" in source
     assert "listArtifactCards(workId, phase)" in source
+    assert "card.source_execution_id === sourceExecutionId" in source
     assert "Failed to load editable cards." in source
     assert "<ArtifactCardDeck" in source
     assert "workId={workId}" in source
@@ -156,3 +161,4 @@ def test_run_artifact_cards_panel_loads_work_cards_and_renders_deck() -> None:
     assert "cards={cards}" in source
     assert "onCardsChanged={fetchCards}" in source
     assert "loading={loading}" in source
+    assert "sourceExecutionId={sourceExecutionId}" in source

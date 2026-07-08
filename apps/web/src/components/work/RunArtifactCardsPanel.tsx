@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  getWorkPhases,
   listArtifactCards,
   type ArtifactCard,
   type ResearchPhase,
@@ -18,6 +19,7 @@ export default function RunArtifactCardsPanel({
 }) {
   const workId = run.work_id;
   const [cards, setCards] = useState<ArtifactCard[]>([]);
+  const [sourceExecutionId, setSourceExecutionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(Boolean(workId));
   const [error, setError] = useState<string | null>(null);
 
@@ -26,16 +28,31 @@ export default function RunArtifactCardsPanel({
     setLoading(true);
     setError(null);
     try {
-      const cardData = await listArtifactCards(workId, phase);
-      setCards(cardData.items ?? []);
+      const [phaseData, cardData] = await Promise.all([
+        getWorkPhases(workId),
+        listArtifactCards(workId, phase),
+      ]);
+      const phaseExecution = phaseData.executions?.find(
+        (execution) => execution.phase === phase && execution.backing_run_id === run.id,
+      );
+      const sourceExecutionId = phaseExecution?.id;
+      setSourceExecutionId(sourceExecutionId ?? null);
+      setCards(
+        sourceExecutionId
+          ? (cardData.items ?? []).filter(
+              (card) => card.source_execution_id === sourceExecutionId,
+            )
+          : [],
+      );
     } catch (err) {
       console.error(err);
+      setSourceExecutionId(null);
       setCards([]);
       setError(err instanceof Error ? err.message : "Failed to load editable cards.");
     } finally {
       setLoading(false);
     }
-  }, [phase, workId]);
+  }, [phase, run.id, workId]);
 
   useEffect(() => {
     void fetchCards();
@@ -56,6 +73,7 @@ export default function RunArtifactCardsPanel({
         cards={cards}
         onCardsChanged={fetchCards}
         loading={loading}
+        sourceExecutionId={sourceExecutionId}
       />
     </div>
   );
